@@ -239,6 +239,9 @@ function installStyles(document: Document): void {
       font-size: 13px;
     }
     .kcac-auth[data-visible="true"] { display: flex; }
+    /* In this column layout the shared input's flex-basis would become
+       HEIGHT and inflate each field to ~180px; pin them to one text line. */
+    .kcac-auth .kcac-input { flex: none; width: 100%; box-sizing: border-box; }
     .kcac-device {
       display: none;
       gap: 10px;

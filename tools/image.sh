@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 IMAGE_TAG=${IMAGE_TAG:-kirocrew-agentcore:workspace}
+IMAGE_MAX_BYTES=${IMAGE_MAX_BYTES:-2000000000}
 SOURCE_REVISION=${SOURCE_REVISION:-$(git -C "$ROOT" rev-parse --verify HEAD 2>/dev/null || printf uncommitted)}
 DEPENDENCY_LOCK_SHA256=$(sha256sum "$ROOT/uv.lock" | awk '{print $1}')
 DEPLOYMENT_MODE=${DEPLOYMENT_MODE:-microvm}
@@ -67,6 +68,22 @@ case "${1:-}" in
     docker image inspect "$IMAGE_TAG" --format '{{json .Config}}'
     test "$(docker image inspect "$IMAGE_TAG" --format '{{.Config.User}}')" = "10001:10001"
     test "$(docker image inspect "$IMAGE_TAG" --format '{{index .Config.Labels "dev.kirocrew.agentcore.protocol"}}')" = "kirocrew-agentcore.v1"
+    test "$(docker image inspect "$IMAGE_TAG" --format '{{index .Config.Labels "dev.kirocrew.agentcore.toolchain.node"}}')" = "22.23.1"
+    test "$(docker image inspect "$IMAGE_TAG" --format '{{index .Config.Labels "dev.kirocrew.agentcore.toolchain.npm"}}')" = "10.9.8"
+    test "$(docker image inspect "$IMAGE_TAG" --format '{{index .Config.Labels "dev.kirocrew.agentcore.toolchain.uv"}}')" = "0.12.5"
+    image_size=$(docker image inspect "$IMAGE_TAG" --format '{{.Size}}')
+    test "$image_size" -lt "$IMAGE_MAX_BYTES"
+    docker run --rm --entrypoint /bin/sh "$IMAGE_TAG" -ec '
+      test "$(id -u):$(id -g)" = "10001:10001"
+      test "$(python --version)" = "Python 3.12.11"
+      test "$(node --version)" = "v22.23.1"
+      test "$(npm --version)" = "10.9.8"
+      uv --version | grep -Eq "^uv 0\\.12\\.5( |$)"
+      for executable in pip uvx git gh git-lfs npx corepack gcc g++ make pkg-config curl jq rg fd tree file rsync nc zip unzip; do
+        command -v "$executable" >/dev/null
+      done
+      git lfs version >/dev/null
+    '
     ;;
   smoke)
     docker run --rm --read-only \

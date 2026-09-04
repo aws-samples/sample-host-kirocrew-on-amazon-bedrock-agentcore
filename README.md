@@ -149,7 +149,19 @@ terraform -chdir=infrastructure apply -state="$TF_STATE" \
 
 ### 3. Publish the runtime image
 
-The image must stay below AgentCore's 2 GB limit (it is about 1.6 GB today).
+The image must stay below AgentCore's 2 GB limit; `make image-inspect` enforces
+that limit and verifies the preinstalled development toolchain. The non-root sandbox
+terminal includes:
+
+- Python 3.12 with `pip`, `uv`, and `uvx`.
+- Node.js 22.23.1 with npm 10.9.8, `npx`, and Corepack.
+- `git`, Git LFS, GitHub CLI (`gh`), and the OpenSSH client.
+- GCC/G++, `make`, and `pkg-config` for native Python and Node extensions.
+- Common terminal utilities including `curl`, `jq`, `rg`, `fd`, `tree`, `file`,
+  `rsync`, netcat, archive tools, and small text editors.
+
+Large language SDKs and databases remain project-local to keep the base image
+bounded.
 
 ```bash
 make image-publish \

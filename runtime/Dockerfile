@@ -1,5 +1,7 @@
 # syntax=docker/dockerfile:1.7
-FROM ghcr.io/astral-sh/uv:0.12.3@sha256:2d890623d310b57771ce840f0da5eed5fc6d657da05ffaa45d82797b53fa3abc AS uv
+FROM ghcr.io/astral-sh/uv:0.12.5@sha256:e85be844203885286c60ffad8a858d48afb6c5a5c237ca0e67f12e74b8f174b1 AS uv
+
+FROM node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS node
 
 FROM python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7 AS python-builder
 
@@ -54,6 +56,9 @@ ARG SOURCE_REVISION=uncommitted
 ARG KIROCREW_VERSION=0.2.0
 ARG KIROCREW_ARTIFACT_SHA256=329b4b2e271d1253eb9b2115f19950485181934f2ba7ded1a993edfbf48c6f90
 ARG KIRO_CLI_VERSION=2.18.1
+ARG NODE_VERSION=22.23.1
+ARG NPM_VERSION=10.9.8
+ARG UV_VERSION=0.12.5
 ARG PROTOCOL_VERSION=kirocrew-agentcore.v1
 ARG BASE_IMAGE_DIGEST=sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7
 ARG DEPENDENCY_LOCK_SHA256=edf2fe6005e6bfe70cfb48d08b00eb0f3503d6c524fda01a65cfd2cb45afdadc
@@ -65,34 +70,61 @@ LABEL org.opencontainers.image.title="kirocrew-agentcore-runtime" \
       dev.kirocrew.agentcore.protocol="${PROTOCOL_VERSION}" \
       dev.kirocrew.agentcore.kirocrew.artifact.sha256="${KIROCREW_ARTIFACT_SHA256}" \
       dev.kirocrew.agentcore.kiro-cli.version="${KIRO_CLI_VERSION}" \
+      dev.kirocrew.agentcore.toolchain.node="${NODE_VERSION}" \
+      dev.kirocrew.agentcore.toolchain.npm="${NPM_VERSION}" \
+      dev.kirocrew.agentcore.toolchain.uv="${UV_VERSION}" \
       dev.kirocrew.agentcore.dependency-lock.sha256="${DEPENDENCY_LOCK_SHA256}"
 
-# Developer conveniences for the in-sandbox terminal. Deliberately a small,
-# curated set on top of slim (image cap is 2 GB): no compilers or node here.
+# A practical in-sandbox development toolchain. Keep large language SDKs and
+# databases project-local so the runtime stays below AgentCore's 2 GB image cap.
 RUN apt-get update \
     && apt-get upgrade --yes --no-install-recommends \
     && apt-get install --yes --no-install-recommends \
-        tini=0.19.0-1+b3 \
-        git \
+        build-essential \
+        ca-certificates \
         curl \
-        less \
-        procps \
-        unzip \
-        ripgrep \
-        nano \
-        vim-tiny \
+        fd-find \
+        file \
+        gh \
+        git \
+        git-lfs \
         jq \
+        less \
+        nano \
+        netcat-openbsd \
         openssh-client \
+        pkg-config \
+        procps \
+        ripgrep \
+        rsync \
+        tini=0.19.0-1+b3 \
+        tree \
+        unzip \
+        vim-tiny \
+        xz-utils \
+        zip \
     && rm -rf /var/lib/apt/lists/* \
+    && ln -s /usr/bin/fdfind /usr/local/bin/fd \
+    && git lfs install --system \
     && groupadd --gid 10001 app \
     && useradd --uid 10001 --gid app --home-dir /mnt/workspace/home --no-create-home app \
     && mkdir -p /opt/app /mnt/workspace/home /mnt/workspace/projects/default \
     && chown -R 10001:10001 /mnt/workspace
 COPY --from=python-builder /wheels /wheels
 RUN python -m pip install --no-index --no-deps /wheels/*.whl \
+    && find /usr/local/lib/python3.12/site-packages -type f -name '*.pyc' -delete \
     && rm -rf /wheels
 COPY --from=kiro-cli-builder /opt/kiro-cli-home/.local/bin/kiro-cli /usr/local/bin/kiro-cli
 COPY --from=kiro-cli-builder /opt/kiro-cli-home/.local/bin/kiro-cli-chat /usr/local/bin/kiro-cli-chat
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN set -eux; \
+    ln -sfn ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm; \
+    ln -sfn ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx; \
+    ln -sfn ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack; \
+    test "$(node --version)" = "v${NODE_VERSION}"; \
+    test "$(npm --version)" = "${NPM_VERSION}"; \
+    uv --version | grep --extended-regexp --quiet "^uv ${UV_VERSION}( |$)"
 
 ENV HOME=/mnt/workspace/home \
     SHELL=/bin/bash \

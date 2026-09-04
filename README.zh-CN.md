@@ -129,7 +129,16 @@ terraform -chdir=infrastructure apply -state="$TF_STATE" \
 
 ### 3. 发布 Runtime 镜像
 
-镜像必须低于 AgentCore 的 2 GB 限制（目前约 1.6 GB）。
+镜像必须低于 AgentCore 的 2 GB 限制；`make image-inspect` 会检查该限制及预装开发工具链。
+非 root 沙箱终端内包含：
+
+- Python 3.12，以及 `pip`、`uv` 和 `uvx`。
+- Node.js 22.23.1，以及 npm 10.9.8、`npx` 和 Corepack。
+- `git`、Git LFS、GitHub CLI（`gh`）和 OpenSSH 客户端。
+- GCC/G++、`make` 和 `pkg-config`，可构建 Python 与 Node 原生扩展。
+- `curl`、`jq`、`rg`、`fd`、`tree`、`file`、`rsync`、netcat、压缩工具和轻量编辑器等常用终端工具。
+
+大型语言 SDK 和数据库仍由各项目自行安装，以控制基础镜像大小。
 
 ```bash
 make image-publish \

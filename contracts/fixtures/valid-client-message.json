@@ -1,0 +1,10 @@
+{
+  "version": "kirocrew-agentcore.v1",
+  "messageId": "01J00000000000000000000001",
+  "requestId": "01J00000000000000000000002",
+  "operation": "chat.submit",
+  "sequence": 0,
+  "timestamp": "2026-08-17T16:00:00Z",
+  "correlationId": "01J00000000000000000000003",
+  "payload": { "text": "contract fixture" }
+}

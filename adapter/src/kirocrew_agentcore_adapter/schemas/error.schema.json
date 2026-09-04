@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kirocrew.example/contracts/error.schema.json",
+  "title": "KiroCrew AgentCore error",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["code", "category", "message", "retryable", "correlationId"],
+  "properties": {
+    "code": {
+      "enum": [
+        "INVALID_MESSAGE",
+        "UNSUPPORTED_PROTOCOL",
+        "FRAME_TOO_LARGE",
+        "SEQUENCE_ERROR",
+        "IDEMPOTENCY_CONFLICT",
+        "AUTHENTICATION_FAILED",
+        "AUTHORIZATION_FAILED",
+        "BINDING_MISMATCH",
+        "SANDBOX_CONFLICT",
+        "CHECKPOINT_FAILED",
+        "PERSISTENCE_RESTORE_FAILED",
+        "KIRO_AUTH_REQUIRED",
+        "KIROCREW_UNAVAILABLE",
+        "FEATURE_UNAVAILABLE_IN_AGENTCORE",
+        "THROTTLED",
+        "INTERNAL_ERROR"
+      ]
+    },
+    "category": {
+      "enum": ["AUTHENTICATION", "AUTHORIZATION", "BINDING", "LIFECYCLE", "PROVISIONING", "TRANSPORT", "KIRO_AUTH", "KIROCREW", "PERSISTENCE", "THROTTLING", "INTERNAL"]
+    },
+    "message": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "retryable": { "type": "boolean" },
+    "correlationId": {
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "details": {
+      "type": "object",
+      "additionalProperties": {
+        "type": ["string", "number", "integer", "boolean", "null"]
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "version": "kirocrew-agentcore.v1",
+  "messageId": "01J00000000000000000000004",
+  "requestId": "01J00000000000000000000002",
+  "operation": "output.delta",
+  "sequence": 1,
+  "timestamp": "2026-08-17T16:00:01Z",
+  "correlationId": "01J00000000000000000000003",
+  "payload": { "text": "fixture response" }
+}

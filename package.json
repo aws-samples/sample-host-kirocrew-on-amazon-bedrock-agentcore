@@ -1,0 +1,32 @@
+{
+  "name": "kirocrew-agentcore-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "frontend-shell"
+  ],
+  "scripts": {
+    "format": "prettier --write frontend-shell/src frontend-shell/tests frontend-shell/playwright frontend-shell/playwright.config.ts eslint.config.mjs",
+    "format:check": "prettier --check frontend-shell/src frontend-shell/tests frontend-shell/playwright frontend-shell/playwright.config.ts eslint.config.mjs",
+    "lint": "eslint frontend-shell/src frontend-shell/tests frontend-shell/playwright frontend-shell/playwright.config.ts",
+    "typecheck": "tsc --build --pretty false",
+    "build:bootstrap": "tsc --build && esbuild frontend-shell/dist/src/bootstrap.js --bundle --format=esm --outfile=frontend-shell/dist/bootstrap.bundle.js",
+    "test": "vitest run --coverage=false --exclude '**/playwright/**' --exclude '_public/**'",
+    "test:playwright": "playwright test --config frontend-shell/playwright.config.ts"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.33.0",
+    "@playwright/test": "1.62.1",
+    "@types/node": "22.15.30",
+    "esbuild": "0.28.2",
+    "eslint": "9.33.0",
+    "prettier": "3.6.2",
+    "typescript": "5.9.2",
+    "typescript-eslint": "8.39.1",
+    "vitest": "3.2.7"
+  },
+  "engines": {
+    "node": "22.23.1",
+    "npm": "10.9.8"
+  }
+}

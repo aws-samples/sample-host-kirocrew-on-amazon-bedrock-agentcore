@@ -1,0 +1,55 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+frontend-shell/dist/
+frontend-shell/upstream/
+*.tsbuildinfo
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+
+# Build and local environment
+dist/
+build/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+runtime/reports/
+runtime/sbom/
+
+# Agent workspace and test artifacts (session transcripts may contain credentials)
+.tmm/
+.hypothesis/
+test-results/
+
+# aws-samples public bundle output (built from release/release-manifest.yaml)
+_public/
+
+# Internal-only material stays local under temp/: process notes (handoffs,
+# publish plan), Kiro spec/task records and agent settings, and the aws-samples
+# release tooling. None of it belongs in the public tree.
+temp/
+docs/*HANDOFF*.md
+docs/internal/
+release/
+.kiro/
+*.tmp.mjs

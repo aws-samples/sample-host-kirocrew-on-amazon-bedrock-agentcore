@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kirocrew.example/contracts/persistence-manifest.schema.json",
+  "title": "KiroCrew sandbox checkpoint manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "generation", "sandboxId", "createdAt", "categories", "entries"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "generation": { "type": "integer", "minimum": 1 },
+    "sandboxId": { "type": "string", "pattern": "^sbx_[0-9A-HJKMNP-TV-Z]{26}$" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "categories": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 11,
+      "uniqueItems": true
+    },
+    "entries": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "type", "mode", "mtimeNs", "size"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "type": { "enum": ["file", "directory", "symlink"] },
+        "mode": { "type": "integer", "minimum": 0, "maximum": 4095 },
+        "mtimeNs": { "type": "integer", "minimum": 0 },
+        "size": { "type": "integer", "minimum": 0 },
+        "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "chunks": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        },
+        "symlinkTarget": { "type": "string" }
+      }
+    }
+  }
+}

@@ -1,0 +1,44 @@
+asyncapi: 3.0.0
+info:
+  title: KiroCrew AgentCore WebSocket and SSE Protocol
+  version: 1.0.0
+  description: Versioned bidirectional commands and ordered runtime events.
+servers:
+  agentcore:
+    host: bedrock-agentcore.region.amazonaws.com
+    protocol: wss
+    description: Regional AgentCore Runtime WebSocket endpoint.
+channels:
+  runtime:
+    address: /runtimes/{encodedRuntimeArn}/ws
+    parameters:
+      encodedRuntimeArn:
+        description: URL-encoded runtime ARN supplied by the authorized control API.
+    messages:
+      clientEnvelope:
+        $ref: '#/components/messages/ClientEnvelope'
+      serverEnvelope:
+        $ref: '#/components/messages/ServerEnvelope'
+operations:
+  sendCommand:
+    action: send
+    channel:
+      $ref: '#/channels/runtime'
+    messages:
+      - $ref: '#/channels/runtime/messages/clientEnvelope'
+  receiveEvent:
+    action: receive
+    channel:
+      $ref: '#/channels/runtime'
+    messages:
+      - $ref: '#/channels/runtime/messages/serverEnvelope'
+components:
+  messages:
+    ClientEnvelope:
+      name: ClientEnvelope
+      payload:
+        $ref: schemas/protocol-envelope.schema.json
+    ServerEnvelope:
+      name: ServerEnvelope
+      payload:
+        $ref: schemas/protocol-envelope.schema.json

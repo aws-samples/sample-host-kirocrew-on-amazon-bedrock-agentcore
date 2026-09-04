@@ -1,0 +1,217 @@
+{
+ "schemaVersion": 1,
+ "kiroCrew": {
+  "version": "0.2.0",
+  "artifactSha256": "329b4b2e271d1253eb9b2115f19950485181934f2ba7ded1a993edfbf48c6f90"
+ },
+ "bootstrap": {
+  "path": "/bootstrap.js",
+  "mustLoadBeforeUpstreamBundle": true
+ },
+ "browserAuthority": {
+  "cognitoOnly": true,
+  "browserVisibleKiroCrewToken": false,
+  "browserKiroCrewTokenStorageKeys": []
+ },
+ "syntheticAuthRoutes": [
+  "GET /api/auth/local-token",
+  "GET /api/auth/status",
+  "POST /api/auth/logout",
+  "POST /api/auth/refresh"
+ ],
+ "allowedRouteFamilies": [
+  {
+   "methods": [
+    "GET"
+   ],
+   "path": "/api/health"
+  },
+  {
+   "methods": [
+    "GET"
+   ],
+   "path": "/api/status"
+  },
+  {
+   "methods": [
+    "GET"
+   ],
+   "path": "/api/system"
+  },
+  {
+   "methods": [
+    "GET",
+    "POST"
+   ],
+   "path": "/api/terminal"
+  },
+  {
+   "methods": [
+    "GET"
+   ],
+   "path": "/api/ws/terminal"
+  },
+  {
+   "methods": [
+    "GET",
+    "POST"
+   ],
+   "path": "/api/chat"
+  },
+  {
+   "methods": [
+    "DELETE",
+    "GET",
+    "PATCH",
+    "POST"
+   ],
+   "path": "/api/conversations"
+  },
+  {
+   "methods": [
+    "DELETE",
+    "GET",
+    "PATCH",
+    "POST"
+   ],
+   "path": "/api/agents"
+  },
+  {
+   "methods": [
+    "DELETE",
+    "GET",
+    "PATCH",
+    "POST"
+   ],
+   "path": "/api/workspaces"
+  },
+  {
+   "methods": [
+    "DELETE",
+    "GET",
+    "PATCH",
+    "POST"
+   ],
+   "path": "/api/artifacts"
+  },
+  {
+   "methods": [
+    "DELETE",
+    "GET",
+    "POST"
+   ],
+   "path": "/api/memory"
+  },
+  {
+   "methods": [
+    "DELETE",
+    "GET",
+    "POST"
+   ],
+   "path": "/api/knowledge"
+  },
+  {
+   "methods": [
+    "DELETE",
+    "GET",
+    "PATCH",
+    "POST"
+   ],
+   "path": "/api/cron"
+  },
+  {
+   "methods": [
+    "GET",
+    "POST"
+   ],
+   "path": "/api/tasks"
+  },
+  {
+   "methods": [
+    "GET",
+    "PATCH"
+   ],
+   "path": "/api/settings"
+  },
+  {
+   "methods": [
+    "DELETE",
+    "GET",
+    "PATCH",
+    "POST"
+   ],
+   "path": "/api/mcp"
+  },
+  {
+   "methods": [
+    "DELETE",
+    "GET",
+    "PATCH",
+    "POST"
+   ],
+   "path": "/api/apps"
+  },
+  {
+   "methods": [
+    "GET"
+   ],
+   "path": "/api/events",
+   "transport": "sse"
+  },
+  {
+   "methods": [
+    "GET"
+   ],
+   "path": "/api/ws",
+   "transport": "websocket"
+  },
+  {
+   "methods": [
+    "GET"
+   ],
+   "path": "/api/file-raw",
+   "transfer": "bounded"
+  }
+ ],
+ "unavailableRouteFamilies": [
+  "/api/desktop",
+  "/api/files/pick"
+ ],
+ "deniedRouteFamilies": [
+  "/api/auth/token",
+  "/api/config/export",
+  "/api/secrets",
+  "/api/shutdown",
+  "/api/token"
+ ],
+ "supportedStreaming": [
+  "fetch-stream",
+  "sse",
+  "websocket"
+ ],
+ "compiledNetworkContract": {
+  "observedApiLiteralsSha256": "3c119edb614308d4b95abc212f7a1c1dd35f216b7cc70692be7df5462a11bd6e",
+  "unlistedRouteDisposition": "allowed",
+  "unsupportedConstructors": [
+   "WebTransport",
+   "RTCDataChannel"
+  ]
+ },
+ "transferLimits": {
+  "requestBytes": 1048576,
+  "responseBytes": 8388608,
+  "largerFiles": "sandbox-scoped-presigned-url"
+ },
+ "assetIntegrity": {
+  "manifest": "/upstream/0.2.0/asset-manifest.json",
+  "algorithm": "sha256",
+  "assetSetSha256": "1c12fed4987d97dfa97f26f630cf6f1b72476397c5b79695cfe23a3c88604031",
+  "requiredTypes": [
+   "html",
+   "javascript",
+   "css",
+   "font",
+   "icon"
+  ]
+ }
+}

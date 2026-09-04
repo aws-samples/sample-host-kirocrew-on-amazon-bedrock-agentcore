@@ -1,0 +1,233 @@
+openapi: 3.1.0
+info:
+  title: KiroCrew AgentCore Control and Invocation API
+  version: 1.0.0
+  description: Cognito-authorized lifecycle control and versioned AgentCore invocation envelopes.
+servers:
+  - url: https://deployment.invalid
+    description: The deployed CloudFront origin supplied by Terraform outputs.
+security:
+  - cognitoAccessToken: []
+paths:
+  /control/v1/config:
+    get:
+      operationId: getPublicConfig
+      responses:
+        "200":
+          description: Public deployment configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicConfig"
+        default:
+          $ref: "#/components/responses/Error"
+  /control/v1/sandbox:
+    get:
+      operationId: getSandbox
+      responses:
+        "200":
+          description: The authenticated subject's logical sandbox.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Sandbox"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteSandbox
+      responses:
+        "202":
+          description: Administrator-authorized retention workflow accepted.
+        default:
+          $ref: "#/components/responses/Error"
+  /control/v1/sandbox/start:
+    post:
+      operationId: startSandbox
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: Existing or newly acquired runtime connection descriptor.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectionDescriptor"
+        default:
+          $ref: "#/components/responses/Error"
+  /control/v1/sandbox/stop:
+    post:
+      operationId: stopSandbox
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StopRequest"
+      responses:
+        "202":
+          description: Runtime stop accepted after checkpoint verification.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Sandbox"
+        default:
+          $ref: "#/components/responses/Error"
+  /control/v1/sandbox/checkpoints:
+    get:
+      operationId: listCheckpoints
+      responses:
+        "200":
+          description: Non-sensitive retained checkpoint metadata.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Checkpoint"
+        default:
+          $ref: "#/components/responses/Error"
+  /invocations:
+    post:
+      operationId: invokeRuntime
+      description: AgentCore HTTP request/response or SSE invocation entrypoint.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "schemas/http-invocation.schema.json"
+      responses:
+        "200":
+          description: JSON response or ordered SSE stream.
+          content:
+            application/json:
+              schema:
+                type: object
+            text/event-stream:
+              schema:
+                type: string
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  securitySchemes:
+    cognitoAccessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 128
+  responses:
+    Error:
+      description: Stable sanitized API error.
+      content:
+        application/json:
+          schema:
+            $ref: "schemas/error.schema.json"
+  schemas:
+    SandboxState:
+      type: string
+      enum: [STOPPED, STARTING, RESTORING, READY, BUSY, CHECKPOINTING, STOPPING, ERROR]
+    Sandbox:
+      type: object
+      additionalProperties: false
+      required: [sandboxId, state, stateVersion, updatedAt]
+      properties:
+        sandboxId:
+          type: string
+          pattern: '^sbx_[0-9A-HJKMNP-TV-Z]{26}$'
+        state:
+          $ref: "#/components/schemas/SandboxState"
+        stateVersion:
+          type: integer
+          minimum: 0
+        lastCheckpointAt:
+          type: [string, "null"]
+          format: date-time
+        lastRestore:
+          type: [string, "null"]
+        updatedAt:
+          type: string
+          format: date-time
+    ConnectionDescriptor:
+      type: object
+      additionalProperties: false
+      required: [sandboxId, runtimeSessionId, state, runtimeArn, qualifier, httpUrl, webSocketUrl, bindingToken, protocolVersion, frontendCompatibilityVersion, expiresAt]
+      properties:
+        sandboxId:
+          type: string
+        runtimeSessionId:
+          type: string
+          format: uuid
+        state:
+          $ref: "#/components/schemas/SandboxState"
+        runtimeArn:
+          type: string
+          pattern: '^arn:'
+        qualifier:
+          type: string
+        httpUrl:
+          type: string
+          format: uri
+        webSocketUrl:
+          type: string
+          format: uri
+        bindingToken:
+          type: string
+          minLength: 32
+        protocolVersion:
+          const: kirocrew-agentcore.v1
+        frontendCompatibilityVersion:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+    StopRequest:
+      type: object
+      additionalProperties: false
+      required: [checkpointReceipt]
+      properties:
+        checkpointReceipt:
+          type: string
+          minLength: 32
+    Checkpoint:
+      type: object
+      additionalProperties: false
+      required: [generation, createdAt, status, schemaVersion]
+      properties:
+        generation:
+          type: integer
+          minimum: 1
+        createdAt:
+          type: string
+          format: date-time
+        status:
+          enum: [COMMITTED, RESTORE_FAILED]
+        schemaVersion:
+          type: integer
+          minimum: 1
+    PublicConfig:
+      type: object
+      additionalProperties: false
+      required: [region, runtimeArn, qualifier, protocolVersion, deploymentMode, frontendCompatibilityVersion]
+      properties:
+        region:
+          type: string
+        runtimeArn:
+          type: string
+        qualifier:
+          type: string
+        protocolVersion:
+          const: kirocrew-agentcore.v1
+        deploymentMode:
+          enum: [microvm, instances]
+        frontendCompatibilityVersion:
+          type: string

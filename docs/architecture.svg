@@ -1,0 +1,170 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1480 870" width="1480" height="870">
+  <style>
+    text { font-family: 'Helvetica Neue', Helvetica, Arial, 'PingFang SC', 'Microsoft YaHei', 'Microsoft JhengHei', 'SimHei', sans-serif; }
+    .zone-title { font-size: 15px; font-weight: 600; fill: #111827; }
+    .zone-sub { font-size: 11px; fill: #9ca3af; }
+    .node-title { font-size: 14px; font-weight: 600; fill: #111827; }
+    .node-sub { font-size: 12px; fill: #6b7280; }
+    .node-sub-s { font-size: 11px; fill: #6b7280; }
+    .edge-label { font-size: 11px; fill: #6b7280; }
+    .legend-text { font-size: 12px; fill: #6b7280; }
+  </style>
+  <defs>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-red" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#dc2626"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#16a34a"/>
+    </marker>
+    <marker id="arrow-purple" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#9333ea"/>
+    </marker>
+  </defs>
+
+  <rect width="1480" height="870" fill="#ffffff"/>
+
+  <!-- Title -->
+  <text x="60" y="50" font-size="22" font-weight="600" fill="#111827">KiroCrew on Amazon Bedrock AgentCore</text>
+  <text x="60" y="76" font-size="13" fill="#6b7280">Unmodified SPA + gateway, bridged over the AgentCore data plane &#183; one microVM sandbox per user &#183; state survives stop/start</text>
+
+  <!-- ================= Containers ================= -->
+  <rect data-graph-role="container" x="40" y="100" width="380" height="660" rx="12" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
+  <text x="60" y="128" class="zone-title">User's browser</text>
+
+  <rect data-graph-role="container" x="480" y="100" width="440" height="660" rx="12" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
+  <text x="500" y="128" class="zone-title">AWS (us-east-2)</text>
+
+  <rect data-graph-role="container" x="980" y="100" width="460" height="660" rx="12" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
+  <text x="1000" y="128" class="zone-title">AgentCore microVM (per-user sandbox)</text>
+
+  <!-- ================= Browser nodes ================= -->
+  <rect x="70" y="150" width="320" height="80" rx="8" fill="#eff6ff" stroke="#bfdbfe" stroke-width="1.5"/>
+  <text x="90" y="182" class="node-title">KiroCrew SPA</text>
+  <text x="90" y="204" class="node-sub">unmodified upstream bundle</text>
+
+  <rect x="70" y="290" width="320" height="80" rx="8" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+  <text x="90" y="322" class="node-title">Frontend shell</text>
+  <text x="90" y="344" class="node-sub">intercepts gateway calls as envelopes</text>
+
+  <rect x="70" y="470" width="320" height="90" rx="8" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+  <text x="90" y="502" class="node-title">Floating panel + sign-in</text>
+  <text x="90" y="524" class="node-sub">Cognito PKCE &#183; sandbox controls</text>
+  <text x="90" y="542" class="node-sub-s">Kiro account: device code &#183; SSO</text>
+
+  <!-- ================= AWS nodes ================= -->
+  <rect x="500" y="140" width="400" height="70" rx="8" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+  <text x="520" y="168" class="node-title">CloudFront + S3</text>
+  <text x="520" y="188" class="node-sub">static SPA + shell assets</text>
+
+  <rect x="500" y="240" width="400" height="70" rx="8" fill="#eff6ff" stroke="#bfdbfe" stroke-width="1.5"/>
+  <text x="520" y="268" class="node-title">AgentCore runtime endpoint</text>
+  <text x="520" y="288" class="node-sub">invoke + SSE streaming, JWT authorizer</text>
+
+  <rect x="500" y="340" width="400" height="70" rx="8" fill="#faf5ff" stroke="#ede9fe" stroke-width="1.5"/>
+  <text x="520" y="368" class="node-title">Cognito user pool</text>
+  <text x="520" y="388" class="node-sub">JWT for the endpoint and the control API</text>
+
+  <rect x="500" y="440" width="190" height="70" rx="8" fill="#fef2f2" stroke="#fee2e2" stroke-width="1.5"/>
+  <text x="516" y="466" class="node-title">Control Lambda</text>
+  <text x="516" y="484" class="node-sub-s">lifecycle &#183; leases</text>
+  <text x="516" y="499" class="node-sub-s">binding tokens</text>
+
+  <rect x="710" y="440" width="190" height="70" rx="8" fill="#f0fdf4" stroke="#dcfce7" stroke-width="1.5"/>
+  <text x="726" y="466" class="node-title">Persistence Lambda</text>
+  <text x="726" y="484" class="node-sub-s">broker: presigned URLs</text>
+  <text x="726" y="499" class="node-sub-s">KMS data keys</text>
+
+  <rect x="500" y="560" width="190" height="70" rx="8" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+  <text x="516" y="586" class="node-title">DynamoDB</text>
+  <text x="516" y="606" class="node-sub-s">sandbox records</text>
+
+  <rect x="710" y="560" width="190" height="70" rx="8" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+  <text x="726" y="586" class="node-title">S3 + KMS</text>
+  <text x="726" y="606" class="node-sub-s">encrypted checkpoints</text>
+
+  <!-- ================= microVM nodes ================= -->
+  <rect x="1010" y="140" width="400" height="70" rx="8" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
+  <text x="1030" y="168" class="node-title">Runtime entrypoint</text>
+  <text x="1030" y="188" class="node-sub">init &#183; restore &#183; checkpoint on stop</text>
+
+  <rect x="1010" y="250" width="400" height="70" rx="8" fill="#eff6ff" stroke="#bfdbfe" stroke-width="1.5"/>
+  <text x="1030" y="278" class="node-title">Adapter</text>
+  <text x="1030" y="298" class="node-sub">route policy &#183; SSE relay &#183; WS tunnels</text>
+
+  <rect x="1010" y="360" width="400" height="70" rx="8" fill="#fff7ed" stroke="#fed7aa" stroke-width="1.5"/>
+  <text x="1030" y="388" class="node-title">kirocrew gateway</text>
+  <text x="1030" y="408" class="node-sub">unmodified, loopback 127.0.0.1</text>
+
+  <rect x="1010" y="470" width="400" height="70" rx="8" fill="#faf5ff" stroke="#ede9fe" stroke-width="1.5"/>
+  <text x="1030" y="498" class="node-title">kiro-cli</text>
+  <text x="1030" y="518" class="node-sub">user's own Kiro account (device-flow PTY)</text>
+
+  <rect x="1010" y="580" width="400" height="70" rx="8" fill="#f0fdf4" stroke="#dcfce7" stroke-width="1.5"/>
+  <text x="1030" y="608" class="node-title">Persistence engine</text>
+  <text x="1030" y="628" class="node-sub">chunk &#183; encrypt &#183; swap-in restore</text>
+
+  <!-- ================= Edges ================= -->
+  <!-- B1 -> A1: serves SPA -->
+  <path d="M 500 175 L 396 175" stroke="#16a34a" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)"/>
+  <text x="447" y="163" text-anchor="middle" class="edge-label">serves SPA</text>
+
+  <!-- A1 -> A2: intercepted calls -->
+  <path d="M 230 230 L 230 284" stroke="#2563eb" stroke-width="1.5" fill="none" marker-end="url(#arrow-blue)"/>
+  <text x="238" y="265" class="edge-label">fetch / WS intercepted</text>
+
+  <!-- A2 -> B3: envelopes -->
+  <path d="M 390 330 L 445 330 L 445 275 L 494 275" stroke="#2563eb" stroke-width="1.5" fill="none" marker-end="url(#arrow-blue)"/>
+  <text x="445" y="258" text-anchor="middle" class="edge-label">invoke + SSE</text>
+
+  <!-- A3 -> B2: OAuth -->
+  <path d="M 390 500 L 455 500 L 455 375 L 494 375" stroke="#9333ea" stroke-width="1.5" fill="none" marker-end="url(#arrow-purple)"/>
+  <text x="452" y="365" text-anchor="middle" class="edge-label">OAuth &#183; JWT</text>
+
+  <!-- A3 -> B4: lifecycle -->
+  <path d="M 390 530 L 470 530 L 470 475 L 494 475" stroke="#dc2626" stroke-width="1.5" fill="none" marker-end="url(#arrow-red)"/>
+  <text x="430" y="545" text-anchor="middle" class="edge-label">start &#183; stop &#183; status</text>
+
+  <!-- B3 -> C1: session invoke -->
+  <path d="M 900 275 L 945 275 L 945 175 L 1004 175" stroke="#2563eb" stroke-width="1.5" fill="none" marker-end="url(#arrow-blue)"/>
+  <text x="948" y="292" text-anchor="middle" class="edge-label">pinned session invoke</text>
+
+  <!-- C1 -> C2 -->
+  <path d="M 1210 210 L 1210 244" stroke="#2563eb" stroke-width="1.5" fill="none" marker-end="url(#arrow-blue)"/>
+
+  <!-- C2 -> C3: loopback replay -->
+  <path d="M 1210 320 L 1210 354" stroke="#2563eb" stroke-width="1.5" fill="none" marker-end="url(#arrow-blue)"/>
+  <text x="1218" y="344" class="edge-label">loopback replay</text>
+
+  <!-- C2 -> C4: device-flow sign-in (left margin corridor) -->
+  <path d="M 1010 295 L 993 295 L 993 505 L 1004 505" stroke="#9333ea" stroke-width="1.5" fill="none" marker-end="url(#arrow-purple)"/>
+
+  <!-- C1 -> C5: restore/checkpoint (right margin corridor) -->
+  <path d="M 1410 195 L 1427 195 L 1427 615 L 1416 615" stroke="#16a34a" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)"/>
+  <text x="1410" y="672" text-anchor="end" class="edge-label">restore &#183; checkpoint</text>
+
+  <!-- C5 -> B7: binding-token I/O -->
+  <path d="M 1010 615 L 953 615 L 953 475 L 906 475" stroke="#16a34a" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)"/>
+  <text x="1005" y="634" text-anchor="end" class="edge-label">binding-token I/O</text>
+
+  <!-- B7 -> B6: presigned S3/KMS -->
+  <path d="M 805 510 L 805 554" stroke="#16a34a" stroke-width="1.5" fill="none" marker-end="url(#arrow-green)"/>
+  <text x="813" y="540" class="edge-label">presigned &#183; KMS</text>
+
+  <!-- B4 -> B5: records -->
+  <path d="M 595 510 L 595 554" stroke="#dc2626" stroke-width="1.5" fill="none" marker-end="url(#arrow-red)"/>
+
+  <!-- ================= Legend ================= -->
+  <g data-graph-role="legend" transform="translate(60, 800)">
+    <line x1="0" y1="8" x2="30" y2="8" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arrow-blue)"/>
+    <text x="38" y="12" class="legend-text">Protocol / chat streaming (SSE, WS)</text>
+    <line x1="290" y1="8" x2="320" y2="8" stroke="#dc2626" stroke-width="1.5" marker-end="url(#arrow-red)"/>
+    <text x="328" y="12" class="legend-text">Sandbox lifecycle control</text>
+    <line x1="530" y1="8" x2="560" y2="8" stroke="#16a34a" stroke-width="1.5" marker-end="url(#arrow-green)"/>
+    <text x="568" y="12" class="legend-text">Persistence &#8212; encrypted checkpoints</text>
+    <line x1="830" y1="8" x2="860" y2="8" stroke="#9333ea" stroke-width="1.5" marker-end="url(#arrow-purple)"/>
+    <text x="868" y="12" class="legend-text">User authentication (Cognito / Kiro device flow)</text>
+  </g>
+</svg>

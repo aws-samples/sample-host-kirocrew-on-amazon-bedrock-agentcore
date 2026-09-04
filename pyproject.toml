@@ -1,0 +1,89 @@
+[project]
+name = "kirocrew-agentcore-workspace"
+version = "0.1.0"
+description = "Project-owned integration for running upstream KiroCrew on Amazon Bedrock AgentCore"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "bandit==1.8.6",
+  "hypothesis==6.165.10",
+  "mypy==1.17.1",
+  "pip-audit==2.9.0",
+  "pytest==8.4.1",
+  "pytest-cov==6.2.1",
+  "pyyaml==6.0.2",
+  "ruff==0.12.12",
+  "types-jsonschema==4.26.0.20260518",
+  "types-pyyaml==6.0.12.20260815",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = [
+  "adapter",
+  "runtime",
+  "infrastructure/functions/control",
+  "infrastructure/functions/persistence",
+  "tools/headless-client",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = [
+  ".terraform",
+  "adapter/src/kirocrew_agentcore_adapter/generated_protocol.py",
+  "frontend-shell/dist",
+  "frontend-shell/node_modules",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "S", "UP", "B", "A", "C4", "DTZ", "PTH", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "S603", "S607"]
+"typings/inotify_simple/__init__.pyi" = ["N801"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = ["typings"]
+warn_unreachable = true
+pretty = true
+files = [
+  "adapter/src",
+  "runtime/src",
+  "infrastructure/functions/control/src",
+  "infrastructure/functions/persistence/src",
+  "tools/headless-client/src",
+  "tests",
+]
+exclude = ["frontend-shell", ".terraform", ".venv"]
+
+[tool.pytest.ini_options]
+minversion = "8.4"
+testpaths = ["tests"]
+addopts = "--strict-config --strict-markers --cov --cov-report=term-missing --cov-fail-under=100"
+markers = [
+  "contract: cross-component contract checks",
+  "e2e: local or deployed end-to-end checks",
+]
+
+[tool.coverage.run]
+branch = true
+omit = ["*/__main__.py"]
+source = [
+  "kirocrew_agentcore_adapter",
+  "kirocrew_agentcore_runtime",
+  "kirocrew_agentcore_control",
+  "kirocrew_agentcore_persistence",
+  "kirocrew_agentcore_headless",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false

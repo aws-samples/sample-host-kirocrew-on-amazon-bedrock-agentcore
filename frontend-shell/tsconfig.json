@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "exactOptionalPropertyTypes": true,
+    "forceConsistentCasingInFileNames": true,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmitOnError": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": true,
+    "outDir": "dist",
+    "rootDir": ".",
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "ES2022",
+    "types": ["vitest/globals"]
+  },
+  "include": [
+    "src/**/*.ts",
+    "tests/**/*.ts",
+    "playwright/**/*.ts",
+    "playwright.config.ts"
+  ]
+}

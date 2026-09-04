@@ -1,0 +1,10 @@
+{
+  "version": "kirocrew-agentcore.v2",
+  "messageId": "01J00000000000000000000005",
+  "requestId": null,
+  "operation": "ping",
+  "sequence": 0,
+  "timestamp": "2026-08-17T16:00:00Z",
+  "correlationId": "01J00000000000000000000003",
+  "payload": {}
+}

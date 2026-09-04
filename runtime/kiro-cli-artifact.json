@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "version": "2.18.1",
+  "baseUrl": "https://prod.download.cli.kiro.dev/stable",
+  "artifacts": {
+    "amd64": {
+      "file": "kirocli-x86_64-linux-musl.tar.xz",
+      "sha256": "4c2b991e617ba15663fff8d0931e486a855fd16db9a57ddb1694105912a4ffc8"
+    },
+    "arm64": {
+      "file": "kirocli-aarch64-linux-musl.tar.xz",
+      "sha256": "4b8ad2c0d0e50f285827bcec95abf628e4ad704952a8d8d82cb353155e40365e"
+    }
+  }
+}

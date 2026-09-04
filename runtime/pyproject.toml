@@ -1,0 +1,18 @@
+[project]
+name = "kirocrew-agentcore-runtime"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "boto3==1.40.21",
+  "kirocrew @ https://download.crew.kiro.dev/cli/stable/0.2.0/kirocrew-0.2.0-py3-none-any.whl#sha256=329b4b2e271d1253eb9b2115f19950485181934f2ba7ded1a993edfbf48c6f90",
+]
+
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kirocrew_agentcore_runtime"]

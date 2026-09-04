@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kirocrew.example/contracts/protocol-envelope.schema.json",
+  "title": "KiroCrew AgentCore protocol envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "messageId",
+    "operation",
+    "sequence",
+    "timestamp",
+    "correlationId",
+    "payload"
+  ],
+  "properties": {
+    "version": {
+      "const": "kirocrew-agentcore.v1"
+    },
+    "messageId": {
+      "$ref": "#/$defs/ulid"
+    },
+    "requestId": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ulid"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "operation": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/clientOperation"
+        },
+        {
+          "$ref": "#/$defs/serverOperation"
+        }
+      ]
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "correlationId": {
+      "$ref": "#/$defs/ulid"
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "ulid": {
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "clientOperation": {
+      "enum": [
+        "connection.hello",
+        "chat.submit",
+        "chat.cancel",
+        "kiro.login.start",
+        "kiro.status",
+        "kiro.logout",
+        "kirocrew.ws.send",
+        "kirocrew.ws.close",
+        "sandbox.prepare_stop",
+        "ping"
+      ]
+    },
+    "serverOperation": {
+      "enum": [
+        "connection.ready",
+        "sandbox.state",
+        "kiro.auth_status",
+        "kiro.auth_required",
+        "kiro.authenticated",
+        "request.accepted",
+        "output.delta",
+        "tool.activity",
+        "artifact.created",
+        "request.completed",
+        "checkpoint.committed",
+        "error",
+        "pong"
+      ]
+    }
+  }
+}

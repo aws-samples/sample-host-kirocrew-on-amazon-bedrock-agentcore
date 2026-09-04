@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kirocrew.example/contracts/http-invocation.schema.json",
+  "title": "AgentCore HTTP invocation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "requestId",
+    "bindingToken",
+    "operation",
+    "payload"
+  ],
+  "properties": {
+    "version": {
+      "const": "kirocrew-agentcore.v1"
+    },
+    "requestId": {
+      "$ref": "#/$defs/ulid"
+    },
+    "bindingToken": {
+      "type": "string",
+      "minLength": 32,
+      "maxLength": 8192
+    },
+    "operation": {
+      "enum": [
+        "kirocrew.http",
+        "chat.submit",
+        "chat.cancel",
+        "kiro.login.start",
+        "kiro.status",
+        "kiro.logout",
+        "kirocrew.ws.send",
+        "kirocrew.ws.close",
+        "sandbox.prepare_stop",
+        "ping"
+      ]
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "ulid": {
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+    }
+  }
+}

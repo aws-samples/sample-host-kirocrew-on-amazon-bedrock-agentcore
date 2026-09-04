@@ -1,0 +1,292 @@
+"""Gated Cognito authentication for the browser shell.
+
+The user pool only permits administrator-created accounts and its app client
+only permits administrator-driven password auth, so this Lambda is the sole
+path to both registration and sign-in. It enforces the deployment's allowed
+email domains on every operation, which is what keeps an open CloudFront
+endpoint from becoming an open registration endpoint.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any, Final, cast
+
+import boto3  # type: ignore[import-untyped]
+from botocore.exceptions import ClientError  # type: ignore[import-untyped]
+
+_LOGGER = logging.getLogger(__name__)
+
+_EMAIL_PATTERN: Final = re.compile(r"^[^@\s]+@([A-Za-z0-9.-]+\.[A-Za-z]{2,})$")
+_MAX_BODY_BYTES: Final = 4096
+_SECURITY_HEADERS: Final = {
+    "cache-control": "no-store",
+    "content-type": "application/json",
+    "x-content-type-options": "nosniff",
+}
+
+
+class AuthRequestError(Exception):
+    """A client-visible authentication failure with a stable error code."""
+
+    def __init__(self, status: int, code: str, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.code = code
+
+
+@dataclass(frozen=True, slots=True)
+class EmailPolicy:
+    """Case-insensitive full-domain matching against the deployment allowlist."""
+
+    allowed_domains: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not self.allowed_domains or any(not domain for domain in self.allowed_domains):
+            raise ValueError("At least one allowed email domain is required.")
+
+    @classmethod
+    def from_environment(cls, value: str) -> EmailPolicy:
+        domains = tuple(domain.strip().casefold() for domain in value.split(",") if domain.strip())
+        return cls(domains)
+
+    def validate(self, email: object) -> str:
+        if not isinstance(email, str) or len(email) > 254:
+            raise AuthRequestError(400, "INVALID_EMAIL", "A valid email address is required.")
+        candidate = email.strip().casefold()
+        match = _EMAIL_PATTERN.fullmatch(candidate)
+        if match is None:
+            raise AuthRequestError(400, "INVALID_EMAIL", "A valid email address is required.")
+        if match.group(1) not in self.allowed_domains:
+            allowed = ", ".join(self.allowed_domains)
+            raise AuthRequestError(
+                403,
+                "DOMAIN_NOT_ALLOWED",
+                f"Registration and sign-in are limited to: {allowed}.",
+            )
+        return candidate
+
+
+def _password(value: object) -> str:
+    if not isinstance(value, str) or not (8 <= len(value) <= 256):
+        raise AuthRequestError(
+            400, "INVALID_PASSWORD", "A password of 8-256 characters is required."
+        )
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class TokenSet:
+    access_token: str
+    id_token: str
+    refresh_token: str | None
+    expires_in: int
+
+    def payload(self) -> dict[str, object]:
+        value: dict[str, object] = {
+            "accessToken": self.access_token,
+            "expiresIn": self.expires_in,
+            "idToken": self.id_token,
+            "tokenType": "Bearer",
+        }
+        if self.refresh_token is not None:
+            value["refreshToken"] = self.refresh_token
+        return value
+
+
+class AuthService:
+    def __init__(
+        self,
+        cognito: Any,
+        user_pool_id: str,
+        app_client_id: str,
+        policy: EmailPolicy,
+    ) -> None:
+        if not user_pool_id or not app_client_id:
+            raise ValueError("User pool and app client identifiers are required.")
+        self._cognito = cognito
+        self._user_pool_id = user_pool_id
+        self._app_client_id = app_client_id
+        self._policy = policy
+
+    def register(self, email: object, password: object) -> None:
+        address = self._policy.validate(email)
+        secret = _password(password)
+        try:
+            self._cognito.admin_create_user(
+                UserPoolId=self._user_pool_id,
+                Username=address,
+                UserAttributes=[
+                    {"Name": "email", "Value": address},
+                    {"Name": "email_verified", "Value": "true"},
+                ],
+                MessageAction="SUPPRESS",
+            )
+        except ClientError as error:
+            code = error.response.get("Error", {}).get("Code")
+            if code == "UsernameExistsException":
+                raise AuthRequestError(
+                    409, "USER_EXISTS", "An account with this email already exists."
+                ) from error
+            raise self._invalid_password(error) from error
+        try:
+            self._cognito.admin_set_user_password(
+                UserPoolId=self._user_pool_id,
+                Username=address,
+                Password=secret,
+                Permanent=True,
+            )
+        except ClientError as error:
+            # The half-created account must not linger: it would block a retry
+            # with a compliant password behind USER_EXISTS forever.
+            self._cognito.admin_delete_user(UserPoolId=self._user_pool_id, Username=address)
+            raise self._invalid_password(error) from error
+
+    def login(self, email: object, password: object) -> TokenSet:
+        address = self._policy.validate(email)
+        secret = _password(password)
+        try:
+            response = self._cognito.admin_initiate_auth(
+                UserPoolId=self._user_pool_id,
+                ClientId=self._app_client_id,
+                AuthFlow="ADMIN_USER_PASSWORD_AUTH",
+                AuthParameters={"USERNAME": address, "PASSWORD": secret},
+            )
+        except ClientError as error:
+            raise self._sign_in_failed(error) from error
+        return self._tokens(response, refresh_required=True)
+
+    def refresh(self, refresh_token: object) -> TokenSet:
+        if not isinstance(refresh_token, str) or not refresh_token:
+            raise AuthRequestError(400, "INVALID_REQUEST", "A refresh token is required.")
+        try:
+            response = self._cognito.admin_initiate_auth(
+                UserPoolId=self._user_pool_id,
+                ClientId=self._app_client_id,
+                AuthFlow="REFRESH_TOKEN_AUTH",
+                AuthParameters={"REFRESH_TOKEN": refresh_token},
+            )
+        except ClientError as error:
+            raise self._sign_in_failed(error) from error
+        return self._tokens(response, refresh_required=False)
+
+    @staticmethod
+    def _invalid_password(error: ClientError) -> AuthRequestError:
+        code = error.response.get("Error", {}).get("Code")
+        if code == "InvalidPasswordException":
+            return AuthRequestError(
+                400,
+                "INVALID_PASSWORD",
+                "The password does not meet the pool's complexity requirements.",
+            )
+        _LOGGER.error("Cognito registration failed with %s.", code)
+        return AuthRequestError(502, "REGISTRATION_FAILED", "Registration is unavailable.")
+
+    @staticmethod
+    def _sign_in_failed(error: ClientError) -> AuthRequestError:
+        code = error.response.get("Error", {}).get("Code")
+        if code in {"NotAuthorizedException", "UserNotFoundException"}:
+            # One message for both: account existence must not be probeable.
+            return AuthRequestError(401, "SIGN_IN_FAILED", "Incorrect email or password.")
+        if code == "PasswordResetRequiredException":
+            return AuthRequestError(
+                409, "PASSWORD_RESET_REQUIRED", "An administrator reset this password."
+            )
+        _LOGGER.error("Cognito sign-in failed with %s.", code)
+        return AuthRequestError(502, "SIGN_IN_UNAVAILABLE", "Sign-in is unavailable.")
+
+    def _tokens(self, response: Mapping[str, Any], *, refresh_required: bool) -> TokenSet:
+        challenge = response.get("ChallengeName")
+        if challenge:
+            # MFA and forced-rotation challenges are not part of this UI.
+            _LOGGER.error("Unsupported Cognito challenge %s.", challenge)
+            raise AuthRequestError(
+                501,
+                "CHALLENGE_NOT_SUPPORTED",
+                "This account requires an interactive challenge that is not supported.",
+            )
+        result = response.get("AuthenticationResult")
+        if not isinstance(result, Mapping):
+            raise AuthRequestError(502, "SIGN_IN_UNAVAILABLE", "Sign-in is unavailable.")
+        access_token = result.get("AccessToken")
+        id_token = result.get("IdToken")
+        refresh_token = result.get("RefreshToken")
+        expires_in = result.get("ExpiresIn")
+        if (
+            not isinstance(access_token, str)
+            or not isinstance(id_token, str)
+            or type(expires_in) is not int
+            or expires_in <= 0
+            or (refresh_required and not isinstance(refresh_token, str))
+            or (refresh_token is not None and not isinstance(refresh_token, str))
+        ):
+            raise AuthRequestError(502, "SIGN_IN_UNAVAILABLE", "Sign-in is unavailable.")
+        return TokenSet(access_token, id_token, refresh_token, expires_in)
+
+
+def _response(status: int, body: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "statusCode": status,
+        "headers": dict(_SECURITY_HEADERS),
+        "body": json.dumps(body, sort_keys=True, separators=(",", ":")),
+    }
+
+
+def _request_body(event: Mapping[str, object]) -> Mapping[str, object]:
+    raw = event.get("body")
+    if not isinstance(raw, str) or len(raw.encode()) > _MAX_BODY_BYTES:
+        raise AuthRequestError(400, "INVALID_REQUEST", "A JSON request body is required.")
+    try:
+        value = cast(object, json.loads(raw))
+    except json.JSONDecodeError as error:
+        raise AuthRequestError(
+            400, "INVALID_REQUEST", "A JSON request body is required."
+        ) from error
+    if not isinstance(value, dict):
+        raise AuthRequestError(400, "INVALID_REQUEST", "A JSON request body is required.")
+    return cast(Mapping[str, object], value)
+
+
+def _required(name: str) -> str:
+    value = os.environ.get(name, "")
+    if not value:
+        raise ValueError(f"{name} is required.")
+    return value
+
+
+def _build_service() -> AuthService:
+    session = boto3.Session(region_name=_required("REGION"))
+    return AuthService(
+        session.client("cognito-idp"),
+        _required("USER_POOL_ID"),
+        _required("APP_CLIENT_ID"),
+        EmailPolicy.from_environment(_required("ALLOWED_EMAIL_DOMAINS")),
+    )
+
+
+_SERVICE: AuthService | None = None
+
+
+def handler(event: Mapping[str, object], _context: object) -> dict[str, object]:
+    global _SERVICE
+    if _SERVICE is None:
+        _SERVICE = _build_service()
+    service = _SERVICE
+    route = event.get("routeKey")
+    try:
+        body = _request_body(event)
+        if route == "POST /auth/v1/register":
+            service.register(body.get("email"), body.get("password"))
+            return _response(201, {"registered": True})
+        if route == "POST /auth/v1/login":
+            return _response(200, service.login(body.get("email"), body.get("password")).payload())
+        if route == "POST /auth/v1/refresh":
+            return _response(200, service.refresh(body.get("refreshToken")).payload())
+        return _response(404, {"code": "NOT_FOUND", "message": "Unknown route."})
+    except AuthRequestError as error:
+        return _response(error.status, {"code": error.code, "message": str(error)})

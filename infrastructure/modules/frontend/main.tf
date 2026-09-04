@@ -226,6 +226,18 @@ resource "aws_cloudfront_distribution" "frontend" {
     response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
   }
 
+  ordered_cache_behavior {
+    path_pattern               = "/auth/*"
+    target_origin_id           = "control-api"
+    viewer_protocol_policy     = "https-only"
+    allowed_methods            = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods             = ["GET", "HEAD", "OPTIONS"]
+    compress                   = false
+    cache_policy_id            = aws_cloudfront_cache_policy.control.id
+    origin_request_policy_id   = aws_cloudfront_origin_request_policy.control.id
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
+  }
+
   custom_error_response {
     error_code            = 403
     response_code         = 200

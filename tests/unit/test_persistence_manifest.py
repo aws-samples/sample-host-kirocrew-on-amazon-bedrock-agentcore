@@ -16,6 +16,7 @@ from kirocrew_agentcore_persistence.manifest import (
     PERSISTENCE_CATEGORIES,
     ManifestBuilder,
     PersistencePolicy,
+    workspace_fingerprint,
 )
 
 ROOT = Path(__file__).parents[2]
@@ -28,6 +29,9 @@ def test_policy_accepts_only_documented_durable_roots() -> None:
         "home/.kiro/crew/config.json",
         "home/.config/tool/settings.json",
         "home/.local/share/kiro-cli/data.sqlite3",
+        "artifacts/report/summary.md",
+        "knowledge/base/entry.json",
+        "memory/agent/notes.md",
         "projects/default/source.py",
         "user/report.txt",
     ]:
@@ -47,6 +51,37 @@ def test_policy_accepts_only_documented_durable_roots() -> None:
         ".agentcore/persistence.json",
     ]:
         assert not policy.includes(PurePosixPath(path))
+
+
+def test_workspace_fingerprint_tracks_durable_metadata_only(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    report = workspace / "user/report.txt"
+    report.parent.mkdir(parents=True)
+    report.write_text("v1", encoding="utf-8")
+    first = workspace_fingerprint(workspace)
+    assert workspace_fingerprint(workspace) == first
+
+    os.utime(report, ns=(1, 1))
+    touched = workspace_fingerprint(workspace)
+    assert touched != first
+
+    # Paths outside the durable roots never influence the fingerprint.
+    (workspace / "stray.txt").write_text("ignored", encoding="utf-8")
+    assert workspace_fingerprint(workspace) == touched
+
+    # Excluded entries inside a root are walked but never hashed.
+    log = workspace / "user/debug.log"
+    log.write_text("x", encoding="utf-8")
+    os.utime(report.parent, ns=(2, 2))
+    with_log = workspace_fingerprint(workspace)
+    log.write_text("xx", encoding="utf-8")
+    os.utime(report.parent, ns=(2, 2))
+    assert workspace_fingerprint(workspace) == with_log
+
+    # A missing workspace yields the stable empty fingerprint.
+    assert workspace_fingerprint(tmp_path / "missing") == workspace_fingerprint(
+        tmp_path / "also-missing"
+    )
 
 
 def test_manifest_builder_requires_valid_parameters(tmp_path: Path) -> None:

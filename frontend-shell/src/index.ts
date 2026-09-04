@@ -15,5 +15,6 @@ export * from "./remote-transport.js";
 export * from "./agentcore-channel.js";
 export * from "./browser-app.js";
 export * from "./lifecycle.js";
+export * from "./auth.js";
 export * from "./oauth.js";
 export * from "./shell.js";

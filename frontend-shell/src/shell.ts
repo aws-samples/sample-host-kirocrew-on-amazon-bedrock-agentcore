@@ -9,8 +9,14 @@ export interface KiroSsoLogin {
   readonly region: string;
 }
 
+export interface AuthCredentials {
+  readonly email: string;
+  readonly password: string;
+}
+
 export interface BrowserShellActions {
-  readonly signIn: () => void | Promise<void>;
+  readonly signIn: (credentials: AuthCredentials) => void | Promise<void>;
+  readonly register: (credentials: AuthCredentials) => void | Promise<void>;
   readonly start: () => void | Promise<void>;
   readonly stop: () => void | Promise<void>;
   readonly retry: () => void | Promise<void>;
@@ -75,6 +81,7 @@ function installStyles(document: Document): void {
       height: 40px;
     }
     .kcac-float[data-mode="pill"] .kcac-rail,
+    .kcac-float[data-mode="pill"] .kcac-auth,
     .kcac-float[data-mode="pill"] .kcac-device,
     .kcac-float[data-mode="pill"] .kcac-kiro { display: none !important; }
     .kcac-float[data-mode="panel"] .kcac-pill { display: none; }
@@ -155,7 +162,8 @@ function installStyles(document: Document): void {
       line-height: 1.35;
     }
     .kcac-rail p, .kcac-rail h1, .kcac-device span, .kcac-device code,
-    .kcac-kiro-state, .kcac-kiro-hint {
+    .kcac-kiro-state, .kcac-auth-hint,
+    .kcac-kiro-hint {
       cursor: text;
       user-select: text;
     }
@@ -220,6 +228,17 @@ function installStyles(document: Document): void {
       opacity: .72;
       pointer-events: auto;
     }
+    .kcac-auth {
+      display: none;
+      gap: 10px;
+      flex-direction: column;
+      padding: 12px 18px;
+      background: var(--accent-subtle);
+      color: var(--text);
+      border-top: 1px solid var(--border);
+      font-size: 13px;
+    }
+    .kcac-auth[data-visible="true"] { display: flex; }
     .kcac-device {
       display: none;
       gap: 10px;
@@ -268,6 +287,7 @@ function installStyles(document: Document): void {
     .kcac-kiro-state[data-state="expired"],
     .kcac-kiro-state[data-state="failed"] { color: var(--warn); font-weight: 650; }
     .kcac-kiro-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .kcac-auth-hint,
     .kcac-kiro-hint { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
     .kcac-kiro-sso { display: flex; gap: 8px; flex-wrap: wrap; }
     .kcac-input {
@@ -416,6 +436,34 @@ export function mountBrowserShell(
   deviceUrl.setAttribute("aria-label", "Verification page address");
   device.append(deviceText, deviceCode, deviceLink, deviceUrl);
 
+  const auth = createElement(document, "section", "kcac-auth");
+  auth.setAttribute("aria-label", "Sign in or create an account");
+  const authEmail = createElement(document, "input", "kcac-input");
+  authEmail.type = "email";
+  authEmail.autocomplete = "username";
+  authEmail.placeholder = "you@amazon.com";
+  authEmail.setAttribute("aria-label", "Email address");
+  const authPassword = createElement(document, "input", "kcac-input");
+  authPassword.type = "password";
+  authPassword.autocomplete = "current-password";
+  authPassword.placeholder = "Password";
+  authPassword.setAttribute("aria-label", "Password");
+  const authActions = createElement(document, "div", "kcac-kiro-actions");
+  const authSignIn = createElement(document, "button", "kcac-button");
+  authSignIn.type = "button";
+  authSignIn.dataset.primary = "true";
+  authSignIn.dataset.auth = "sign-in";
+  authSignIn.textContent = "Sign in";
+  const authRegister = createElement(document, "button", "kcac-button");
+  authRegister.type = "button";
+  authRegister.dataset.auth = "register";
+  authRegister.textContent = "Create account";
+  authActions.append(authSignIn, authRegister);
+  const authHint = createElement(document, "p", "kcac-auth-hint");
+  authHint.setAttribute("role", "alert");
+  authHint.hidden = true;
+  auth.append(authEmail, authPassword, authActions, authHint);
+
   const kiro = createElement(document, "section", "kcac-kiro");
   kiro.setAttribute("aria-label", "Kiro account");
   const kiroHeader = createElement(document, "div", "kcac-kiro-header");
@@ -480,7 +528,7 @@ export function mountBrowserShell(
   pillLabel.textContent = "Sandbox";
   pill.append(pillDot, pillLabel);
 
-  float.append(header, device, kiro, pill);
+  float.append(header, auth, device, kiro, pill);
 
   const content = createElement(document, "main", "kcac-content");
   content.id = "kirocrew-upstream-application";
@@ -585,11 +633,46 @@ export function mountBrowserShell(
     }
   });
 
+  const submitAuth = (
+    action: (credentials: AuthCredentials) => void | Promise<void>,
+  ): void => {
+    const email = authEmail.value.trim();
+    const password = authPassword.value;
+    if (!email.includes("@") || password.length === 0) {
+      authHint.hidden = false;
+      authHint.textContent = "Enter your email address and password.";
+      return;
+    }
+    authHint.hidden = true;
+    authSignIn.disabled = true;
+    authRegister.disabled = true;
+    void (async (): Promise<void> => {
+      try {
+        await action({ email, password });
+        authPassword.value = "";
+      } catch (error: unknown) {
+        authHint.hidden = false;
+        authHint.textContent =
+          error instanceof Error
+            ? error.message
+            : "Sign-in could not be completed. Try again.";
+      } finally {
+        authSignIn.disabled = false;
+        authRegister.disabled = false;
+      }
+    })();
+  };
+  authSignIn.addEventListener("click", () => submitAuth(actions.signIn));
+  authRegister.addEventListener("click", () => submitAuth(actions.register));
+  authPassword.addEventListener("keydown", (event: KeyboardEvent) => {
+    if (event.key === "Enter") {
+      submitAuth(actions.signIn);
+    }
+  });
+
   primary.addEventListener("click", () => {
     const action = primary.dataset.action;
-    if (action === "sign-in") {
-      invoke(actions.signIn);
-    } else if (action === "start") {
+    if (action === "start") {
       invoke(actions.start);
     } else if (action === "stop") {
       invoke(actions.stop);
@@ -713,11 +796,15 @@ export function mountBrowserShell(
     content.inert = shouldBlockContent(model.view);
     content.setAttribute("aria-hidden", String(shouldBlockContent(model.view)));
 
+    auth.dataset.visible = String(model.view === "signed-out");
+    if (model.view !== "signed-out") {
+      authHint.hidden = true;
+    }
     primary.hidden = false;
     primary.disabled = false;
     if (model.view === "signed-out") {
-      primary.textContent = "Sign in";
-      primary.dataset.action = "sign-in";
+      primary.hidden = true;
+      delete primary.dataset.action;
     } else if (model.view === "stopped") {
       primary.textContent = "Start sandbox";
       primary.dataset.action = "start";

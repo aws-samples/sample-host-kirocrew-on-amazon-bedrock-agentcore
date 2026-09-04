@@ -7,6 +7,7 @@
 - `home/.kiro`: Kiro CLI and KiroCrew configuration, agents, memory, knowledge, artifacts, skills, conversations, and scheduled jobs.
 - `home/.config`: user-scoped tool configuration except explicitly excluded credential directories.
 - `home/.local/share/kiro-cli`: the Kiro CLI state database, including the Builder ID / SSO sign-in it stores in `data.sqlite3`. Without this root every restore comes back signed out.
+- `artifacts`, `knowledge`, `memory`: the top-level directories the runtime creates next to the projects root; anything a user or feature drops there survives a restore.
 - `projects`: complete user project workspaces and repository metadata.
 - `user`: other user-created durable files.
 
@@ -17,6 +18,8 @@ The manifest rejects paths outside the included roots and excludes `.agentcore`,
 ## Checkpoint consistency
 
 The dirty journal is started before KiroCrew is ready. A checkpoint pauses the KiroCrew/Kiro process groups, flushes the filesystem, builds a deterministic metadata-preserving manifest, encrypts and uploads previously unseen content-addressed chunks, encrypts the manifest, and conditionally commits its generation. The local generation pointer and captured journal entries are updated only after the durable commit exists. Mutations arriving after the journal snapshot remain dirty for the next generation.
+
+Beyond the final checkpoint a Stop safely triggers, the runtime commits non-final durability checkpoints in the background: after a successful Kiro sign-in or sign-out, on a periodic interval (`KIROCREW_CHECKPOINT_INTERVAL_SECONDS`, default 300, `0` disables) whenever the durable workspace fingerprint changed, and as a best-effort final checkpoint on graceful shutdown (SIGTERM). Idle intervals skip the commit entirely, so a quiet sandbox never pauses its gateway. Non-final commits do not advance the sandbox state machine toward STOPPING, and a failure only logs a warning while the session keeps working. Because a background commit can reach S3 and die before its receipt lands in DynamoDB, restore tolerates a durable store that is ahead of the recorded generation pointer; only a store behind the pointer fails the restore.
 
 The default recovery-point objective is 30 seconds from the first uncommitted durable mutation. If the durable store cannot commit before that boundary, the sandbox becomes read-only rather than acknowledging unprotected writes.
 

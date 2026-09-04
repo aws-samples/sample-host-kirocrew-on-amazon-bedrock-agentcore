@@ -1,6 +1,9 @@
 variable "prefix" { type = string }
 variable "issuer" { type = string }
 variable "app_client_id" { type = string }
+variable "user_pool_id" { type = string }
+variable "user_pool_arn" { type = string }
+variable "allowed_email_domains" { type = list(string) }
 variable "allowed_origin" { type = string }
 variable "sandbox_table_name" { type = string }
 variable "sandbox_table_arn" { type = string }
@@ -15,6 +18,7 @@ variable "deployment_mode" { type = string }
 variable "frontend_compatibility_version" { type = string }
 variable "log_retention_days" { type = number }
 variable "source_directory" { type = string }
+variable "auth_source_directory" { type = string }
 variable "tags" { type = map(string) }
 
 data "archive_file" "control" {
@@ -123,6 +127,7 @@ resource "aws_lambda_function" "control" {
       ISSUER                         = var.issuer
       PERSISTENCE_BROKER_ARN         = var.broker_function_arn
       REGION                         = var.region
+      REQUIRED_SCOPE                 = "aws.cognito.signin.user.admin"
       RUNTIME_ARN                    = var.runtime_arn
       RUNTIME_QUALIFIER              = var.runtime_qualifier
       SANDBOX_TABLE                  = var.sandbox_table_name
@@ -175,12 +180,113 @@ locals {
 resource "aws_apigatewayv2_route" "control" {
   for_each = local.routes
 
-  api_id               = aws_apigatewayv2_api.control.id
-  route_key            = each.value
-  target               = "integrations/${aws_apigatewayv2_integration.control.id}"
-  authorization_type   = "JWT"
-  authorizer_id        = aws_apigatewayv2_authorizer.cognito.id
-  authorization_scopes = ["kirocrew.control/invoke"]
+  api_id             = aws_apigatewayv2_api.control.id
+  route_key          = each.value
+  target             = "integrations/${aws_apigatewayv2_integration.control.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
+  # Password-auth access tokens carry this scope; OAuth resource-server
+  # scopes are only minted by the retired hosted-UI code flow.
+  authorization_scopes = ["aws.cognito.signin.user.admin"]
+}
+
+# --- Gated authentication (registration and sign-in through Lambda only) ---
+
+data "archive_file" "auth" {
+  type        = "zip"
+  source_dir  = var.auth_source_directory
+  output_path = "${path.root}/.terraform/${var.prefix}-auth.zip"
+  excludes    = ["kirocrew_agentcore_auth/__pycache__"]
+}
+
+resource "aws_iam_role" "auth" {
+  name               = "${var.prefix}-auth"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
+  tags               = var.tags
+}
+
+resource "aws_cloudwatch_log_group" "auth" {
+  name              = "/aws/lambda/${var.prefix}-auth"
+  retention_in_days = var.log_retention_days
+  tags              = var.tags
+}
+
+data "aws_iam_policy_document" "auth" {
+  statement {
+    sid = "GatedCognitoAuthentication"
+    actions = [
+      "cognito-idp:AdminCreateUser",
+      "cognito-idp:AdminDeleteUser",
+      "cognito-idp:AdminInitiateAuth",
+      "cognito-idp:AdminSetUserPassword",
+    ]
+    resources = [var.user_pool_arn]
+  }
+  statement {
+    sid       = "WriteLogs"
+    actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = ["${aws_cloudwatch_log_group.auth.arn}:*"]
+  }
+}
+
+resource "aws_iam_role_policy" "auth" {
+  name   = "${var.prefix}-auth"
+  role   = aws_iam_role.auth.id
+  policy = data.aws_iam_policy_document.auth.json
+}
+
+resource "aws_lambda_function" "auth" {
+  function_name    = "${var.prefix}-auth"
+  role             = aws_iam_role.auth.arn
+  runtime          = "python3.12"
+  handler          = "kirocrew_agentcore_auth.lambda_handler.handler"
+  filename         = data.archive_file.auth.output_path
+  source_code_hash = data.archive_file.auth.output_base64sha256
+  timeout          = 10
+  memory_size      = 256
+
+  environment {
+    variables = {
+      ALLOWED_EMAIL_DOMAINS = join(",", var.allowed_email_domains)
+      APP_CLIENT_ID         = var.app_client_id
+      REGION                = var.region
+      USER_POOL_ID          = var.user_pool_id
+    }
+  }
+
+  tracing_config { mode = "Active" }
+  tags       = var.tags
+  depends_on = [aws_cloudwatch_log_group.auth, aws_iam_role_policy.auth]
+}
+
+resource "aws_apigatewayv2_integration" "auth" {
+  api_id                 = aws_apigatewayv2_api.control.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.auth.invoke_arn
+  integration_method     = "POST"
+  payload_format_version = "2.0"
+  timeout_milliseconds   = 15000
+}
+
+resource "aws_apigatewayv2_route" "auth" {
+  for_each = toset([
+    "POST /auth/v1/register",
+    "POST /auth/v1/login",
+    "POST /auth/v1/refresh",
+  ])
+
+  api_id             = aws_apigatewayv2_api.control.id
+  route_key          = each.value
+  target             = "integrations/${aws_apigatewayv2_integration.auth.id}"
+  authorization_type = "NONE"
+}
+
+resource "aws_lambda_permission" "auth_api" {
+  statement_id  = "AllowApiGateway"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.auth.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.control.execution_arn}/*/*"
 }
 
 resource "aws_apigatewayv2_stage" "default" {

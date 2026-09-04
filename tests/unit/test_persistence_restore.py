@@ -204,6 +204,51 @@ def test_corrupt_latest_generation_falls_back_to_immediately_previous(
     assert (target / "user/data.txt").read_text() == "generation one"
 
 
+def test_broker_rejection_mid_restore_falls_back_instead_of_aborting(
+    tmp_path: Path,
+) -> None:
+    from kirocrew_agentcore_persistence.durability import BrokerAuthorizationError
+
+    _, _, broker, store = storage()
+    source = tmp_path / "source"
+    representative_workspace(source, "generation one")
+    create_generation(source, 1, broker, store)
+    (source / "user/data.txt").write_text("generation two")
+    create_generation(source, 2, broker, store)
+
+    class RejectingStore:
+        """Denies the latest manifest, as an expired binding token would."""
+
+        def __init__(self, inner: BrokeredCheckpointStore) -> None:
+            self._inner = inner
+
+        def committed_generations(self) -> tuple[object, ...]:
+            return self._inner.committed_generations()
+
+        def get_manifest(self, generation: int) -> object:
+            if generation == 2:
+                raise BrokerAuthorizationError("Persistence broker rejected the operation.")
+            return self._inner.get_manifest(generation)
+
+        def get_chunk(self, digest: str) -> bytes:
+            return self._inner.get_chunk(digest)
+
+    target = tmp_path / "target"
+    target.mkdir()
+    rejecting = cast(BrokeredCheckpointStore, RejectingStore(store))
+    report = RestoreEngine(
+        target,
+        SANDBOX_ID,
+        "runtime-v2",
+        rejecting,
+        broker.cipher(SANDBOX_ID),
+        clock=MutableClock(),
+    ).restore(existing_sandbox=True)
+    assert report.outcome == "fallback"
+    assert any("BrokerAuthorizationError" in reason for reason in report.reasons)
+    assert (target / "user/data.txt").read_text() == "generation one"
+
+
 def test_new_sandbox_may_initialize_empty_but_existing_sandbox_never_does(
     tmp_path: Path,
 ) -> None:

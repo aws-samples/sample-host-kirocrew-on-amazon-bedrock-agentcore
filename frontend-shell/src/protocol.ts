@@ -125,6 +125,124 @@ export function reassembleChunks(chunks: readonly FrameChunk[]): Uint8Array {
   return result;
 }
 
+const CHUNK_KEYS = ["chunkData", "chunkIndex", "chunkTotal"] as const;
+
+function base64Bytes(value: string): Uint8Array {
+  let binary: string;
+  try {
+    binary = atob(value);
+  } catch {
+    throw new ProtocolValidationError(
+      "INVALID_MESSAGE",
+      "Frame chunk data is not base64.",
+    );
+  }
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function frameChunkOf(
+  payload: Readonly<Record<string, unknown>>,
+): FrameChunk | undefined {
+  const keys = Object.keys(payload);
+  if (
+    keys.length !== CHUNK_KEYS.length ||
+    !CHUNK_KEYS.every((key) => keys.includes(key))
+  ) {
+    return undefined;
+  }
+  const { chunkData, chunkIndex, chunkTotal } = payload;
+  if (
+    typeof chunkData !== "string" ||
+    !Number.isSafeInteger(chunkIndex) ||
+    !Number.isSafeInteger(chunkTotal) ||
+    Number(chunkTotal) < 1 ||
+    Number(chunkIndex) < 0 ||
+    Number(chunkIndex) >= Number(chunkTotal)
+  ) {
+    throw new ProtocolValidationError(
+      "INVALID_MESSAGE",
+      "Frame chunk metadata is invalid.",
+    );
+  }
+  return {
+    index: Number(chunkIndex),
+    total: Number(chunkTotal),
+    data: base64Bytes(chunkData),
+  };
+}
+
+function parseChunkedPayload(bytes: Uint8Array): Record<string, unknown> {
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+  } catch {
+    throw new ProtocolValidationError(
+      "INVALID_MESSAGE",
+      "The reassembled payload is not valid JSON.",
+    );
+  }
+  if (!isRecord(value)) {
+    throw new ProtocolValidationError(
+      "INVALID_MESSAGE",
+      "The reassembled payload is not an object.",
+    );
+  }
+  return value;
+}
+
+/**
+ * Reassembles the chunk envelopes the runtime emits when one logical event
+ * payload exceeds the per-event size budget. Each chunk repeats the group's
+ * operation and request identifier, so the wire stream carries several
+ * envelopes for a single logical event and consumers must only ever see the
+ * reassembled one. Envelopes that carry no chunk metadata pass straight
+ * through.
+ */
+export class ChunkedEnvelopeAssembler {
+  readonly #pending = new Map<string, FrameChunk[]>();
+
+  public accept(envelope: ProtocolEnvelope): ProtocolEnvelope | undefined {
+    const key = envelope.requestId ?? "";
+    const chunk = frameChunkOf(envelope.payload);
+    const pending = this.#pending.get(key);
+    if (chunk === undefined) {
+      if (pending !== undefined) {
+        this.#pending.delete(key);
+        throw new ProtocolValidationError(
+          "SEQUENCE_ERROR",
+          "Frame chunks are incomplete or out of order.",
+        );
+      }
+      return envelope;
+    }
+    const chunks = pending ?? [];
+    if (
+      chunk.index !== chunks.length ||
+      (chunks[0] !== undefined && chunk.total !== chunks[0].total)
+    ) {
+      this.#pending.delete(key);
+      throw new ProtocolValidationError(
+        "SEQUENCE_ERROR",
+        "Frame chunks are incomplete or out of order.",
+      );
+    }
+    chunks.push(chunk);
+    if (chunks.length < chunk.total) {
+      this.#pending.set(key, chunks);
+      return undefined;
+    }
+    this.#pending.delete(key);
+    return validateEnvelope({
+      ...envelope,
+      payload: parseChunkedPayload(reassembleChunks(chunks)),
+    });
+  }
+}
+
 export class SequenceTracker {
   readonly #lastSeen = new Map<string, number>();
 

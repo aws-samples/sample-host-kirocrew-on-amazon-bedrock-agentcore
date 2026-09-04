@@ -247,41 +247,26 @@ describe("wire config normalization", () => {
     frontendCompatibilityVersion: "0.2.0",
   };
 
-  it("adapts the Terraform-injected oauth shape to the runtime shape", (): void => {
+  it("adapts the Terraform-injected auth shape to the runtime shape", (): void => {
     const normalized = normalizeBrowserApplicationConfig({
       ...base,
-      oauth: {
-        appClientId: "wire-client",
-        authorizationEndpoint: "https://login.example/oauth2/authorize",
-        tokenEndpoint: "https://login.example/oauth2/token",
-        logoutEndpoint: "https://login.example/logout",
-        redirectUri: `${ORIGIN}/oauth/callback`,
-        scopes: ["openid", "profile", "email", "kirocrew.control/invoke"],
+      auth: {
+        basePath: "/auth/v1",
+        allowedDomains: ["amazon.com"],
       },
     });
-    expect(normalized.oauth).toEqual({
-      authorizationEndpoint: "https://login.example/oauth2/authorize",
-      tokenEndpoint: "https://login.example/oauth2/token",
-      logoutEndpoint: "https://login.example/logout",
-      redirectUri: `${ORIGIN}/oauth/callback`,
-      clientId: "wire-client",
-      logoutUri: `${ORIGIN}/`,
-      scope: "openid profile email kirocrew.control/invoke",
+    expect(normalized.auth).toEqual({
+      basePath: "/auth/v1",
+      allowedDomains: ["amazon.com"],
     });
   });
 
-  it("passes a runtime-shaped oauth config through unchanged", (): void => {
-    const oauth = {
-      authorizationEndpoint: "https://login.example/oauth2/authorize",
-      tokenEndpoint: "https://login.example/oauth2/token",
-      logoutEndpoint: "https://login.example/logout",
-      redirectUri: `${ORIGIN}/oauth/callback`,
-      clientId: "runtime-client",
-      logoutUri: `${ORIGIN}/signed-out`,
-      scope: "openid kirocrew.control/invoke",
-    };
-    expect(normalizeBrowserApplicationConfig({ ...base, oauth }).oauth).toEqual(
-      oauth,
-    );
+  it("defaults the auth base path when the wire config omits it", (): void => {
+    expect(normalizeBrowserApplicationConfig({ ...base }).auth).toEqual({
+      basePath: "/auth/v1",
+    });
+    expect(
+      normalizeBrowserApplicationConfig({ ...base, auth: {} }).auth,
+    ).toEqual({ basePath: "/auth/v1" });
   });
 });

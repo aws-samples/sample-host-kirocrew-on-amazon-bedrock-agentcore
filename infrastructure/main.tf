@@ -100,6 +100,10 @@ module "control_api" {
   frontend_compatibility_version = var.frontend_compatibility_version
   log_retention_days             = var.log_retention_days
   source_directory               = "${path.module}/functions/control/src"
+  auth_source_directory          = "${path.module}/functions/auth/src"
+  user_pool_id                   = module.identity.user_pool_id
+  user_pool_arn                  = module.identity.user_pool_arn
+  allowed_email_domains          = var.allowed_email_domains
   tags                           = module.naming.tags
 }
 
@@ -115,13 +119,9 @@ module "frontend" {
   region          = local.region
   dns_suffix      = local.dns_suffix
   public_config = {
-    oauth = {
-      appClientId           = module.identity.app_client_id
-      authorizationEndpoint = "${local.cognito_domain}/oauth2/authorize"
-      logoutEndpoint        = "${local.cognito_domain}/logout"
-      redirectUri           = "${module.frontend.url}${sort(tolist(var.oauth_callback_paths))[0]}"
-      scopes                = ["openid", "profile", "email", "kirocrew.control/invoke"]
-      tokenEndpoint         = "${local.cognito_domain}/oauth2/token"
+    auth = {
+      basePath       = "/auth/v1"
+      allowedDomains = var.allowed_email_domains
     }
     region                       = local.region
     shellOrigin                  = module.frontend.url

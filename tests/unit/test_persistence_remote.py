@@ -58,12 +58,16 @@ def test_lambda_client_validates_binding_calls_and_receipts() -> None:
     request = json.loads(cast(bytes, fake.requests[0]["Payload"]))
     assert request == {
         "bindingToken": "binding",
+        "final": True,
         "generation": 3,
         "manifestDigest": "a" * 64,
         "operation": "checkpointReceipt",
         "runtimeSessionId": SESSION,
         "sandboxId": SANDBOX,
     }
+    assert broker_client.checkpoint_receipt(4, "b" * 64, final=False) == "receipt"
+    session_request = json.loads(cast(bytes, fake.requests[1]["Payload"]))
+    assert session_request["final"] is False
 
     for value in ({}, {"checkpointReceipt": 1}):
         broken, _ = client(value)

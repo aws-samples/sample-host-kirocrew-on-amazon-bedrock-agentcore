@@ -2,7 +2,11 @@ import {
   PROTOCOL_VERSION,
   type ProtocolEnvelope,
 } from "./generated/protocol.js";
-import { validateEnvelope } from "./protocol.js";
+import {
+  ChunkedEnvelopeAssembler,
+  ProtocolValidationError,
+  validateEnvelope,
+} from "./protocol.js";
 import type {
   AgentCoreChannel,
   AgentCoreDuplex,
@@ -148,7 +152,17 @@ function defaultUlid(): string {
   return value;
 }
 
-function runtimeEvent(envelope: ProtocolEnvelope): AgentCoreRuntimeEvent {
+const RUNTIME_OPERATIONS: ReadonlySet<string> = new Set([
+  "request.accepted",
+  "output.delta",
+  "request.completed",
+  "error",
+]);
+
+function runtimeEvent(
+  envelope: ProtocolEnvelope,
+  sequence: number,
+): AgentCoreRuntimeEvent {
   if (
     envelope.operation !== "request.accepted" &&
     envelope.operation !== "output.delta" &&
@@ -170,10 +184,71 @@ function runtimeEvent(envelope: ProtocolEnvelope): AgentCoreRuntimeEvent {
   }
   return {
     requestId: envelope.requestId,
-    sequence: envelope.sequence,
+    sequence,
     operation: envelope.operation,
     payload: envelope.payload,
   };
+}
+
+interface RuntimeStreamItem {
+  readonly envelope: ProtocolEnvelope;
+  readonly event?: AgentCoreRuntimeEvent;
+}
+
+/**
+ * Turns the wire envelope stream into logical events. A payload too large for
+ * one event arrives as a run of chunk envelopes that share the request stream's
+ * contiguous wire sequence, so the reassembled event is numbered on its own
+ * per-request counter: consumers see one contiguous event per logical event,
+ * whatever the payload size. Returns undefined while a chunk group is still
+ * being collected.
+ */
+class RuntimeEventStream {
+  readonly #assembler = new ChunkedEnvelopeAssembler();
+  readonly #wire = new Map<string, number>();
+  readonly #logical = new Map<string, number>();
+
+  public accept(wire: ProtocolEnvelope): RuntimeStreamItem | undefined {
+    const wireRequestId = wire.requestId;
+    if (
+      typeof wireRequestId === "string" &&
+      RUNTIME_OPERATIONS.has(wire.operation)
+    ) {
+      if (wire.sequence !== (this.#wire.get(wireRequestId) ?? -1) + 1) {
+        throw new AgentCoreConnectionError(
+          "TRANSPORT_FAILED",
+          "The runtime response events are incomplete or out of order.",
+          false,
+        );
+      }
+      this.#wire.set(wireRequestId, wire.sequence);
+    }
+    let envelope: ProtocolEnvelope | undefined;
+    try {
+      envelope = this.#assembler.accept(wire);
+    } catch (error: unknown) {
+      throw new AgentCoreConnectionError(
+        "TRANSPORT_FAILED",
+        error instanceof ProtocolValidationError
+          ? error.message
+          : "The runtime returned an invalid message.",
+        false,
+      );
+    }
+    if (envelope === undefined) {
+      return undefined;
+    }
+    const requestId = envelope.requestId;
+    if (
+      typeof requestId !== "string" ||
+      !RUNTIME_OPERATIONS.has(envelope.operation)
+    ) {
+      return { envelope };
+    }
+    const sequence = this.#logical.get(requestId) ?? 0;
+    this.#logical.set(requestId, sequence + 1);
+    return { envelope, event: runtimeEvent(envelope, sequence) };
+  }
 }
 
 async function* parseSse(
@@ -395,15 +470,15 @@ export class AgentCoreBrowserChannel implements AgentCoreChannel {
           response.status >= 500,
       );
     }
-    for await (const envelope of parseSse(response)) {
-      this.#onEnvelope(envelope);
-      if (
-        envelope.operation === "request.accepted" ||
-        envelope.operation === "output.delta" ||
-        envelope.operation === "request.completed" ||
-        envelope.operation === "error"
-      ) {
-        yield runtimeEvent(envelope);
+    const stream = new RuntimeEventStream();
+    for await (const wire of parseSse(response)) {
+      const item = stream.accept(wire);
+      if (item === undefined) {
+        continue;
+      }
+      this.#onEnvelope(item.envelope);
+      if (item.event !== undefined) {
+        yield item.event;
       }
     }
   }
@@ -429,6 +504,7 @@ export class AgentCoreBrowserChannel implements AgentCoreChannel {
       ...agentCoreWebSocketProtocols(token),
     ]);
     const queue = new AsyncEventQueue();
+    const stream = new RuntimeEventStream();
     const correlationId = this.#requestId();
     const hello: ProtocolEnvelope = {
       version: PROTOCOL_VERSION,
@@ -455,7 +531,13 @@ export class AgentCoreBrowserChannel implements AgentCoreChannel {
           if (typeof event.data !== "string") {
             throw new Error("Text frame required");
           }
-          const envelope = validateEnvelope(JSON.parse(event.data) as unknown);
+          const item = stream.accept(
+            validateEnvelope(JSON.parse(event.data) as unknown),
+          );
+          if (item === undefined) {
+            return;
+          }
+          const envelope = item.envelope;
           this.#onEnvelope(envelope);
           if (
             envelope.operation === "error" &&
@@ -477,13 +559,8 @@ export class AgentCoreBrowserChannel implements AgentCoreChannel {
             socket.close(1000, "Runtime connection error");
             return;
           }
-          if (
-            envelope.operation === "request.accepted" ||
-            envelope.operation === "output.delta" ||
-            envelope.operation === "request.completed" ||
-            envelope.operation === "error"
-          ) {
-            queue.push(runtimeEvent(envelope));
+          if (item.event !== undefined) {
+            queue.push(item.event);
           }
         } catch {
           queue.fail(

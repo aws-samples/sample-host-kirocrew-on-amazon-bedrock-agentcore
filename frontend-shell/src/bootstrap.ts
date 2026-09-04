@@ -216,45 +216,33 @@ type BrowserBootstrapWindow = Window &
   };
 
 /**
- * The OAuth shape Terraform injects (`infrastructure/main.tf` public_config):
- * `appClientId` and a `scopes` array, with no `logoutUri`. The runtime
- * `CognitoOAuthConfig` wants `clientId`, a space-joined `scope` string, and an
- * explicit `logoutUri`. Both spellings are accepted so a future config
- * emitted in the runtime shape keeps working unchanged.
+ * The auth shape Terraform injects (`infrastructure/main.tf` public_config):
+ * a same-origin base path for the gated auth API and the deployment's
+ * allowed email domains (used only for user-facing hints; enforcement is
+ * server side).
  */
-export interface WireOAuthConfig {
-  readonly authorizationEndpoint: string;
-  readonly tokenEndpoint: string;
-  readonly logoutEndpoint: string;
-  readonly redirectUri: string;
-  readonly clientId?: string;
-  readonly appClientId?: string;
-  readonly logoutUri?: string;
-  readonly scope?: string;
-  readonly scopes?: readonly string[];
+export interface WireAuthConfig {
+  readonly basePath?: string;
+  readonly allowedDomains?: readonly string[];
 }
 
 export type WireBrowserApplicationConfig = Omit<
   BrowserApplicationConfig,
-  "oauth"
+  "auth"
 > & {
-  readonly oauth: WireOAuthConfig;
+  readonly auth?: WireAuthConfig;
 };
 
 export function normalizeBrowserApplicationConfig(
   config: WireBrowserApplicationConfig,
 ): BrowserApplicationConfig {
-  const oauth = config.oauth;
   return {
     ...config,
-    oauth: {
-      authorizationEndpoint: oauth.authorizationEndpoint,
-      tokenEndpoint: oauth.tokenEndpoint,
-      logoutEndpoint: oauth.logoutEndpoint,
-      redirectUri: oauth.redirectUri,
-      clientId: oauth.clientId ?? oauth.appClientId ?? "",
-      logoutUri: oauth.logoutUri ?? new URL("/", config.shellOrigin).href,
-      scope: oauth.scope ?? (oauth.scopes ?? []).join(" "),
+    auth: {
+      basePath: config.auth?.basePath ?? "/auth/v1",
+      ...(config.auth?.allowedDomains === undefined
+        ? {}
+        : { allowedDomains: config.auth.allowedDomains }),
     },
   };
 }
@@ -273,7 +261,7 @@ export async function startBrowserApplication(
     installTransport: installKiroCrewBootstrap,
   });
   target.__KIROCREW_AGENTCORE_APPLICATION__ = application;
-  await application.boot(new URL(target.location.href));
+  await application.boot();
   return application;
 }
 

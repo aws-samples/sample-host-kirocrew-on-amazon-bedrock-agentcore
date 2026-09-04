@@ -131,7 +131,7 @@ variable "runtime_max_lifetime_seconds" {
 variable "runtime_allowed_scopes" {
   description = "Cognito OAuth scopes accepted by the AgentCore custom JWT authorizer."
   type        = list(string)
-  default     = ["kirocrew.control/invoke"]
+  default     = ["aws.cognito.signin.user.admin"]
 
   validation {
     condition     = length(var.runtime_allowed_scopes) > 0
@@ -151,5 +151,16 @@ variable "runtime_request_header_allowlist" {
   validation {
     condition     = length(var.runtime_request_header_allowlist) > 0 && length(var.runtime_request_header_allowlist) <= 20 && length(distinct(var.runtime_request_header_allowlist)) == length(var.runtime_request_header_allowlist)
     error_message = "runtime_request_header_allowlist must contain 1-20 unique headers."
+  }
+}
+
+variable "allowed_email_domains" {
+  description = "Email domains permitted to register and sign in through the gated auth API."
+  type        = list(string)
+  default     = ["amazon.com"]
+
+  validation {
+    condition     = length(var.allowed_email_domains) > 0 && alltrue([for domain in var.allowed_email_domains : can(regex("^[a-z0-9.-]+\\.[a-z]{2,}$", domain))])
+    error_message = "At least one lowercase email domain is required."
   }
 }

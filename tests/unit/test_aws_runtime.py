@@ -299,10 +299,12 @@ class FakeCheckpointStore:
 
 class FakeBrokerClient:
     def __init__(self) -> None:
-        self.receipts: list[tuple[int, str]] = []
+        self.receipts: list[tuple[int, str, bool]] = []
 
-    def checkpoint_receipt(self, generation: int, manifest_digest: str) -> str:
-        self.receipts.append((generation, manifest_digest))
+    def checkpoint_receipt(
+        self, generation: int, manifest_digest: str, *, final: bool = True
+    ) -> str:
+        self.receipts.append((generation, manifest_digest, final))
         return f"receipt-{generation}"
 
 
@@ -582,7 +584,190 @@ def test_prepare_stop_commits_next_generation_and_records_metadata() -> None:
                 "manifestDigest": "b" * 64,
             },
         )
-        assert broker_client.receipts == [(5, "b" * 64)]
+        assert broker_client.receipts == [(5, "b" * 64, True)]
+
+    asyncio.run(scenario())
+
+
+def test_kiro_identity_mutations_commit_background_durability_checkpoints() -> None:
+    async def scenario() -> None:
+        readiness = RuntimeReadiness(True, True, False)
+
+        class Identity:
+            def __init__(self) -> None:
+                self.flow_events: list[tuple[str, Mapping[str, object]]] = [
+                    ("kiro.auth_required", {"userCode": "ABCD-EFGH"}),
+                    ("kiro.authenticated", {"state": "authenticated"}),
+                ]
+
+            def status(self) -> Any:
+                return SimpleNamespace(
+                    state=KiroAuthState.REQUIRED,
+                    payload=lambda: {"state": "required"},
+                )
+
+            async def cancel_device_flow(self) -> bool:
+                return False
+
+            async def logout(self) -> Any:
+                return SimpleNamespace(payload=lambda: {"state": "required"})
+
+            async def device_flow_events(
+                self,
+                organization: object = None,
+            ) -> AsyncIterator[tuple[str, Mapping[str, object]]]:
+                del organization
+                for event in self.flow_events:
+                    yield event
+
+        identity = Identity()
+        backend = ProductionRuntimeBackend(
+            cast(Any, FakeLoopbackBackend()),
+            readiness,
+            identity=cast(Any, identity),
+        )
+        engine = FakeCheckpointEngine()
+        broker_client = FakeBrokerClient()
+        backend.configure(
+            cast(CheckpointEngine, engine),
+            cast(BrokeredCheckpointStore, FakeCheckpointStore()),
+            cast(LambdaBrokerClient, broker_client),
+        )
+
+        # A fresh sign-in commits a background, non-final checkpoint.
+        events = [e async for e in backend.execute("kiro.login.start", "request-1", {})]
+        assert [operation for operation, _ in events] == [
+            "kiro.auth_required",
+            "kiro.authenticated",
+        ]
+        await asyncio.gather(*backend._durability_tasks)
+        assert engine.calls == [(5, False)]
+        assert broker_client.receipts == [(5, "b" * 64, False)]
+
+        # A sign-out persists the credential mutation the same way.
+        events = [e async for e in backend.execute("kiro.logout", "request-2", {})]
+        assert events == [("kiro.auth_status", {"state": "required"})]
+        await asyncio.gather(*backend._durability_tasks)
+        assert engine.calls == [(5, False), (5, False)]
+
+        # A flow that never authenticates does not checkpoint.
+        identity.flow_events = [("kiro.auth_status", {"state": "failed"})]
+        _ = [e async for e in backend.execute("kiro.login.start", "request-3", {})]
+        await asyncio.gather(*backend._durability_tasks)
+        assert len(engine.calls) == 2
+
+        # A failing background checkpoint is swallowed: the session keeps
+        # working and readiness is not degraded.
+        def broken(generation: int, *, final: bool = False) -> CheckpointReceipt:
+            raise RuntimeError("durable store unavailable")
+
+        cast(Any, engine).checkpoint = broken
+        identity.flow_events = [("kiro.authenticated", {"state": "authenticated"})]
+        _ = [e async for e in backend.execute("kiro.login.start", "request-4", {})]
+        await asyncio.gather(*backend._durability_tasks)
+        assert not readiness.read_only
+
+    asyncio.run(scenario())
+
+
+def test_periodic_checkpoints_commit_only_when_the_workspace_changed() -> None:
+    async def scenario() -> None:
+        readiness = RuntimeReadiness(True, True, False)
+        backend = ProductionRuntimeBackend(cast(Any, FakeLoopbackBackend()), readiness)
+        engine = FakeCheckpointEngine()
+        broker_client = FakeBrokerClient()
+
+        with pytest.raises(ValueError, match="interval"):
+            await backend.run_periodic_checkpoints(0)
+
+        working_checkpoint = engine.checkpoint
+
+        def broken(generation: int, *, final: bool = False) -> CheckpointReceipt:
+            raise RuntimeError("durable store unavailable")
+
+        fingerprints = iter(["skip", "skip", "a", "a", "b", "b"])
+        tick = 0
+
+        async def sleep(seconds: float) -> None:
+            nonlocal tick
+            assert seconds == 30.0
+            tick += 1
+            if tick == 2:
+                # Tick 1 observed the unconfigured backend; configure now.
+                backend.configure(
+                    cast(CheckpointEngine, engine),
+                    cast(BrokeredCheckpointStore, FakeCheckpointStore()),
+                    cast(LambdaBrokerClient, broker_client),
+                )
+                readiness.read_only = True
+            if tick == 3:
+                readiness.read_only = False
+            if tick == 5:
+                cast(Any, engine).checkpoint = broken
+            if tick == 6:
+                cast(Any, engine).checkpoint = working_checkpoint
+            if tick == 7:
+                raise asyncio.CancelledError
+
+        with pytest.raises(asyncio.CancelledError):
+            await backend.run_periodic_checkpoints(
+                30.0,
+                fingerprint=lambda: next(fingerprints),
+                sleep=sleep,
+            )
+        # Tick 1: unconfigured. Tick 2: read-only. Tick 3: "a" commits.
+        # Tick 4: "a" unchanged, skipped. Tick 5: "b" fails, fingerprint not
+        # recorded. Tick 6: "b" retried and commits.
+        assert engine.calls == [(5, False), (5, False)]
+        assert broker_client.receipts == [(5, "b" * 64, False), (5, "b" * 64, False)]
+
+        # Without a fingerprint every interval commits.
+        plain = ProductionRuntimeBackend(cast(Any, FakeLoopbackBackend()), readiness)
+        plain_engine = FakeCheckpointEngine()
+        plain.configure(
+            cast(CheckpointEngine, plain_engine),
+            cast(BrokeredCheckpointStore, FakeCheckpointStore()),
+            cast(LambdaBrokerClient, FakeBrokerClient()),
+        )
+        plain_ticks = 0
+
+        async def plain_sleep(_seconds: float) -> None:
+            nonlocal plain_ticks
+            plain_ticks += 1
+            if plain_ticks == 2:
+                raise asyncio.CancelledError
+
+        with pytest.raises(asyncio.CancelledError):
+            await plain.run_periodic_checkpoints(10.0, sleep=plain_sleep)
+        assert plain_engine.calls == [(5, False)]
+
+    asyncio.run(scenario())
+
+
+def test_shutdown_checkpoint_is_final_best_effort_and_bounded() -> None:
+    async def scenario() -> None:
+        readiness = RuntimeReadiness(True, True, False)
+        unconfigured = ProductionRuntimeBackend(cast(Any, FakeLoopbackBackend()), readiness)
+        await unconfigured.checkpoint_on_shutdown()
+
+        backend = ProductionRuntimeBackend(cast(Any, FakeLoopbackBackend()), readiness)
+        engine = FakeCheckpointEngine()
+        broker_client = FakeBrokerClient()
+        backend.configure(
+            cast(CheckpointEngine, engine),
+            cast(BrokeredCheckpointStore, FakeCheckpointStore()),
+            cast(LambdaBrokerClient, broker_client),
+        )
+        await backend.checkpoint_on_shutdown()
+        assert engine.calls == [(5, True)]
+        assert broker_client.receipts == [(5, "b" * 64, True)]
+
+        def broken(generation: int, *, final: bool = False) -> CheckpointReceipt:
+            raise RuntimeError("durable store unavailable")
+
+        cast(Any, engine).checkpoint = broken
+        await backend.checkpoint_on_shutdown()
+        assert len(broker_client.receipts) == 1
 
     asyncio.run(scenario())
 
@@ -876,6 +1061,11 @@ def test_initialize_sync_restore_composition(monkeypatch: pytest.MonkeyPatch) ->
     metadata.last_checkpoint_generation = 4
     with pytest.raises(RestoreError, match="PERSISTENCE_RESTORE_FAILED"):
         initializer._initialize_sync("binding", claims)
+    # The durable store may be AHEAD of the pointer: a background checkpoint
+    # committed to S3 but died before its receipt landed. Restoring the newer
+    # committed generation is safe.
+    metadata.last_checkpoint_generation = 2
+    initializer._initialize_sync("binding", claims)
     metadata.last_checkpoint_generation = 3
     supervisor.ready = False
 
@@ -967,10 +1157,25 @@ def test_build_runtime_application_cleanup_and_serve(monkeypatch: pytest.MonkeyP
     async def scenario() -> None:
         application = await module.build_runtime_application(environment)
         assert captured["kwargs"]
+        for startup in application.on_startup:
+            await startup(application)
+        for shutdown in application.on_shutdown:
+            await shutdown(application)
         for cleanup in application.on_cleanup:
             await cleanup(application)
         assert loopback_sessions[0].closed
         assert supervisor_instances[0].terminated == 1
+
+        # Interval 0 disables the periodic checkpoint loop entirely.
+        disabled = await module.build_runtime_application(
+            {**environment, "KIROCREW_CHECKPOINT_INTERVAL_SECONDS": "0"}
+        )
+        for startup in disabled.on_startup:
+            await startup(disabled)
+        for shutdown in disabled.on_shutdown:
+            await shutdown(disabled)
+        for cleanup in disabled.on_cleanup:
+            await cleanup(disabled)
 
     asyncio.run(scenario())
 

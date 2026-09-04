@@ -181,10 +181,13 @@ make infra-deploy EXPECTED_AWS_ACCOUNT_ID=<AWS_ACCOUNT_ID> AWS_REGION=$AWS_REGIO
 terraform -chdir=infrastructure output -state="$TF_STATE" deployment
 ```
 
-The `deployment` output contains the CloudFront URL. Create a user in the Cognito
-user pool (the `browser_oauth` output names it), open the URL, sign in, and press
-**Start**. The first start of a new sandbox takes about a minute; later starts
-restore the checkpoint in seconds.
+The `deployment` output contains the CloudFront URL. Open it and create an
+account directly in the floating panel: registration and sign-in go through a
+gated Lambda that only accepts email addresses on the domains in the
+`allowed_email_domains` variable (default `amazon.com`). Nobody can register or
+sign in against Cognito directly. After signing in, press **Start**. The first
+start of a new sandbox takes about a minute; later starts restore the
+checkpoint in seconds.
 
 ## Operate the deployment
 

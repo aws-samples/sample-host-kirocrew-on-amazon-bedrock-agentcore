@@ -66,11 +66,35 @@ def test_control_role_can_use_encrypted_sandbox_table_only_through_dynamodb() ->
 def test_cognito_is_admin_created_public_pkce_client() -> None:
     identity = terraform("modules/identity/main.tf")
     assert "allow_admin_create_user_only = true" in identity
-    assert "generate_secret                      = false" in identity
+    assert "generate_secret = false" in identity
+    # Sign-in happens only through the gated auth Lambda: the browser holds
+    # no flow that could take a password to Cognito directly.
+    assert (
+        "explicit_auth_flows                  = "
+        '["ALLOW_ADMIN_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"]'
+    ) in identity
+    assert '"ALLOW_USER_PASSWORD_AUTH"' not in identity
+    assert '"ALLOW_USER_SRP_AUTH"' not in identity
     assert 'allowed_oauth_flows                  = ["code"]' in identity
     assert "callback_urls                        = var.callback_urls" in identity
     assert "logout_urls                          = var.logout_urls" in identity
     assert 'prevent_user_existence_errors        = "ENABLED"' in identity
+
+
+def test_gated_auth_lambda_is_least_privilege_and_domain_limited() -> None:
+    control_api = terraform("modules/control-api/main.tf")
+    # Registration and sign-in routes are unauthenticated by design; the
+    # Lambda is the gate. Its Cognito permissions are pinned to the pool.
+    assert 'authorization_type = "NONE"' in control_api
+    assert '"POST /auth/v1/register",' in control_api
+    assert '"POST /auth/v1/login",' in control_api
+    assert '"POST /auth/v1/refresh",' in control_api
+    assert '"cognito-idp:AdminCreateUser",' in control_api
+    assert '"cognito-idp:AdminInitiateAuth",' in control_api
+    assert "resources = [var.user_pool_arn]" in control_api
+    assert "ALLOWED_EMAIL_DOMAINS" in control_api
+    # Authenticated control routes require the password-auth scope.
+    assert 'authorization_scopes = ["aws.cognito.signin.user.admin"]' in control_api
 
 
 def test_runtime_role_cannot_access_snapshot_objects() -> None:

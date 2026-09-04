@@ -53,3 +53,4 @@ docs/internal/
 release/
 .kiro/
 *.tmp.mjs
+_MEMORY.md

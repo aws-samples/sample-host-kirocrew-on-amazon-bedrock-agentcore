@@ -26,6 +26,7 @@ package = false
 members = [
   "adapter",
   "runtime",
+  "infrastructure/functions/auth",
   "infrastructure/functions/control",
   "infrastructure/functions/persistence",
   "tools/headless-client",
@@ -57,6 +58,7 @@ pretty = true
 files = [
   "adapter/src",
   "runtime/src",
+  "infrastructure/functions/auth/src",
   "infrastructure/functions/control/src",
   "infrastructure/functions/persistence/src",
   "tools/headless-client/src",
@@ -78,6 +80,7 @@ branch = true
 omit = ["*/__main__.py"]
 source = [
   "kirocrew_agentcore_adapter",
+  "kirocrew_agentcore_auth",
   "kirocrew_agentcore_runtime",
   "kirocrew_agentcore_control",
   "kirocrew_agentcore_persistence",

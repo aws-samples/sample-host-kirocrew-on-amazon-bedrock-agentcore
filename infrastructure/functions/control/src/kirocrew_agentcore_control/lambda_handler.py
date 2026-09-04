@@ -460,7 +460,9 @@ def _build_service() -> SandboxControlService:
         config,
         DynamoSandboxRegistry(dynamodb, table_name),
         ClaimsValidator(
-            config.issuer, config.app_client_id, required_scope="kirocrew.control/invoke"
+            config.issuer,
+            config.app_client_id,
+            required_scope=os.environ.get("REQUIRED_SCOPE", "aws.cognito.signin.user.admin"),
         ),
         SignedControlTokens(
             KmsRsaPssSigner(kms, _required("BINDING_KEY_ARN")),

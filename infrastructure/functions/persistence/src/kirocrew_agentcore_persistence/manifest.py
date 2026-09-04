@@ -86,6 +86,11 @@ class PersistencePolicy:
         # Kiro CLI keeps its sign-in (the auth_kv table of data.sqlite3) here, not
         # under ~/.kiro; without it every restore comes back signed out.
         PurePosixPath("home/.local/share/kiro-cli"),
+        # The runtime creates these top-level directories next to the projects
+        # root; anything a user or feature drops there must survive a restore.
+        PurePosixPath("artifacts"),
+        PurePosixPath("knowledge"),
+        PurePosixPath("memory"),
         PurePosixPath("projects"),
         PurePosixPath("user"),
     )
@@ -127,6 +132,42 @@ class PersistencePolicy:
         return relative_path.name not in self._excluded_names and not relative_path.name.endswith(
             self._excluded_suffixes
         )
+
+
+def _walk_included_roots(workspace: Path) -> list[Path]:
+    paths: list[Path] = []
+    if not workspace.exists():
+        return paths
+    for root in PersistencePolicy._roots:
+        candidate = workspace / root.as_posix()
+        if not candidate.exists() and not candidate.is_symlink():
+            continue
+        paths.append(candidate)
+        if candidate.is_dir() and not candidate.is_symlink():
+            paths.extend(sorted(candidate.rglob("*")))
+    return sorted(set(paths))
+
+
+def workspace_fingerprint(workspace: Path, *, policy: PersistencePolicy | None = None) -> str:
+    """A cheap identity of the durable workspace state.
+
+    Only paths, sizes, and modification times of policy-included entries are
+    hashed, never content, so callers can poll frequently to decide whether a
+    full checkpoint is worth its cost. Any metadata change to an included
+    entry changes the fingerprint.
+    """
+    selected = policy or PersistencePolicy()
+    digest = hashlib.sha256()
+    for path in _walk_included_roots(workspace):
+        relative = PurePosixPath(path.relative_to(workspace).as_posix())
+        if not selected.includes(relative):
+            continue
+        metadata = path.lstat()
+        digest.update(
+            f"{relative.as_posix()}\x00{metadata.st_mode}\x00"
+            f"{metadata.st_mtime_ns}\x00{metadata.st_size}\x00".encode()
+        )
+    return digest.hexdigest()
 
 
 class ManifestBuilder:
@@ -211,17 +252,7 @@ class ManifestBuilder:
         return BuiltManifest(manifest, chunks)
 
     def _walk(self) -> list[Path]:
-        paths: list[Path] = []
-        if not self._workspace.exists():
-            return paths
-        for root in PersistencePolicy._roots:
-            candidate = self._workspace / root.as_posix()
-            if not candidate.exists() and not candidate.is_symlink():
-                continue
-            paths.append(candidate)
-            if candidate.is_dir() and not candidate.is_symlink():
-                paths.extend(sorted(candidate.rglob("*")))
-        return sorted(set(paths))
+        return _walk_included_roots(self._workspace)
 
     def _read_chunks(self, path: Path) -> list[bytes]:
         chunks: list[bytes] = []

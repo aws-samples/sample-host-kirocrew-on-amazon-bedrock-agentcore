@@ -15,6 +15,7 @@ from typing import Final, Literal, cast
 
 from kirocrew_agentcore_persistence.crypto import EncryptedBlob, IntegrityError, SandboxCipher
 from kirocrew_agentcore_persistence.durability import (
+    BrokerAuthorizationError,
     BrokeredCheckpointStore,
     CommittedGeneration,
     ObjectNotFoundError,
@@ -349,7 +350,16 @@ class RestoreEngine:
             attempts.append(generation.generation)
             try:
                 self._restore_generation(generation)
-            except (IntegrityError, ManifestValidationError, ObjectNotFoundError, OSError) as error:
+            except (
+                # A broker rejection mid-restore (token expiry, throttling)
+                # must fall back to the previous generation like any other
+                # invalid-generation condition, never abort initialization.
+                BrokerAuthorizationError,
+                IntegrityError,
+                ManifestValidationError,
+                ObjectNotFoundError,
+                OSError,
+            ) as error:
                 # The class name and errno-style detail carry no payload data
                 # and are essential for diagnosing fleet-only failures.
                 failures.append(

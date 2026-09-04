@@ -5,6 +5,7 @@ requires-python = "==3.12.*"
 [manifest]
 members = [
     "kirocrew-agentcore-adapter",
+    "kirocrew-agentcore-auth",
     "kirocrew-agentcore-control",
     "kirocrew-agentcore-headless",
     "kirocrew-agentcore-persistence",
@@ -647,6 +648,11 @@ requires-dist = [
     { name = "cryptography", specifier = "==50.0.0" },
     { name = "jsonschema", extras = ["format"], specifier = "==4.25.1" },
 ]
+
+[[package]]
+name = "kirocrew-agentcore-auth"
+version = "0.1.0"
+source = { editable = "infrastructure/functions/auth" }
 
 [[package]]
 name = "kirocrew-agentcore-control"

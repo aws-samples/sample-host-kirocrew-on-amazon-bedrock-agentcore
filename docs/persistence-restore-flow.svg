@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 990">
+  <defs>
+    <marker id="ar" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><path d="M0,0 L10,3.5 L0,7 Z" fill="#374151"/></marker>
+    <marker id="ar-g" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><path d="M0,0 L10,3.5 L0,7 Z" fill="#059669"/></marker>
+    <marker id="ar-r" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><path d="M0,0 L10,3.5 L0,7 Z" fill="#dc2626"/></marker>
+    <marker id="ar-o" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><path d="M0,0 L10,3.5 L0,7 Z" fill="#ea580c"/></marker>
+  </defs>
+  <style>text{font-family:"Noto Sans SC",sans-serif;}</style>
+  <rect width="1000" height="990" fill="#ffffff"/>
+  <text x="500" y="34" font-size="19" font-weight="bold" text-anchor="middle" fill="#111827">沙盒启动 / 恢复决策流程（AwsSessionInitializer + RestoreEngine）</text>
+  <rect x="400" y="56" width="200" height="40" fill="#dcfce7" stroke="#059669" stroke-width="2" rx="20"/>
+  <text x="500" y="81" font-size="13" font-weight="bold" text-anchor="middle" fill="#111827">AgentCore 首次调用</text>
+  <rect x="340" y="124" width="320" height="52" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5" rx="8"/>
+  <text x="500" y="147" font-size="13.5" font-weight="bold" text-anchor="middle" fill="#111827">读 DynamoDB 沙盒元数据</text>
+  <text x="500" y="166" font-size="11" text-anchor="middle" fill="#4b5563">runtimeSessionId / state / 最新提交代数</text>
+  <rect x="340" y="208" width="320" height="52" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5" rx="8"/>
+  <text x="500" y="231" font-size="13.5" font-weight="bold" text-anchor="middle" fill="#111827">抢占 init 租约（90s，心跳续期）</text>
+  <text x="500" y="250" font-size="11" text-anchor="middle" fill="#4b5563">失败 → 他处正在初始化，直接退出</text>
+  <path d="M 500 304 L 630 340 L 500 376 L 370 340 Z" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
+  <text x="500" y="344" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#111827">S3 有已提交代数？</text>
+  <path d="M 500 430 L 620 470 L 500 510 L 380 470 Z" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
+  <text x="500" y="474" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#111827">需要 restore？</text>
+  <rect x="350" y="560" width="300" height="64" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5" rx="8"/>
+  <text x="500" y="589" font-size="13.5" font-weight="bold" text-anchor="middle" fill="#111827">restore 最新代 N</text>
+  <text x="500" y="608" font-size="11" text-anchor="middle" fill="#4b5563">stage 重建 → 逐 chunk 校验摘要 → 原子换入</text>
+  <path d="M 500 678 L 585 710 L 500 742 L 415 710 Z" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
+  <text x="500" y="714" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#111827">成功？</text>
+  <rect x="410" y="800" width="180" height="44" fill="#dcfce7" stroke="#059669" stroke-width="2" rx="22"/>
+  <text x="500" y="827" font-size="13" font-weight="bold" text-anchor="middle" fill="#111827">启动 gateway</text>
+  <rect x="410" y="890" width="180" height="44" fill="#dcfce7" stroke="#059669" stroke-width="2" rx="22"/>
+  <text x="500" y="917" font-size="13" font-weight="bold" text-anchor="middle" fill="#111827">标记 READY</text>
+  <path d="M 190 305 L 290 340 L 190 375 L 90 340 Z" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.5"/>
+  <text x="190" y="344" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#111827">是老沙盒？</text>
+  <rect x="50" y="440" width="200" height="44" fill="#dcfce7" stroke="#059669" stroke-width="2" rx="22"/>
+  <text x="150" y="467" font-size="13" font-weight="bold" text-anchor="middle" fill="#111827">空 workspace 初始化</text>
+  <rect x="90" y="800" width="300" height="44" fill="#fee2e2" stroke="#dc2626" stroke-width="2" rx="22"/>
+  <text x="240" y="827" font-size="13" font-weight="bold" text-anchor="middle" fill="#111827">PERSISTENCE_RESTORE_FAILED</text>
+  <rect x="120" y="678" width="240" height="64" fill="#fff7ed" stroke="#ea580c" stroke-width="1.5" rx="8"/>
+  <text x="240" y="707" font-size="13.5" font-weight="bold" text-anchor="middle" fill="#111827">回退前一代 N-1</text>
+  <text x="240" y="726" font-size="11" text-anchor="middle" fill="#4b5563">仅回退一次，manifest 与 chunk 全校验</text>
+  <rect x="660" y="444" width="220" height="52" fill="#f0fdf4" stroke="#059669" stroke-width="1.5" rx="8"/>
+  <text x="770" y="467" font-size="13.5" font-weight="bold" text-anchor="middle" fill="#111827">直接使用本地挂载</text>
+  <text x="770" y="486" font-size="11" text-anchor="middle" fill="#4b5563">managed storage 命中，秒级</text>
+  <rect x="740" y="128" width="245" height="160" fill="#f9fafb" stroke="#d1d5db" rx="6"/>
+  <text x="752" y="152" font-size="12.5" font-weight="bold" fill="#111827">任一条件即需 restore：</text>
+  <text x="760" y="176" font-size="11.5" fill="#4b5563">· 挂载为空 / 本地指针缺失</text>
+  <text x="760" y="198" font-size="11.5" fill="#4b5563">· 本地代数 ≠ 最新提交代数</text>
+  <text x="760" y="220" font-size="11.5" fill="#4b5563">· runtimeVersion 变化（发新镜像）</text>
+  <text x="760" y="242" font-size="11.5" fill="#4b5563">· 本地完整性抽样失败</text>
+  <text x="760" y="264" font-size="11.5" fill="#4b5563">· managed session storage 过期</text>
+  <line x1="740" y1="288" x2="622" y2="452" stroke="#9ca3af" stroke-width="1" stroke-dasharray="3,3"/>
+  <path d="M 500 96 L 500 124" fill="none" stroke="#374151" stroke-width="2" marker-end="url(#ar)"/>
+  <path d="M 500 176 L 500 208" fill="none" stroke="#374151" stroke-width="2" marker-end="url(#ar)"/>
+  <path d="M 500 260 L 500 304" fill="none" stroke="#374151" stroke-width="2" marker-end="url(#ar)"/>
+  <path d="M 500 376 L 500 430" fill="none" stroke="#374151" stroke-width="2" marker-end="url(#ar)"/>
+  <text x="514" y="406" font-size="12" font-weight="bold" text-anchor="start" fill="#374151">是</text>
+  <path d="M 500 510 L 500 560" fill="none" stroke="#374151" stroke-width="2" marker-end="url(#ar)"/>
+  <text x="514" y="538" font-size="12" font-weight="bold" text-anchor="start" fill="#374151">是，restore</text>
+  <path d="M 500 742 L 500 800" fill="none" stroke="#374151" stroke-width="2" marker-end="url(#ar)"/>
+  <text x="514" y="774" font-size="12" font-weight="bold" text-anchor="start" fill="#059669">是</text>
+  <path d="M 500 844 L 500 890" fill="none" stroke="#374151" stroke-width="2" marker-end="url(#ar)"/>
+  <path d="M 370 340 L 290 340" fill="none" stroke="#374151" stroke-width="2" marker-end="url(#ar)"/>
+  <text x="330" y="332" font-size="12" font-weight="bold" text-anchor="middle" fill="#374151">否</text>
+  <path d="M 190 375 L 190 410 L 150 410 L 150 440" fill="none" stroke="#374151" stroke-width="2" marker-end="url(#ar)"/>
+  <text x="200" y="400" font-size="12" font-weight="bold" text-anchor="start" fill="#374151">否（新沙盒）</text>
+  <path d="M 90 340 L 40 340 L 40 822 L 90 822" fill="none" stroke="#dc2626" stroke-width="2" marker-end="url(#ar-r)"/>
+  <text x="50" y="570" font-size="11.5" font-weight="bold" text-anchor="start" fill="#dc2626">是：有历史却无有效保留代</text>
+  <path d="M 620 470 L 660 470" fill="none" stroke="#059669" stroke-width="2" marker-end="url(#ar-g)"/>
+  <text x="640" y="462" font-size="12" font-weight="bold" text-anchor="middle" fill="#059669">否</text>
+  <path d="M 770 496 L 770 822 L 590 822" fill="none" stroke="#059669" stroke-width="2" marker-end="url(#ar-g)"/>
+  <path d="M 415 710 L 360 710" fill="none" stroke="#ea580c" stroke-width="2" marker-end="url(#ar-o)"/>
+  <text x="388" y="702" font-size="12" font-weight="bold" text-anchor="middle" fill="#ea580c">否</text>
+  <path d="M 240 678 L 240 592 L 350 592" fill="none" stroke="#ea580c" stroke-width="2" marker-end="url(#ar-o)"/>
+  <text x="248" y="630" font-size="11.5" font-weight="bold" text-anchor="start" fill="#ea580c">重试（仅一次）</text>
+  <path d="M 240 742 L 240 800" fill="none" stroke="#dc2626" stroke-width="2" marker-end="url(#ar-r)"/>
+  <text x="252" y="774" font-size="11.5" font-weight="bold" text-anchor="start" fill="#dc2626">两代均失败</text>
+  <path d="M 150 484 L 150 530 L 75 530 L 75 762 L 430 762 L 430 800" fill="none" stroke="#374151" stroke-width="2" stroke-dasharray="4,3" marker-end="url(#ar)"/>
+</svg>

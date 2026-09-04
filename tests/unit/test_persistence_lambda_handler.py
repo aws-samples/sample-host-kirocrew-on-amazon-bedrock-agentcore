@@ -318,11 +318,30 @@ def test_checkpoint_receipt_validates_commit_catalogs_and_signs() -> None:
     assert str(receipt["checkpointReceipt"]).count(".") == 1
     assert dynamo.transactions
     assert kms.sign_request is not None
+    final_update = dynamo.transactions[0]["TransactItems"][0]["Update"]  # type: ignore[index]
+    assert "#state = :stopping" in final_update["UpdateExpression"]
+
+    # A mid-session durability checkpoint records the generation pointer
+    # without pushing the sandbox state machine toward STOPPING.
+    non_final = broker._checkpoint_receipt(
+        s3,
+        kms,
+        dynamo,
+        SANDBOX,
+        claims,
+        {"final": False, "generation": 3, "manifestDigest": DIGEST, "runtimeSessionId": SESSION},
+    )
+    assert non_final["generation"] == 3
+    session_update = dynamo.transactions[-1]["TransactItems"][0]["Update"]  # type: ignore[index]
+    assert ":stopping" not in session_update["UpdateExpression"]
+    assert ":stopping" not in session_update["ConditionExpression"]
+    assert ":busy" in session_update["ConditionExpression"]
 
     invalid_requests = [
         {},
         {"generation": 0, "manifestDigest": DIGEST, "runtimeSessionId": SESSION},
         {"generation": 1, "manifestDigest": "bad", "runtimeSessionId": SESSION},
+        {"final": "yes", "generation": 3, "manifestDigest": DIGEST, "runtimeSessionId": SESSION},
     ]
     for invalid in invalid_requests:
         with pytest.raises(ValueError, match="Invalid checkpoint receipt request"):

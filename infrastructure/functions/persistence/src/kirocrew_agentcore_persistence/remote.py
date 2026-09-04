@@ -55,9 +55,12 @@ class LambdaBrokerClient:
             raise BrokerAuthorizationError("Persistence broker response is invalid.")
         return cast(dict[str, object], value)
 
-    def checkpoint_receipt(self, generation: int, manifest_digest: str) -> str:
+    def checkpoint_receipt(
+        self, generation: int, manifest_digest: str, *, final: bool = True
+    ) -> str:
         value = self.call(
             "checkpointReceipt",
+            final=final,
             generation=generation,
             manifestDigest=manifest_digest,
         )

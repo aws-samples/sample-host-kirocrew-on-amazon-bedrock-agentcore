@@ -251,6 +251,10 @@ def _checkpoint_receipt(
     manifest_digest = event.get("manifestDigest")
     runtime_session_id = event.get("runtimeSessionId")
     subject_hash = claims.get("subjectHash")
+    # Only a final checkpoint (Stop safely) may advance the state machine to
+    # STOPPING; a mid-session durability checkpoint records the generation
+    # pointer while the sandbox keeps serving.
+    final = event.get("final", True)
     if (
         type(generation) is not int
         or generation <= 0
@@ -259,6 +263,7 @@ def _checkpoint_receipt(
         or not isinstance(runtime_session_id, str)
         or not isinstance(subject_hash, str)
         or not _DIGEST.fullmatch(subject_hash)
+        or type(final) is not bool
     ):
         raise ValueError("Invalid checkpoint receipt request.")
     raw_commit = s3.get_object(
@@ -280,6 +285,44 @@ def _checkpoint_receipt(
         raise ValueError("Committed checkpoint timestamp is invalid.")
     now = datetime.now(UTC)
     table_name = _required("SANDBOX_TABLE")
+    if final:
+        update_expression = (
+            "SET #state = :stopping, lastCheckpointGeneration = :generation, "
+            "lastCheckpointManifestDigest = :digest, updatedAt = :updated "
+            "ADD stateVersion :one"
+        )
+        condition_expression = (
+            "runtimeSessionId = :session AND "
+            "#state IN (:ready, :checkpointing, :stopping) AND "
+            "(attribute_not_exists(lastCheckpointGeneration) OR "
+            "lastCheckpointGeneration < :generation OR "
+            "(lastCheckpointGeneration = :generation AND "
+            "lastCheckpointManifestDigest = :digest))"
+        )
+        state_values: dict[str, dict[str, str]] = {
+            ":checkpointing": {"S": "CHECKPOINTING"},
+            ":ready": {"S": "READY"},
+            ":stopping": {"S": "STOPPING"},
+        }
+    else:
+        update_expression = (
+            "SET lastCheckpointGeneration = :generation, "
+            "lastCheckpointManifestDigest = :digest, updatedAt = :updated "
+            "ADD stateVersion :one"
+        )
+        condition_expression = (
+            "runtimeSessionId = :session AND "
+            "#state IN (:ready, :busy, :checkpointing) AND "
+            "(attribute_not_exists(lastCheckpointGeneration) OR "
+            "lastCheckpointGeneration < :generation OR "
+            "(lastCheckpointGeneration = :generation AND "
+            "lastCheckpointManifestDigest = :digest))"
+        )
+        state_values = {
+            ":busy": {"S": "BUSY"},
+            ":checkpointing": {"S": "CHECKPOINTING"},
+            ":ready": {"S": "READY"},
+        }
     dynamodb.transact_write_items(
         TransactItems=[
             {
@@ -289,29 +332,16 @@ def _checkpoint_receipt(
                         "pk": {"S": f"SANDBOX#{sandbox_id}"},
                         "sk": {"S": "METADATA"},
                     },
-                    "UpdateExpression": (
-                        "SET #state = :stopping, lastCheckpointGeneration = :generation, "
-                        "lastCheckpointManifestDigest = :digest, updatedAt = :updated "
-                        "ADD stateVersion :one"
-                    ),
-                    "ConditionExpression": (
-                        "runtimeSessionId = :session AND "
-                        "#state IN (:ready, :checkpointing, :stopping) AND "
-                        "(attribute_not_exists(lastCheckpointGeneration) OR "
-                        "lastCheckpointGeneration < :generation OR "
-                        "(lastCheckpointGeneration = :generation AND "
-                        "lastCheckpointManifestDigest = :digest))"
-                    ),
+                    "UpdateExpression": update_expression,
+                    "ConditionExpression": condition_expression,
                     "ExpressionAttributeNames": {"#state": "state"},
                     "ExpressionAttributeValues": {
-                        ":checkpointing": {"S": "CHECKPOINTING"},
                         ":digest": {"S": manifest_digest},
                         ":generation": {"N": str(generation)},
                         ":one": {"N": "1"},
-                        ":ready": {"S": "READY"},
                         ":session": {"S": runtime_session_id},
-                        ":stopping": {"S": "STOPPING"},
                         ":updated": {"S": now.isoformat().replace("+00:00", "Z")},
+                        **state_values,
                     },
                 }
             },

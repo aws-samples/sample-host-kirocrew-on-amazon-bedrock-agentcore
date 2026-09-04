@@ -84,6 +84,7 @@ async function installShell(page: Page): Promise<void> {
     }
     const calls = {
       signIn: 0,
+      register: 0,
       start: 0,
       stop: 0,
       retry: 0,
@@ -95,6 +96,9 @@ async function installShell(page: Page): Promise<void> {
     const handle = module.mountBrowserShell(root, {
       signIn: (): void => {
         calls.signIn += 1;
+      },
+      register: (): void => {
+        calls.register += 1;
       },
       start: (): void => {
         calls.start += 1;
@@ -672,4 +676,31 @@ test("startup journey stays on one steady card with visible progress", async ({
   await render(page, { view: "ready", activeRequestAccepted: false });
   await expect(title).toHaveText("Sandbox ready");
   await expect(page.locator(".kcac-progress")).toBeHidden();
+});
+
+test("signed-out view offers the credential form and submits sign-in", async ({
+  page,
+}) => {
+  await render(page, { view: "signed-out", activeRequestAccepted: false });
+  await ensureExpanded(page);
+  const email = page.getByLabel("Email address");
+  const password = page.getByLabel("Password", { exact: true });
+  await expect(email).toBeVisible();
+  // Empty submissions never leave the form.
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page.locator(".kcac-auth-hint")).toContainText(
+    "Enter your email",
+  );
+  await email.fill("dev@amazon.com");
+  await password.fill("correct-horse");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  const signIns = await page.evaluate(
+    () =>
+      (globalThis as typeof globalThis & { __task12Calls: { signIn: number } })
+        .__task12Calls.signIn,
+  );
+  expect(signIns).toBe(1);
+  // Other lifecycle views hide the form again.
+  await render(page, { view: "stopped", activeRequestAccepted: false });
+  await expect(email).toBeHidden();
 });

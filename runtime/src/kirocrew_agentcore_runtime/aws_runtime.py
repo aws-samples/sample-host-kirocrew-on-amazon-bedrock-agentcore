@@ -5,7 +5,7 @@ import contextlib
 import logging
 import os
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,10 +33,14 @@ from kirocrew_agentcore_adapter.transport import (
     RuntimeReadiness,
     SessionInitializationError,
 )
-from kirocrew_agentcore_persistence.checkpoint import CheckpointEngine, SystemFlusher
+from kirocrew_agentcore_persistence.checkpoint import (
+    CheckpointEngine,
+    CheckpointReceipt,
+    SystemFlusher,
+)
 from kirocrew_agentcore_persistence.durability import BrokeredCheckpointStore
 from kirocrew_agentcore_persistence.journal import DirtyJournal
-from kirocrew_agentcore_persistence.manifest import ManifestBuilder
+from kirocrew_agentcore_persistence.manifest import ManifestBuilder, workspace_fingerprint
 from kirocrew_agentcore_persistence.remote import LambdaBrokerClient, LambdaPersistenceBroker
 from kirocrew_agentcore_persistence.restore import RestoreEngine, RestoreError, RestoreReport
 
@@ -440,6 +444,7 @@ class ProductionRuntimeBackend:
         self._store: BrokeredCheckpointStore | None = None
         self._broker_client: LambdaBrokerClient | None = None
         self._checkpoint_lock = asyncio.Lock()
+        self._durability_tasks: set[asyncio.Task[bool]] = set()
 
     def configure(
         self,
@@ -474,6 +479,9 @@ class ProductionRuntimeBackend:
                 return
             if operation == "kiro.logout":
                 status = await self._identity.logout()
+                # The sign-out mutated the credential store; persist it so a
+                # restored sandbox does not resurrect the abandoned sign-in.
+                self._schedule_durability_checkpoint("kiro.logout")
                 yield "kiro.auth_status", status.payload()
                 return
             organization = _organization_login(payload)
@@ -483,42 +491,124 @@ class ProductionRuntimeBackend:
                 return
             # A new explicit login supersedes any stalled or abandoned flow.
             await self._identity.cancel_device_flow()
+            authenticated = False
             async for event in self._identity.device_flow_events(organization):
+                if event[0] == "kiro.authenticated":
+                    authenticated = True
                 yield event
+            if authenticated:
+                # Persist the fresh sign-in immediately: without this, a
+                # sandbox reclaimed before the next Stop safely would restore
+                # to a generation that predates the login.
+                self._schedule_durability_checkpoint("kiro.login")
             return
         if operation != "sandbox.prepare_stop":
             async for event in self._loopback.execute(operation, request_id, payload):
                 yield event
             return
         del request_id, payload
+        try:
+            receipt, checkpoint_receipt = await self._commit_checkpoint(final=True)
+        except Exception as error:
+            self._readiness.read_only = True
+            raise AdapterRequestError(
+                503,
+                "CHECKPOINT_FAILED",
+                "PERSISTENCE",
+                "The final checkpoint could not be committed.",
+                retryable=True,
+            ) from error
+        yield (
+            "checkpoint.committed",
+            {
+                "checkpointReceipt": checkpoint_receipt,
+                "generation": receipt.generation,
+                "manifestDigest": receipt.manifest_digest,
+            },
+        )
+        yield "request.completed", {"checkpointCommitted": True}
+
+    async def _commit_checkpoint(self, *, final: bool) -> tuple[CheckpointReceipt, str]:
         async with self._checkpoint_lock:
             engine, store, broker_client = self._checkpoint_context()
             generation = (store.latest_committed() or 0) + 1
-            try:
-                receipt = await asyncio.to_thread(engine.checkpoint, generation, final=True)
-                checkpoint_receipt = await asyncio.to_thread(
-                    broker_client.checkpoint_receipt,
-                    receipt.generation,
-                    receipt.manifest_digest,
-                )
-            except Exception as error:
-                self._readiness.read_only = True
-                raise AdapterRequestError(
-                    503,
-                    "CHECKPOINT_FAILED",
-                    "PERSISTENCE",
-                    "The final checkpoint could not be committed.",
-                    retryable=True,
-                ) from error
-            yield (
-                "checkpoint.committed",
-                {
-                    "checkpointReceipt": checkpoint_receipt,
-                    "generation": receipt.generation,
-                    "manifestDigest": receipt.manifest_digest,
-                },
+            receipt = await asyncio.to_thread(engine.checkpoint, generation, final=final)
+            checkpoint_receipt = await asyncio.to_thread(
+                broker_client.checkpoint_receipt,
+                receipt.generation,
+                receipt.manifest_digest,
+                final=final,
             )
-            yield "request.completed", {"checkpointCommitted": True}
+            return receipt, checkpoint_receipt
+
+    def _schedule_durability_checkpoint(self, reason: str) -> None:
+        if self._checkpoint_engine is None:
+            # Not configured (initialization still in flight); the state
+            # remains journaled for the next committed generation.
+            return
+        task = asyncio.get_running_loop().create_task(self._durability_checkpoint(reason))
+        self._durability_tasks.add(task)
+        task.add_done_callback(self._durability_tasks.discard)
+
+    async def _durability_checkpoint(self, reason: str) -> bool:
+        try:
+            receipt, _ = await self._commit_checkpoint(final=False)
+        except Exception:
+            # Best effort: the session keeps working and the sign-in stays
+            # usable; the next checkpoint attempt captures the same state.
+            _LOGGER.warning("Durability checkpoint after %s failed.", reason, exc_info=True)
+            return False
+        _LOGGER.info(
+            "Durability checkpoint after %s committed generation %d.",
+            reason,
+            receipt.generation,
+        )
+        return True
+
+    async def run_periodic_checkpoints(
+        self,
+        interval_seconds: float,
+        *,
+        fingerprint: Callable[[], str] | None = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        """Commit a durability checkpoint whenever the workspace changed.
+
+        Losses from a reclaimed session are bounded by *interval_seconds*.
+        The optional *fingerprint* callable lets idle intervals skip the
+        checkpoint entirely, so a quiet sandbox never pauses its gateway.
+        """
+        if interval_seconds <= 0:
+            raise ValueError("Checkpoint interval must be positive.")
+        last_committed: str | None = None
+        while True:
+            await sleep(interval_seconds)
+            if self._checkpoint_engine is None or self._readiness.read_only:
+                continue
+            current = None
+            if fingerprint is not None:
+                current = await asyncio.to_thread(fingerprint)
+                if current == last_committed:
+                    continue
+            if await self._durability_checkpoint("periodic-interval"):
+                last_committed = current
+
+    async def checkpoint_on_shutdown(self, *, timeout_seconds: float = 15.0) -> None:
+        """Best-effort final checkpoint when the runtime is being reclaimed.
+
+        A graceful SIGTERM is the only notice an idle-reclaimed session gets;
+        anything committed here survives the loss of managed session storage.
+        """
+        if self._checkpoint_engine is None:
+            return
+        try:
+            receipt, _ = await asyncio.wait_for(
+                self._commit_checkpoint(final=True), timeout_seconds
+            )
+        except Exception:
+            _LOGGER.warning("Final checkpoint on shutdown did not commit.", exc_info=True)
+            return
+        _LOGGER.info("Shutdown checkpoint committed generation %d.", receipt.generation)
 
     async def cancel(self, request_id: str) -> bool:
         return await self._loopback.cancel(request_id)
@@ -704,7 +794,11 @@ class AwsSessionInitializer:
         cipher = broker.cipher(claims.sandbox_id)
         committed = store.committed_generations()
         expected = metadata.last_checkpoint_generation
-        if expected is not None and (not committed or committed[-1].generation != expected):
+        # The durable store may be AHEAD of the recorded pointer: a background
+        # checkpoint can commit its generation to S3 and die before the
+        # receipt lands in DynamoDB. Restoring the newer committed generation
+        # is safe; only a store BEHIND the pointer indicates data loss.
+        if expected is not None and (not committed or committed[-1].generation < expected):
             raise RestoreError("PERSISTENCE_RESTORE_FAILED")
         report = RestoreEngine(
             self._workspace,
@@ -713,6 +807,14 @@ class AwsSessionInitializer:
             store,
             cipher,
         ).restore(existing_sandbox=expected is not None)
+        _LOGGER.info(
+            "Restore outcome=%s generation=%s fallback=%s attempts=%s reasons=%s",
+            report.outcome,
+            report.generation,
+            report.fallback_used,
+            list(report.attempted_generations),
+            list(report.reasons),
+        )
         self._supervisor.start(timeout_seconds=self._startup_timeout)
         if not self._supervisor.ready:
             raise SessionInitializationError("Loopback gateway did not become ready.")
@@ -812,6 +914,31 @@ async def build_runtime_application(
         await loopback_session.close()
         supervisor.terminate()
 
+    # Interval-bounded durability (0 disables): a session reclaimed without a
+    # graceful stop loses at most this many seconds of workspace mutations.
+    checkpoint_interval = float(environment.get("KIROCREW_CHECKPOINT_INTERVAL_SECONDS", "300"))
+    periodic_checkpoints: list[asyncio.Task[None]] = []
+
+    async def start_periodic_checkpoints(_application: web.Application) -> None:
+        if checkpoint_interval > 0:
+            periodic_checkpoints.append(
+                asyncio.get_running_loop().create_task(
+                    backend.run_periodic_checkpoints(
+                        checkpoint_interval,
+                        fingerprint=lambda: workspace_fingerprint(workspace),
+                    )
+                )
+            )
+
+    async def shutdown(_application: web.Application) -> None:
+        for task in periodic_checkpoints:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        await backend.checkpoint_on_shutdown()
+
+    adapter.application.on_startup.append(start_periodic_checkpoints)
+    adapter.application.on_shutdown.append(shutdown)
     adapter.application.on_cleanup.append(cleanup)
     return adapter.application
 

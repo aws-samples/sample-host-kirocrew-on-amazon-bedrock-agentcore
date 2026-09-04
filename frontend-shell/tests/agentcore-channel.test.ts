@@ -8,6 +8,7 @@ import {
   type RuntimeConnectionDescriptor,
 } from "../src/agentcore-channel.js";
 import { PROTOCOL_VERSION } from "../src/generated/protocol.js";
+import { chunkPayload } from "../src/protocol.js";
 import type { AgentCoreInvocation } from "../src/remote-transport.js";
 
 const TOKEN = "header.payload.signature";
@@ -139,6 +140,49 @@ function sseResponse(): Response {
     }),
     { status: 200, headers: { "content-type": "text/event-stream" } },
   );
+}
+
+function streamResponse(
+  events: readonly Readonly<Record<string, unknown>>[],
+): Response {
+  const encoder = new TextEncoder();
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller): void {
+        for (const event of events) {
+          controller.enqueue(
+            encoder.encode(
+              `event: ${String(event.operation)}\ndata: ${JSON.stringify(event)}\n\n`,
+            ),
+          );
+        }
+        controller.close();
+      },
+    }),
+    { status: 200, headers: { "content-type": "text/event-stream" } },
+  );
+}
+
+function chunkedDeltaEnvelopes(
+  payload: Readonly<Record<string, unknown>>,
+  limit: number,
+  firstSequence: number,
+): readonly Readonly<Record<string, unknown>>[] {
+  const encoded = new TextEncoder().encode(JSON.stringify(payload));
+  return chunkPayload(encoded, limit).map((chunk, index) => ({
+    version: PROTOCOL_VERSION,
+    messageId: "01J0000000000000000000001".concat(String(index % 10)),
+    requestId: INVOCATION.requestId,
+    operation: "output.delta",
+    sequence: firstSequence + index,
+    timestamp: "2026-01-01T00:00:01.000Z",
+    correlationId: "01J00000000000000000000002",
+    payload: {
+      chunkData: btoa(String.fromCharCode(...chunk.data)),
+      chunkIndex: chunk.index,
+      chunkTotal: chunk.total,
+    },
+  }));
 }
 
 describe("AgentCore browser channel", () => {
@@ -348,5 +392,99 @@ describe("AgentCore browser channel", () => {
       code === 1000 ||
         (typeof code === "number" && code >= 3000 && code <= 4999),
     ).toBe(true);
+  });
+
+  it("reassembles a chunked delta into one contiguously numbered event", async () => {
+    const body = { data: "b".repeat(40_000), encoding: "base64" };
+    const chunked = chunkedDeltaEnvelopes(body, 4_096, 1);
+    expect(chunked.length).toBeGreaterThan(1);
+    const events = [
+      {
+        version: PROTOCOL_VERSION,
+        messageId: "01J00000000000000000000001",
+        requestId: INVOCATION.requestId,
+        operation: "request.accepted",
+        sequence: 0,
+        timestamp: "2026-01-01T00:00:00.000Z",
+        correlationId: "01J00000000000000000000002",
+        payload: { status: 200 },
+      },
+      ...chunked,
+      {
+        version: PROTOCOL_VERSION,
+        messageId: "01J00000000000000000000004",
+        requestId: INVOCATION.requestId,
+        operation: "request.completed",
+        sequence: 1 + chunked.length,
+        timestamp: "2026-01-01T00:00:02.000Z",
+        correlationId: "01J00000000000000000000002",
+        payload: { status: 200 },
+      },
+    ];
+    const seen: unknown[] = [];
+    const channel = new AgentCoreBrowserChannel(DESCRIPTOR, {
+      region: REGION,
+      accessToken: (): Promise<string> => Promise.resolve(TOKEN),
+      fetch: ((): Promise<Response> =>
+        Promise.resolve(streamResponse(events))) as typeof fetch,
+      onEnvelope: (envelope): void => void seen.push(envelope.operation),
+    });
+
+    const received = [];
+    for await (const event of channel.invoke(INVOCATION)) {
+      received.push(event);
+    }
+
+    expect(received.map((event) => event.sequence)).toEqual([0, 1, 2]);
+    expect(received.map((event) => event.operation)).toEqual([
+      "request.accepted",
+      "output.delta",
+      "request.completed",
+    ]);
+    expect(received[1]?.payload).toEqual(body);
+    expect(seen).toEqual([
+      "request.accepted",
+      "output.delta",
+      "request.completed",
+    ]);
+  });
+
+  it("fails the invocation when the wire event sequence has a gap", async () => {
+    const events = [
+      {
+        version: PROTOCOL_VERSION,
+        messageId: "01J00000000000000000000001",
+        requestId: INVOCATION.requestId,
+        operation: "request.accepted",
+        sequence: 0,
+        timestamp: "2026-01-01T00:00:00.000Z",
+        correlationId: "01J00000000000000000000002",
+        payload: { status: 200 },
+      },
+      {
+        version: PROTOCOL_VERSION,
+        messageId: "01J00000000000000000000004",
+        requestId: INVOCATION.requestId,
+        operation: "request.completed",
+        sequence: 2,
+        timestamp: "2026-01-01T00:00:02.000Z",
+        correlationId: "01J00000000000000000000002",
+        payload: { status: 200 },
+      },
+    ];
+    const channel = new AgentCoreBrowserChannel(DESCRIPTOR, {
+      region: REGION,
+      accessToken: (): Promise<string> => Promise.resolve(TOKEN),
+      fetch: ((): Promise<Response> =>
+        Promise.resolve(streamResponse(events))) as typeof fetch,
+    });
+
+    await expect(
+      (async (): Promise<void> => {
+        for await (const event of channel.invoke(INVOCATION)) {
+          void event;
+        }
+      })(),
+    ).rejects.toThrow(AgentCoreConnectionError);
   });
 });

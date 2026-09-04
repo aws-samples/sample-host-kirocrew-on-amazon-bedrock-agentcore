@@ -10,10 +10,10 @@ import {
   type SandboxState,
 } from "./lifecycle.js";
 import {
-  CognitoPkceClient,
-  OAuthError,
-  type CognitoOAuthConfig,
-} from "./oauth.js";
+  PasswordAuthClient,
+  PasswordAuthError,
+  type PasswordAuthConfig,
+} from "./auth.js";
 import {
   PROTOCOL_VERSION,
   type ProtocolEnvelope,
@@ -32,7 +32,7 @@ const POLL_INTERVAL_MS = 2_000;
 const PING_INTERVAL_MS = 20_000;
 
 export interface BrowserApplicationConfig {
-  readonly oauth: CognitoOAuthConfig;
+  readonly auth: PasswordAuthConfig;
   readonly region: string;
   readonly shellOrigin: string;
   readonly upstreamOrigin: string;
@@ -45,7 +45,6 @@ export interface BrowserApplicationOptions {
   readonly fetch?: typeof fetch;
   readonly crypto?: Crypto;
   readonly now?: () => number;
-  readonly navigate?: (url: URL) => void;
   readonly setTimeout?: typeof setTimeout;
   readonly clearTimeout?: typeof clearTimeout;
   readonly installTransport?: (
@@ -279,12 +278,11 @@ class ControlApiClient {
 export class BrowserApplication {
   readonly #config: BrowserApplicationConfig;
   readonly #target: BootstrapTarget;
-  readonly #oauth: CognitoPkceClient;
+  readonly #auth: PasswordAuthClient;
   readonly #store: LifecycleStore;
   readonly #control: ControlApiClient;
   readonly #crypto: Crypto;
   readonly #now: () => number;
-  readonly #navigate: (url: URL) => void;
   readonly #setTimeout: typeof setTimeout;
   readonly #clearTimeout: typeof clearTimeout;
   readonly #installTransport: (
@@ -321,8 +319,6 @@ export class BrowserApplication {
     const fetchValue = options.fetch ?? fetch;
     this.#crypto = options.crypto ?? crypto;
     this.#now = options.now ?? Date.now;
-    this.#navigate =
-      options.navigate ?? ((url: URL): void => window.location.assign(url));
     // Bare `window.setTimeout` invoked as a method of this class throws
     // "Illegal invocation" in browsers; bind the defaults to globalThis.
     this.#setTimeout = options.setTimeout ?? setTimeout.bind(globalThis);
@@ -335,24 +331,24 @@ export class BrowserApplication {
           "The remote transport installer is unavailable.",
         );
       });
-    this.#oauth = new CognitoPkceClient(config.oauth, {
+    this.#auth = new PasswordAuthClient(config.auth, {
       storage,
       fetch: fetchValue,
-      crypto: this.#crypto,
       now: this.#now,
     });
     this.#store = new LifecycleStore(
-      this.#oauth.session() !== undefined,
+      this.#auth.session() !== undefined,
       this.#now,
     );
     this.#control = new ControlApiClient(
       config.shellOrigin,
-      (): Promise<string> => this.#oauth.accessToken(),
+      (): Promise<string> => this.#auth.accessToken(),
       fetchValue,
       (): string => ulid(this.#crypto, this.#now()),
     );
     this.#shell = mountBrowserShell(root, {
-      signIn: (): Promise<void> => this.signIn(),
+      signIn: (credentials): Promise<void> => this.signIn(credentials),
+      register: (credentials): Promise<void> => this.register(credentials),
       start: (): Promise<void> => this.start(),
       stop: (): void => this.stop(),
       retry: (): Promise<void> => this.retry(),
@@ -368,34 +364,29 @@ export class BrowserApplication {
     return this.#store;
   }
 
-  public async boot(
-    callbackUrl = new URL(window.location.href),
-  ): Promise<void> {
-    if (
-      callbackUrl.searchParams.has("code") ||
-      callbackUrl.searchParams.has("error")
-    ) {
-      try {
-        const result = await this.#oauth.handleCallback(callbackUrl);
-        window.history.replaceState({}, "", result.returnTo);
-      } catch (error: unknown) {
-        this.#oauth.clear();
-        this.#terminal(error);
-        return;
-      }
-    }
-    if (this.#oauth.session() === undefined) {
+  public async boot(): Promise<void> {
+    if (this.#auth.session() === undefined) {
       this.#store.dispatch({ type: "signed-out" });
       return;
     }
     await this.#refreshStatus(true);
   }
 
-  public async signIn(): Promise<void> {
-    const url = await this.#oauth.createAuthorizationUrl(
-      `${window.location.pathname}${window.location.search}`,
-    );
-    this.#navigate(url);
+  public async signIn(credentials: {
+    readonly email: string;
+    readonly password: string;
+  }): Promise<void> {
+    // Failures surface in the sign-in form; the page never becomes locked.
+    await this.#auth.signIn(credentials.email, credentials.password);
+    await this.#refreshStatus(true);
+  }
+
+  public async register(credentials: {
+    readonly email: string;
+    readonly password: string;
+  }): Promise<void> {
+    await this.#auth.register(credentials.email, credentials.password);
+    await this.signIn(credentials);
   }
 
   public async start(): Promise<void> {
@@ -492,9 +483,8 @@ export class BrowserApplication {
 
   public logout(): void {
     this.#disconnect();
-    const url = this.#oauth.logoutUrl();
+    this.#auth.clear();
     this.#store.dispatch({ type: "signed-out" });
-    this.#navigate(url);
   }
 
   public destroy(): void {
@@ -508,7 +498,7 @@ export class BrowserApplication {
     const connectionGeneration = ++this.#connectionGeneration;
     const channel = new AgentCoreBrowserChannel(descriptor, {
       region: this.#config.region,
-      accessToken: (): Promise<string> => this.#oauth.accessToken(),
+      accessToken: (): Promise<string> => this.#auth.accessToken(),
       onEnvelope: (envelope): void => this.#onEnvelope(envelope),
       onClose: (): void => {
         if (
@@ -848,8 +838,11 @@ export class BrowserApplication {
         await this.start();
       }
     } catch (error: unknown) {
-      if (error instanceof OAuthError && error.code === "SESSION_EXPIRED") {
-        this.#oauth.clear();
+      if (
+        error instanceof PasswordAuthError &&
+        error.code === "SESSION_EXPIRED"
+      ) {
+        this.#auth.clear();
         this.#store.dispatch({ type: "signed-out" });
       } else {
         this.#terminal(error);
@@ -912,7 +905,8 @@ export class BrowserApplication {
 
   #terminalFinal(error: unknown): void {
     const safe =
-      error instanceof BrowserApplicationError || error instanceof OAuthError
+      error instanceof BrowserApplicationError ||
+      error instanceof PasswordAuthError
         ? {
             code: error.code,
             message: error.message,

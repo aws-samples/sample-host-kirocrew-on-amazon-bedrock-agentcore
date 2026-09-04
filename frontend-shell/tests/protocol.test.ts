@@ -5,6 +5,7 @@ import {
   type ProtocolEnvelope,
 } from "../src/generated/protocol.js";
 import {
+  ChunkedEnvelopeAssembler,
   ProtocolValidationError,
   SequenceTracker,
   chunkPayload,
@@ -92,6 +93,122 @@ describe("frame chunking", () => {
           { index: 0, total: 2, data: new Uint8Array([2]) },
         ]),
       "SEQUENCE_ERROR",
+    );
+  });
+});
+
+describe("chunked envelope assembly", () => {
+  const deltaEnvelope: ProtocolEnvelope = {
+    ...validEnvelope,
+    operation: "output.delta",
+    payload: { data: "x", encoding: "base64", transport: "http" },
+  };
+
+  function chunkEnvelopes(
+    payload: Readonly<Record<string, unknown>>,
+    limit: number,
+  ): readonly ProtocolEnvelope[] {
+    const encoded = new TextEncoder().encode(JSON.stringify(payload));
+    return chunkPayload(encoded, limit).map((chunk, index) => ({
+      ...deltaEnvelope,
+      sequence: index,
+      payload: {
+        chunkData: btoa(String.fromCharCode(...chunk.data)),
+        chunkIndex: chunk.index,
+        chunkTotal: chunk.total,
+      },
+    }));
+  }
+
+  it("passes unchunked envelopes straight through", (): void => {
+    const assembler = new ChunkedEnvelopeAssembler();
+    expect(assembler.accept(deltaEnvelope)).toBe(deltaEnvelope);
+  });
+
+  it("rebuilds the original payload from a run of chunk envelopes", (): void => {
+    const payload = {
+      data: "a".repeat(5_000),
+      encoding: "base64",
+      transport: "http",
+    };
+    const envelopes = chunkEnvelopes(payload, 512);
+    expect(envelopes.length).toBeGreaterThan(1);
+    const assembler = new ChunkedEnvelopeAssembler();
+    const results = envelopes.map((envelope) => assembler.accept(envelope));
+    expect(results.slice(0, -1).every((result) => result === undefined)).toBe(
+      true,
+    );
+    const last = results.at(-1);
+    expect(last?.payload).toEqual(payload);
+    expect(last?.operation).toBe("output.delta");
+  });
+
+  it("keeps concurrent request streams independent", (): void => {
+    const other = "01J0000000000000000000000X";
+    const assembler = new ChunkedEnvelopeAssembler();
+    const first = chunkEnvelopes({ data: "1".repeat(2_000) }, 512);
+    const second = chunkEnvelopes({ data: "2".repeat(2_000) }, 512).map(
+      (envelope) => ({ ...envelope, requestId: other }),
+    );
+    for (let index = 0; index < first.length - 1; index += 1) {
+      expect(
+        assembler.accept(first[index] as ProtocolEnvelope),
+      ).toBeUndefined();
+      expect(
+        assembler.accept(second[index] as ProtocolEnvelope),
+      ).toBeUndefined();
+    }
+    expect(assembler.accept(first.at(-1) as ProtocolEnvelope)?.payload).toEqual(
+      {
+        data: "1".repeat(2_000),
+      },
+    );
+    expect(
+      assembler.accept(second.at(-1) as ProtocolEnvelope)?.payload,
+    ).toEqual({ data: "2".repeat(2_000) });
+  });
+
+  it("rejects gaps, interleaving, and unparseable chunk groups", (): void => {
+    const envelopes = chunkEnvelopes({ data: "z".repeat(2_000) }, 512);
+    const skipped = new ChunkedEnvelopeAssembler();
+    skipped.accept(envelopes[0] as ProtocolEnvelope);
+    expectProtocolError(
+      () => skipped.accept(envelopes[2] as ProtocolEnvelope),
+      "SEQUENCE_ERROR",
+    );
+    const interleaved = new ChunkedEnvelopeAssembler();
+    interleaved.accept(envelopes[0] as ProtocolEnvelope);
+    expectProtocolError(
+      () => interleaved.accept(deltaEnvelope),
+      "SEQUENCE_ERROR",
+    );
+    expectProtocolError(
+      () =>
+        new ChunkedEnvelopeAssembler().accept({
+          ...deltaEnvelope,
+          payload: {
+            chunkData: btoa("not json"),
+            chunkIndex: 0,
+            chunkTotal: 1,
+          },
+        }),
+      "INVALID_MESSAGE",
+    );
+    expectProtocolError(
+      () =>
+        new ChunkedEnvelopeAssembler().accept({
+          ...deltaEnvelope,
+          payload: { chunkData: "!!", chunkIndex: 0, chunkTotal: 1 },
+        }),
+      "INVALID_MESSAGE",
+    );
+    expectProtocolError(
+      () =>
+        new ChunkedEnvelopeAssembler().accept({
+          ...deltaEnvelope,
+          payload: { chunkData: "AA==", chunkIndex: 2, chunkTotal: 2 },
+        }),
+      "INVALID_MESSAGE",
     );
   });
 });

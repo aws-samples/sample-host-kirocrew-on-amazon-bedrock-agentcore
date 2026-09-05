@@ -64,8 +64,11 @@ class EmailPolicy:
             raise AuthRequestError(400, "INVALID_EMAIL", "A valid email address is required.")
         if match.group(1) not in self.allowed_domains:
             allowed = ", ".join(self.allowed_domains)
+            # 422, not 403: the CloudFront distribution rewrites 403/404
+            # responses into the SPA fallback page for deep links, which
+            # would swallow this error body on its way to the sign-in form.
             raise AuthRequestError(
-                403,
+                422,
                 "DOMAIN_NOT_ALLOWED",
                 f"Registration and sign-in are limited to: {allowed}.",
             )

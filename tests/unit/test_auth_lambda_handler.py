@@ -73,7 +73,7 @@ def test_email_policy_normalizes_validates_and_enforces_domains() -> None:
     with pytest.raises(auth.AuthRequestError) as denied:
         policy.validate("user@other.com")
     assert denied.value.code == "DOMAIN_NOT_ALLOWED"
-    assert denied.value.status == 403
+    assert denied.value.status == 422
     # A subdomain is a different domain.
     with pytest.raises(auth.AuthRequestError):
         policy.validate("user@evil.amazon.com.attacker.net")
@@ -251,7 +251,7 @@ def test_handler_routes_requests_and_maps_errors(monkeypatch: pytest.MonkeyPatch
         event("POST /auth/v1/login", {"email": "dev@other.com", "password": "Horse#4242"}),
         object(),
     )
-    assert denied["statusCode"] == 403
+    assert denied["statusCode"] == 422
     assert json.loads(cast_str(denied["body"]))["code"] == "DOMAIN_NOT_ALLOWED"
 
     for body in (None, "{", json.dumps([1]), "x" * 5000):

@@ -186,7 +186,9 @@ account directly in the floating panel: registration and sign-in go through a
 gated Lambda that only accepts email addresses on the domains in the
 `allowed_email_domains` variable (default `amazon.com`). Individual addresses
 outside those domains can be admitted through `allowed_email_patterns`, a list
-of regular expressions matched against the full address. Nobody can register or
+of regular expressions matched against the full address. New accounts confirm
+their email address with a code sent to it, and the form can resend the code.
+Nobody can register or
 sign in against Cognito directly. After signing in, press **Start**. The first
 start of a new sandbox takes about a minute; later starts restore the
 checkpoint in seconds.

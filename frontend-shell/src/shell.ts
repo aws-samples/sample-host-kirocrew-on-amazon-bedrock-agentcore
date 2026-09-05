@@ -21,9 +21,17 @@ export interface PasswordResetRequest {
   readonly password: string;
 }
 
+export interface EmailConfirmation {
+  readonly email: string;
+  readonly password: string;
+  readonly code: string;
+}
+
 export interface BrowserShellActions {
   readonly signIn: (credentials: AuthCredentials) => void | Promise<void>;
   readonly register: (credentials: AuthCredentials) => void | Promise<void>;
+  readonly confirmEmail: (request: EmailConfirmation) => void | Promise<void>;
+  readonly resendCode: (credentials: AuthCredentials) => void | Promise<void>;
   readonly forgotPassword: (email: string) => void | Promise<void>;
   readonly resetPassword: (
     request: PasswordResetRequest,
@@ -257,6 +265,7 @@ function installStyles(document: Document): void {
        mode-specific rows joins the column via display: contents. */
     .kcac-auth [data-authpart] { display: none; }
     .kcac-auth[data-authmode="sign-in"] [data-authpart="sign-in"],
+    .kcac-auth[data-authmode="confirm"] [data-authpart="confirm"],
     .kcac-auth[data-authmode="reset"] [data-authpart="reset"] { display: contents; }
     .kcac-pw { position: relative; }
     .kcac-pw .kcac-input { padding-right: 42px; }
@@ -596,6 +605,31 @@ export function mountBrowserShell(
     authForgotLink,
   );
 
+  const confirmNote = createElement(document, "p", "kcac-auth-note");
+  confirmNote.textContent =
+    "Confirm your email address: enter the code we sent you.";
+  const confirmCode = createElement(document, "input", "kcac-input");
+  confirmCode.type = "text";
+  confirmCode.inputMode = "numeric";
+  confirmCode.setAttribute("autocomplete", "one-time-code");
+  confirmCode.placeholder = "Code from the email";
+  confirmCode.setAttribute("aria-label", "Confirmation code");
+  const confirmActions = createElement(document, "div", "kcac-kiro-actions");
+  const authConfirm = createElement(document, "button", "kcac-button");
+  authConfirm.type = "button";
+  authConfirm.dataset.primary = "true";
+  authConfirm.textContent = "Confirm email";
+  const authResend = createElement(document, "button", "kcac-button");
+  authResend.type = "button";
+  authResend.textContent = "Resend code";
+  confirmActions.append(authConfirm, authResend);
+  const authConfirmBack = createElement(document, "button", "kcac-auth-link");
+  authConfirmBack.type = "button";
+  authConfirmBack.textContent = "Back to sign in";
+  const confirmPart = createElement(document, "div");
+  confirmPart.dataset.authpart = "confirm";
+  confirmPart.append(confirmNote, confirmCode, confirmActions, authConfirmBack);
+
   const authCode = createElement(document, "input", "kcac-input");
   authCode.type = "text";
   authCode.inputMode = "numeric";
@@ -632,7 +666,7 @@ export function mountBrowserShell(
   const authHint = createElement(document, "p", "kcac-auth-hint");
   authHint.setAttribute("role", "alert");
   authHint.hidden = true;
-  auth.append(authEmail, signinPart, resetPart, authHint);
+  auth.append(authEmail, signinPart, confirmPart, resetPart, authHint);
 
   const kiro = createElement(document, "section", "kcac-kiro");
   kiro.setAttribute("aria-label", "Kiro account");
@@ -803,14 +837,26 @@ export function mountBrowserShell(
     }
   });
 
+  const setAuthMode = (mode: "sign-in" | "confirm" | "reset"): void => {
+    auth.dataset.authmode = mode;
+    authHint.hidden = true;
+  };
+  const authNotice = (message: string): void => {
+    authHint.hidden = false;
+    authHint.textContent = message;
+  };
+  const isUnverified = (error: unknown): boolean =>
+    error instanceof Error &&
+    (error as { code?: unknown }).code === "EMAIL_NOT_VERIFIED";
+
   const submitAuth = (
     action: (credentials: AuthCredentials) => void | Promise<void>,
+    kind: "sign-in" | "register",
   ): void => {
     const email = authEmail.value.trim();
     const password = authPassword.value;
     if (!email.includes("@") || password.length === 0) {
-      authHint.hidden = false;
-      authHint.textContent = "Enter your email address and password.";
+      authNotice("Enter your email address and password.");
       return;
     }
     authHint.hidden = true;
@@ -819,38 +865,115 @@ export function mountBrowserShell(
     void (async (): Promise<void> => {
       try {
         await action({ email, password });
-        authPassword.value = "";
+        if (kind === "register") {
+          // The password stays in the field: confirming and resending act
+          // with the user's own just-created credentials.
+          setAuthMode("confirm");
+          authNotice(`We emailed a code to ${email}.`);
+        } else {
+          authPassword.value = "";
+        }
       } catch (error: unknown) {
-        authHint.hidden = false;
-        authHint.textContent =
-          error instanceof Error
-            ? error.message
-            : "Sign-in could not be completed. Try again.";
+        if (isUnverified(error)) {
+          setAuthMode("confirm");
+          authNotice(
+            "Confirm your email address first: enter the code we emailed you, or resend it.",
+          );
+        } else {
+          authNotice(
+            error instanceof Error
+              ? error.message
+              : "Sign-in could not be completed. Try again.",
+          );
+        }
       } finally {
         authSignIn.disabled = false;
         authRegister.disabled = false;
       }
     })();
   };
-  authSignIn.addEventListener("click", () => submitAuth(actions.signIn));
-  authRegister.addEventListener("click", () => submitAuth(actions.register));
+  authSignIn.addEventListener("click", () =>
+    submitAuth(actions.signIn, "sign-in"),
+  );
+  authRegister.addEventListener("click", () =>
+    submitAuth(actions.register, "register"),
+  );
   authPassword.addEventListener("keydown", (event: KeyboardEvent) => {
     if (event.key === "Enter") {
-      submitAuth(actions.signIn);
+      submitAuth(actions.signIn, "sign-in");
     }
   });
 
-  const setAuthMode = (mode: "sign-in" | "reset"): void => {
-    auth.dataset.authmode = mode;
-    authHint.hidden = true;
+  const confirmCredentials = ():
+    | { email: string; password: string }
+    | undefined => {
+    const email = authEmail.value.trim();
+    const password = authPassword.value;
+    if (!email.includes("@") || password.length === 0) {
+      setAuthMode("sign-in");
+      authNotice("Enter your email address and password first.");
+      return undefined;
+    }
+    return { email, password };
   };
+  authConfirm.addEventListener("click", () => {
+    const credentials = confirmCredentials();
+    if (credentials === undefined) {
+      return;
+    }
+    const code = confirmCode.value.trim();
+    if (code.length === 0) {
+      authNotice("Enter the code from the email.");
+      return;
+    }
+    authHint.hidden = true;
+    authConfirm.disabled = true;
+    authResend.disabled = true;
+    void (async (): Promise<void> => {
+      try {
+        await actions.confirmEmail({ ...credentials, code });
+        confirmCode.value = "";
+        authPassword.value = "";
+        setAuthMode("sign-in");
+      } catch (error: unknown) {
+        authNotice(
+          error instanceof Error
+            ? error.message
+            : "The code could not be confirmed. Try again.",
+        );
+      } finally {
+        authConfirm.disabled = false;
+        authResend.disabled = false;
+      }
+    })();
+  });
+  authResend.addEventListener("click", () => {
+    const credentials = confirmCredentials();
+    if (credentials === undefined) {
+      return;
+    }
+    authHint.hidden = true;
+    authResend.disabled = true;
+    void (async (): Promise<void> => {
+      try {
+        await actions.resendCode(credentials);
+        authNotice(`A new code is on its way to ${credentials.email}.`);
+      } catch (error: unknown) {
+        authNotice(
+          error instanceof Error
+            ? error.message
+            : "The code could not be sent. Try again.",
+        );
+      } finally {
+        authResend.disabled = false;
+      }
+    })();
+  });
+  authConfirmBack.addEventListener("click", () => setAuthMode("sign-in"));
+
   authForgotLink.addEventListener("click", () => setAuthMode("reset"));
   authBackLink.addEventListener("click", () => setAuthMode("sign-in"));
 
-  const authNotice = (message: string): void => {
-    authHint.hidden = false;
-    authHint.textContent = message;
-  };
   authSendCode.addEventListener("click", () => {
     const email = authEmail.value.trim();
     if (!email.includes("@")) {

@@ -149,6 +149,44 @@ describe("PasswordAuthClient", () => {
     expect(subject.auth.session()).toBeUndefined();
   });
 
+  it("confirming the emailed code stores a session; resending does not", async () => {
+    subject = client([
+      jsonResponse(200, { sent: true }),
+      jsonResponse(200, TOKENS),
+    ]);
+    await subject.auth.resendCode("dev@amazon.com", "pw");
+    expect(subject.auth.session()).toBeUndefined();
+    const session = await subject.auth.confirmEmail(
+      "dev@amazon.com",
+      "pw",
+      "123456",
+    );
+    expect(session.accessToken).toBe("access-token");
+    expect(subject.auth.session()).toBeDefined();
+    expect(subject.requests).toEqual([
+      {
+        url: "/auth/v1/resend",
+        body: { email: "dev@amazon.com", password: "pw" },
+      },
+      {
+        url: "/auth/v1/confirm",
+        body: { email: "dev@amazon.com", password: "pw", code: "123456" },
+      },
+    ]);
+  });
+
+  it("surfaces the unverified-email code distinctly", async () => {
+    subject = client([
+      jsonResponse(409, {
+        code: "EMAIL_NOT_VERIFIED",
+        message: "Confirm your email address first.",
+      }),
+    ]);
+    await expect(subject.auth.signIn("a@b.com", "p")).rejects.toMatchObject({
+      code: "EMAIL_NOT_VERIFIED",
+    });
+  });
+
   it("requests a reset code and confirms the new password", async () => {
     subject = client([
       jsonResponse(200, { sent: true }),

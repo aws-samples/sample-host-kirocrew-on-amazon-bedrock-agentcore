@@ -218,6 +218,7 @@ data "aws_iam_policy_document" "auth" {
     actions = [
       "cognito-idp:AdminCreateUser",
       "cognito-idp:AdminDeleteUser",
+      "cognito-idp:AdminGetUser",
       "cognito-idp:AdminInitiateAuth",
       "cognito-idp:AdminSetUserPassword",
     ]
@@ -273,6 +274,8 @@ resource "aws_apigatewayv2_integration" "auth" {
 resource "aws_apigatewayv2_route" "auth" {
   for_each = toset([
     "POST /auth/v1/register",
+    "POST /auth/v1/confirm",
+    "POST /auth/v1/resend",
     "POST /auth/v1/login",
     "POST /auth/v1/refresh",
     "POST /auth/v1/forgot",

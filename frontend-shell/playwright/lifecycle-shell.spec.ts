@@ -87,6 +87,8 @@ async function installShell(page: Page): Promise<void> {
       register: 0,
       forgotPassword: [] as unknown[],
       resetPassword: [] as unknown[],
+      confirmEmail: [] as unknown[],
+      resendCode: [] as unknown[],
       start: 0,
       stop: 0,
       retry: 0,
@@ -107,6 +109,12 @@ async function installShell(page: Page): Promise<void> {
       },
       resetPassword: (request: unknown): void => {
         calls.resetPassword.push(request);
+      },
+      confirmEmail: (request: unknown): void => {
+        calls.confirmEmail.push(request);
+      },
+      resendCode: (credentials: unknown): void => {
+        calls.resendCode.push(credentials);
       },
       start: (): void => {
         calls.start += 1;
@@ -711,6 +719,51 @@ test("signed-out view offers the credential form and submits sign-in", async ({
   // Other lifecycle views hide the form again.
   await render(page, { view: "stopped", activeRequestAccepted: false });
   await expect(email).toBeHidden();
+});
+
+test("registration asks for the emailed code and can resend it", async ({
+  page,
+}) => {
+  await render(page, { view: "signed-out", activeRequestAccepted: false });
+  await ensureExpanded(page);
+  const registerPassword = ["correct", "horse", "14"].join("-");
+  await page.getByLabel("Email address").fill("dev@amazon.com");
+  await page.getByLabel("Password", { exact: true }).fill(registerPassword);
+  await page.getByRole("button", { name: "Create account" }).click();
+  // Success flips the form into the confirmation step.
+  await expect(page.locator(".kcac-auth-hint")).toContainText(
+    "emailed a code to dev@amazon.com",
+  );
+  await expect(
+    page.getByRole("button", { name: "Sign in", exact: true }),
+  ).toBeHidden();
+  // A fresh code can be requested while unconfirmed.
+  await page.getByRole("button", { name: "Resend code" }).click();
+  await expect(page.locator(".kcac-auth-hint")).toContainText(
+    "A new code is on its way",
+  );
+  // Confirming requires the code.
+  await page.getByRole("button", { name: "Confirm email" }).click();
+  await expect(page.locator(".kcac-auth-hint")).toContainText("Enter the code");
+  await page.getByLabel("Confirmation code").fill("654321");
+  await page.getByRole("button", { name: "Confirm email" }).click();
+  await expect(
+    page.getByRole("button", { name: "Sign in", exact: true }),
+  ).toBeVisible();
+  const calls = await page.evaluate(
+    () =>
+      (
+        globalThis as typeof globalThis & {
+          __task12Calls: { confirmEmail: unknown[]; resendCode: unknown[] };
+        }
+      ).__task12Calls,
+  );
+  expect(calls.resendCode).toEqual([
+    { email: "dev@amazon.com", password: registerPassword },
+  ]);
+  expect(calls.confirmEmail).toEqual([
+    { email: "dev@amazon.com", password: registerPassword, code: "654321" },
+  ]);
 });
 
 test("the eye toggle reveals and hides the password text", async ({ page }) => {

@@ -349,6 +349,9 @@ export class BrowserApplication {
     this.#shell = mountBrowserShell(root, {
       signIn: (credentials): Promise<void> => this.signIn(credentials),
       register: (credentials): Promise<void> => this.register(credentials),
+      confirmEmail: (request): Promise<void> => this.confirmEmail(request),
+      resendCode: (credentials): Promise<void> =>
+        this.#auth.resendCode(credentials.email, credentials.password),
       forgotPassword: (email): Promise<void> =>
         this.#auth.forgotPassword(email),
       resetPassword: (request): Promise<void> =>
@@ -389,8 +392,22 @@ export class BrowserApplication {
     readonly email: string;
     readonly password: string;
   }): Promise<void> {
+    // Registration ends at the confirmation step: the emailed code, entered
+    // in the form, both verifies the address and signs the user in.
     await this.#auth.register(credentials.email, credentials.password);
-    await this.signIn(credentials);
+  }
+
+  public async confirmEmail(request: {
+    readonly email: string;
+    readonly password: string;
+    readonly code: string;
+  }): Promise<void> {
+    await this.#auth.confirmEmail(
+      request.email,
+      request.password,
+      request.code,
+    );
+    await this.#refreshStatus(true);
   }
 
   public async start(): Promise<void> {

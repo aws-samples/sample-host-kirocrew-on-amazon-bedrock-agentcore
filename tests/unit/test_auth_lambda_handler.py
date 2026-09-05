@@ -22,9 +22,15 @@ class FakeCognito:
         self.passwords: list[dict[str, Any]] = []
         self.auth_requests: list[dict[str, Any]] = []
         self.deleted: list[str] = []
-        self.create_error: ClientError | None = None
+        self.create_errors: list[ClientError] = []
         self.password_error: ClientError | None = None
         self.auth_error: ClientError | None = None
+        self.email_verified = True
+        self.get_user_error: ClientError | None = None
+        self.code_requests: list[dict[str, Any]] = []
+        self.code_error: ClientError | None = None
+        self.verify_requests: list[dict[str, Any]] = []
+        self.verify_error: ClientError | None = None
         self.forgot_requests: list[dict[str, Any]] = []
         self.forgot_error: ClientError | None = None
         self.confirm_requests: list[dict[str, Any]] = []
@@ -40,8 +46,8 @@ class FakeCognito:
 
     def admin_create_user(self, **request: Any) -> dict[str, object]:
         self.created.append(request)
-        if self.create_error is not None:
-            raise self.create_error
+        if self.create_errors:
+            raise self.create_errors.pop(0)
         return {}
 
     def admin_set_user_password(self, **request: Any) -> dict[str, object]:
@@ -59,6 +65,24 @@ class FakeCognito:
         if self.auth_error is not None:
             raise self.auth_error
         return self.auth_response
+
+    def admin_get_user(self, **request: Any) -> dict[str, object]:
+        if self.get_user_error is not None:
+            raise self.get_user_error
+        value = "true" if self.email_verified else "false"
+        return {"UserAttributes": [{"Name": "email_verified", "Value": value}]}
+
+    def get_user_attribute_verification_code(self, **request: Any) -> dict[str, object]:
+        self.code_requests.append(request)
+        if self.code_error is not None:
+            raise self.code_error
+        return {}
+
+    def verify_user_attribute(self, **request: Any) -> dict[str, object]:
+        self.verify_requests.append(request)
+        if self.verify_error is not None:
+            raise self.verify_error
+        return {}
 
     def forgot_password(self, **request: Any) -> dict[str, object]:
         self.forgot_requests.append(request)
@@ -99,28 +123,121 @@ def test_email_policy_normalizes_validates_and_enforces_domains() -> None:
         auth.EmailPolicy.from_environment(" , ")
 
 
-def test_registration_creates_a_confirmed_user_with_permanent_password() -> None:
+def test_registration_creates_an_unverified_user_and_emails_a_code() -> None:
     subject, fake = service()
     subject.register("Dev@Amazon.com", "CorrectHorse#42")
     assert fake.created[0]["Username"] == "dev@amazon.com"
     assert fake.created[0]["MessageAction"] == "SUPPRESS"
-    assert {"Name": "email_verified", "Value": "true"} in fake.created[0]["UserAttributes"]
+    assert {"Name": "email_verified", "Value": "false"} in fake.created[0]["UserAttributes"]
     assert fake.passwords[0]["Permanent"] is True
     assert fake.deleted == []
+    # The confirmation code is requested with the user's own fresh session.
+    assert fake.code_requests[0] == {"AccessToken": "access", "AttributeName": "email"}
 
     with pytest.raises(auth.AuthRequestError) as bad_password:
         subject.register("dev@amazon.com", "short")
     assert bad_password.value.code == "INVALID_PASSWORD"
 
-    fake.create_error = client_error("UsernameExistsException")
+    fake.create_errors = [client_error("UsernameExistsException")]
     with pytest.raises(auth.AuthRequestError) as exists:
         subject.register("dev@amazon.com", "CorrectHorse#42")
     assert exists.value.status == 409
 
-    fake.create_error = client_error("InternalErrorException")
+    fake.create_errors = [client_error("InternalErrorException")]
     with pytest.raises(auth.AuthRequestError) as unavailable:
         subject.register("dev@amazon.com", "CorrectHorse#42")
     assert unavailable.value.status == 502
+
+
+def test_registration_replaces_an_unverified_squatter() -> None:
+    subject, fake = service()
+    fake.email_verified = False
+    fake.create_errors = [client_error("UsernameExistsException")]
+    subject.register("dev@amazon.com", "CorrectHorse#42")
+    # The unproven claim on the address yields to the new registration.
+    assert fake.deleted == ["dev@amazon.com"]
+    assert len(fake.created) == 2
+    assert fake.code_requests
+
+    fake.create_errors = [
+        client_error("UsernameExistsException"),
+        client_error("InternalErrorException"),
+    ]
+    with pytest.raises(auth.AuthRequestError) as retry_failed:
+        subject.register("dev@amazon.com", "CorrectHorse#42")
+    assert retry_failed.value.status == 502
+
+    fake.create_errors = [client_error("UsernameExistsException")]
+    fake.get_user_error = client_error("InternalErrorException")
+    with pytest.raises(auth.AuthRequestError) as lookup_failed:
+        subject.register("dev@amazon.com", "CorrectHorse#42")
+    assert lookup_failed.value.status == 502
+
+
+def test_registration_maps_code_delivery_failures() -> None:
+    subject, fake = service()
+    fake.code_error = client_error("LimitExceededException")
+    with pytest.raises(auth.AuthRequestError) as throttled:
+        subject.register("dev@amazon.com", "CorrectHorse#42")
+    assert throttled.value.status == 429
+
+    fake.code_error = client_error("InternalErrorException")
+    with pytest.raises(auth.AuthRequestError) as unavailable:
+        subject.register("dev@amazon.com", "CorrectHorse#42")
+    assert unavailable.value.code == "RESET_UNAVAILABLE"
+
+
+def test_confirm_verifies_the_code_and_signs_in() -> None:
+    subject, fake = service()
+    tokens = subject.confirm("Dev@Amazon.com", "CorrectHorse#42", " 123456 ")
+    assert tokens.payload()["accessToken"] == "access"
+    assert fake.verify_requests[0] == {
+        "AccessToken": "access",
+        "AttributeName": "email",
+        "Code": "123456",
+    }
+
+    for invalid in (None, "", "x" * 65, 9):
+        with pytest.raises(auth.AuthRequestError) as rejected:
+            subject.confirm("dev@amazon.com", "CorrectHorse#42", invalid)
+        assert rejected.value.code == "INVALID_CODE"
+
+    for name in ("CodeMismatchException", "ExpiredCodeException"):
+        fake.verify_error = client_error(name)
+        with pytest.raises(auth.AuthRequestError) as mismatch:
+            subject.confirm("dev@amazon.com", "CorrectHorse#42", "123456")
+        assert mismatch.value.code == "INVALID_CODE"
+
+    fake.verify_error = client_error("LimitExceededException")
+    with pytest.raises(auth.AuthRequestError) as throttled:
+        subject.confirm("dev@amazon.com", "CorrectHorse#42", "123456")
+    assert throttled.value.status == 429
+
+    fake.verify_error = None
+    fake.auth_error = client_error("NotAuthorizedException")
+    with pytest.raises(auth.AuthRequestError) as wrong:
+        subject.confirm("dev@amazon.com", "CorrectHorse#42", "123456")
+    assert wrong.value.status == 401
+
+
+def test_resend_reissues_the_confirmation_code() -> None:
+    subject, fake = service()
+    subject.resend("Dev@Amazon.com", "CorrectHorse#42")
+    assert fake.code_requests[0]["AttributeName"] == "email"
+
+    fake.auth_error = client_error("NotAuthorizedException")
+    with pytest.raises(auth.AuthRequestError) as wrong:
+        subject.resend("dev@amazon.com", "CorrectHorse#42")
+    assert wrong.value.status == 401
+
+
+def test_login_requires_a_verified_email() -> None:
+    subject, fake = service()
+    fake.email_verified = False
+    with pytest.raises(auth.AuthRequestError) as unverified:
+        subject.login("dev@amazon.com", "CorrectHorse#42")
+    assert unverified.value.status == 409
+    assert unverified.value.code == "EMAIL_NOT_VERIFIED"
 
 
 def test_registration_rolls_back_the_half_created_user_on_password_rejection() -> None:
@@ -130,6 +247,7 @@ def test_registration_rolls_back_the_half_created_user_on_password_rejection() -
         subject.register("dev@amazon.com", "not-compliant-but-long")
     assert error.value.code == "INVALID_PASSWORD"
     assert fake.deleted == ["dev@amazon.com"]
+    assert fake.code_requests == []  # no code for an account that failed
 
 
 def test_login_returns_tokens_and_never_reveals_account_existence() -> None:
@@ -333,7 +451,24 @@ def test_handler_routes_requests_and_maps_errors(monkeypatch: pytest.MonkeyPatch
         object(),
     )
     assert created["statusCode"] == 201
+    assert json.loads(cast_str(created["body"]))["confirmationRequired"] is True
     assert created["headers"]["cache-control"] == "no-store"  # type: ignore[index]
+
+    confirmed = auth.handler(
+        event(
+            "POST /auth/v1/confirm",
+            {"email": "dev@amazon.com", "password": "Horse#4242", "code": "123456"},
+        ),
+        object(),
+    )
+    assert confirmed["statusCode"] == 200
+    assert json.loads(cast_str(confirmed["body"]))["accessToken"] == "access"
+
+    resent = auth.handler(
+        event("POST /auth/v1/resend", {"email": "dev@amazon.com", "password": "Horse#4242"}),
+        object(),
+    )
+    assert resent["statusCode"] == 200
 
     logged_in = auth.handler(
         event("POST /auth/v1/login", {"email": "dev@amazon.com", "password": "Horse#4242"}),

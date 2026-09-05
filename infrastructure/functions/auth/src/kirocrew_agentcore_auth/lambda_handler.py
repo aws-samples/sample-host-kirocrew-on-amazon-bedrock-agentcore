@@ -132,25 +132,26 @@ class AuthService:
         self._policy = policy
 
     def register(self, email: object, password: object) -> None:
+        """Create the account unverified and email a confirmation code."""
         address = self._policy.validate(email)
         secret = _password(password)
         try:
-            self._cognito.admin_create_user(
-                UserPoolId=self._user_pool_id,
-                Username=address,
-                UserAttributes=[
-                    {"Name": "email", "Value": address},
-                    {"Name": "email_verified", "Value": "true"},
-                ],
-                MessageAction="SUPPRESS",
-            )
+            self._create_user(address)
         except ClientError as error:
             code = error.response.get("Error", {}).get("Code")
-            if code == "UsernameExistsException":
+            if code != "UsernameExistsException":
+                raise self._invalid_password(error) from error
+            if self._is_verified(address):
                 raise AuthRequestError(
                     409, "USER_EXISTS", "An account with this email already exists."
                 ) from error
-            raise self._invalid_password(error) from error
+            # An unverified account is an unproven claim on the address. The
+            # real owner must be able to register over it, so it yields.
+            self._cognito.admin_delete_user(UserPoolId=self._user_pool_id, Username=address)
+            try:
+                self._create_user(address)
+            except ClientError as retry_error:
+                raise self._invalid_password(retry_error) from retry_error
         try:
             self._cognito.admin_set_user_password(
                 UserPoolId=self._user_pool_id,
@@ -163,20 +164,86 @@ class AuthService:
             # with a compliant password behind USER_EXISTS forever.
             self._cognito.admin_delete_user(UserPoolId=self._user_pool_id, Username=address)
             raise self._invalid_password(error) from error
+        self._send_confirmation_code(address, secret)
+
+    def _create_user(self, address: str) -> None:
+        self._cognito.admin_create_user(
+            UserPoolId=self._user_pool_id,
+            Username=address,
+            UserAttributes=[
+                {"Name": "email", "Value": address},
+                {"Name": "email_verified", "Value": "false"},
+            ],
+            MessageAction="SUPPRESS",
+        )
+
+    def _is_verified(self, address: str) -> bool:
+        try:
+            user = self._cognito.admin_get_user(UserPoolId=self._user_pool_id, Username=address)
+        except ClientError as error:
+            raise self._reset_failed(error.response.get("Error", {}).get("Code")) from error
+        attributes = cast(list[Mapping[str, str]], user.get("UserAttributes", []))
+        return any(
+            item.get("Name") == "email_verified" and item.get("Value") == "true"
+            for item in attributes
+        )
+
+    def _authenticate(self, address: str, secret: str) -> Mapping[str, Any]:
+        try:
+            return cast(
+                Mapping[str, Any],
+                self._cognito.admin_initiate_auth(
+                    UserPoolId=self._user_pool_id,
+                    ClientId=self._app_client_id,
+                    AuthFlow="ADMIN_USER_PASSWORD_AUTH",
+                    AuthParameters={"USERNAME": address, "PASSWORD": secret},
+                ),
+            )
+        except ClientError as error:
+            raise self._sign_in_failed(error) from error
+
+    def _send_confirmation_code(self, address: str, secret: str) -> None:
+        """Email a verification code, acting with the user's own session."""
+        tokens = self._tokens(self._authenticate(address, secret), refresh_required=True)
+        try:
+            self._cognito.get_user_attribute_verification_code(
+                AccessToken=tokens.access_token, AttributeName="email"
+            )
+        except ClientError as error:
+            raise self._reset_failed(error.response.get("Error", {}).get("Code")) from error
+
+    def confirm(self, email: object, password: object, code: object) -> TokenSet:
+        """Verify the emailed code, then sign the user in."""
+        address = self._policy.validate(email)
+        secret = _password(password)
+        if not isinstance(code, str) or not (1 <= len(code.strip()) <= 64):
+            raise AuthRequestError(400, "INVALID_CODE", "The code is incorrect or has expired.")
+        tokens = self._tokens(self._authenticate(address, secret), refresh_required=True)
+        try:
+            self._cognito.verify_user_attribute(
+                AccessToken=tokens.access_token, AttributeName="email", Code=code.strip()
+            )
+        except ClientError as error:
+            name = error.response.get("Error", {}).get("Code")
+            if name in {"CodeMismatchException", "ExpiredCodeException"}:
+                raise AuthRequestError(
+                    400, "INVALID_CODE", "The code is incorrect or has expired."
+                ) from error
+            raise self._reset_failed(name) from error
+        return tokens
+
+    def resend(self, email: object, password: object) -> None:
+        address = self._policy.validate(email)
+        secret = _password(password)
+        self._send_confirmation_code(address, secret)
 
     def login(self, email: object, password: object) -> TokenSet:
         address = self._policy.validate(email)
         secret = _password(password)
-        try:
-            response = self._cognito.admin_initiate_auth(
-                UserPoolId=self._user_pool_id,
-                ClientId=self._app_client_id,
-                AuthFlow="ADMIN_USER_PASSWORD_AUTH",
-                AuthParameters={"USERNAME": address, "PASSWORD": secret},
-            )
-        except ClientError as error:
-            raise self._sign_in_failed(error) from error
-        return self._tokens(response, refresh_required=True)
+        tokens = self._tokens(self._authenticate(address, secret), refresh_required=True)
+        if not self._is_verified(address):
+            raise AuthRequestError(409, "EMAIL_NOT_VERIFIED", "Confirm your email address first.")
+        return tokens
 
     def refresh(self, refresh_token: object) -> TokenSet:
         if not isinstance(refresh_token, str) or not refresh_token:
@@ -355,7 +422,17 @@ def handler(event: Mapping[str, object], _context: object) -> dict[str, object]:
         body = _request_body(event)
         if route == "POST /auth/v1/register":
             service.register(body.get("email"), body.get("password"))
-            return _response(201, {"registered": True})
+            return _response(201, {"confirmationRequired": True, "registered": True})
+        if route == "POST /auth/v1/confirm":
+            return _response(
+                200,
+                service.confirm(
+                    body.get("email"), body.get("password"), body.get("code")
+                ).payload(),
+            )
+        if route == "POST /auth/v1/resend":
+            service.resend(body.get("email"), body.get("password"))
+            return _response(200, {"sent": True})
         if route == "POST /auth/v1/login":
             return _response(200, service.login(body.get("email"), body.get("password")).payload())
         if route == "POST /auth/v1/refresh":

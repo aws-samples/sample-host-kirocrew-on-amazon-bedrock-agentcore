@@ -26,6 +26,7 @@ export type PasswordAuthErrorCode =
   | "CONFIGURATION"
   | "INVALID_CREDENTIALS"
   | "DOMAIN_NOT_ALLOWED"
+  | "EMAIL_NOT_VERIFIED"
   | "USER_EXISTS"
   | "AUTH_UNAVAILABLE"
   | "SESSION_EXPIRED";
@@ -90,6 +91,7 @@ function readJson<T>(storage: Storage, key: string): T | undefined {
 
 const CLIENT_ERROR_CODES: Readonly<Record<string, PasswordAuthErrorCode>> = {
   DOMAIN_NOT_ALLOWED: "DOMAIN_NOT_ALLOWED",
+  EMAIL_NOT_VERIFIED: "EMAIL_NOT_VERIFIED",
   INVALID_CODE: "INVALID_CREDENTIALS",
   INVALID_EMAIL: "INVALID_CREDENTIALS",
   INVALID_PASSWORD: "INVALID_CREDENTIALS",
@@ -101,6 +103,7 @@ const CLIENT_ERROR_CODES: Readonly<Record<string, PasswordAuthErrorCode>> = {
 /** Endpoints that answer with a plain acknowledgement instead of tokens. */
 const TOKENLESS_PATHS: ReadonlySet<string> = new Set([
   "/register",
+  "/resend",
   "/forgot",
   "/reset",
 ]);
@@ -129,6 +132,22 @@ export class PasswordAuthClient {
 
   public async register(email: string, password: string): Promise<void> {
     await this.#request("/register", { email, password });
+  }
+
+  /** Verify the emailed registration code; success signs the user in. */
+  public async confirmEmail(
+    email: string,
+    password: string,
+    code: string,
+  ): Promise<AuthSession> {
+    const token = await this.#request("/confirm", { email, password, code });
+    const session = this.#toSession(token);
+    this.#storage.setItem(SESSION_KEY, JSON.stringify(session));
+    return session;
+  }
+
+  public async resendCode(email: string, password: string): Promise<void> {
+    await this.#request("/resend", { email, password });
   }
 
   /** Ask Cognito to email a reset code; silent about account existence. */

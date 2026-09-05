@@ -279,6 +279,12 @@ function installStyles(document: Document): void {
     }
     .kcac-pw-eye:hover { color: var(--text-strong, var(--text)); background: var(--bg-hover, transparent); }
     .kcac-pw-eye:focus-visible { outline: 3px solid var(--accent); outline-offset: 1px; }
+    .kcac-auth-note {
+      margin: 0;
+      font-size: 11px;
+      line-height: 1.4;
+      color: var(--muted);
+    }
     .kcac-auth-link {
       align-self: flex-start;
       padding: 0;
@@ -495,7 +501,7 @@ export function mountBrowserShell(
   const authEmail = createElement(document, "input", "kcac-input");
   authEmail.type = "email";
   authEmail.autocomplete = "username";
-  authEmail.placeholder = "you@amazon.com";
+  authEmail.placeholder = "Email";
   authEmail.setAttribute("aria-label", "Email address");
 
   const eyeIcon = (open: boolean): SVGSVGElement => {
@@ -558,6 +564,13 @@ export function mountBrowserShell(
     return { wrap, input };
   };
 
+  const passwordNote = (): HTMLParagraphElement => {
+    const note = createElement(document, "p", "kcac-auth-note");
+    note.textContent =
+      "Passwords need at least 14 characters, with upper and lower case, a number, and a symbol.";
+    return note;
+  };
+
   const signinField = passwordField("current-password", "Password", "Password");
   const authPassword = signinField.input;
   const authActions = createElement(document, "div", "kcac-kiro-actions");
@@ -576,7 +589,12 @@ export function mountBrowserShell(
   authForgotLink.textContent = "Forgot password?";
   const signinPart = createElement(document, "div");
   signinPart.dataset.authpart = "sign-in";
-  signinPart.append(signinField.wrap, authActions, authForgotLink);
+  signinPart.append(
+    passwordNote(),
+    signinField.wrap,
+    authActions,
+    authForgotLink,
+  );
 
   const authCode = createElement(document, "input", "kcac-input");
   authCode.type = "text";
@@ -603,7 +621,13 @@ export function mountBrowserShell(
   authBackLink.textContent = "Back to sign in";
   const resetPart = createElement(document, "div");
   resetPart.dataset.authpart = "reset";
-  resetPart.append(authCode, resetField.wrap, resetActions, authBackLink);
+  resetPart.append(
+    authCode,
+    passwordNote(),
+    resetField.wrap,
+    resetActions,
+    authBackLink,
+  );
 
   const authHint = createElement(document, "p", "kcac-auth-hint");
   authHint.setAttribute("role", "alert");

@@ -90,12 +90,20 @@ function readJson<T>(storage: Storage, key: string): T | undefined {
 
 const CLIENT_ERROR_CODES: Readonly<Record<string, PasswordAuthErrorCode>> = {
   DOMAIN_NOT_ALLOWED: "DOMAIN_NOT_ALLOWED",
+  INVALID_CODE: "INVALID_CREDENTIALS",
   INVALID_EMAIL: "INVALID_CREDENTIALS",
   INVALID_PASSWORD: "INVALID_CREDENTIALS",
   INVALID_REQUEST: "INVALID_CREDENTIALS",
   SIGN_IN_FAILED: "INVALID_CREDENTIALS",
   USER_EXISTS: "USER_EXISTS",
 };
+
+/** Endpoints that answer with a plain acknowledgement instead of tokens. */
+const TOKENLESS_PATHS: ReadonlySet<string> = new Set([
+  "/register",
+  "/forgot",
+  "/reset",
+]);
 
 export class PasswordAuthClient {
   readonly #basePath: string;
@@ -121,6 +129,19 @@ export class PasswordAuthClient {
 
   public async register(email: string, password: string): Promise<void> {
     await this.#request("/register", { email, password });
+  }
+
+  /** Ask Cognito to email a reset code; silent about account existence. */
+  public async forgotPassword(email: string): Promise<void> {
+    await this.#request("/forgot", { email });
+  }
+
+  public async resetPassword(
+    email: string,
+    code: string,
+    password: string,
+  ): Promise<void> {
+    await this.#request("/reset", { email, code, password });
   }
 
   public async signIn(email: string, password: string): Promise<AuthSession> {
@@ -217,7 +238,7 @@ export class PasswordAuthClient {
           : "Sign-in could not be completed. Try again.";
       throw new PasswordAuthError(code, message);
     }
-    if (path === "/register") {
+    if (TOKENLESS_PATHS.has(path)) {
       return { accessToken: "-", expiresIn: 1, tokenType: "Bearer" };
     }
     if (!isTokenPayload(value)) {

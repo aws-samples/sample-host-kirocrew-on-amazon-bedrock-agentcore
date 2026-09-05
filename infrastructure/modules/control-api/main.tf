@@ -4,6 +4,7 @@ variable "app_client_id" { type = string }
 variable "user_pool_id" { type = string }
 variable "user_pool_arn" { type = string }
 variable "allowed_email_domains" { type = list(string) }
+variable "allowed_email_patterns" { type = list(string) }
 variable "allowed_origin" { type = string }
 variable "sandbox_table_name" { type = string }
 variable "sandbox_table_arn" { type = string }
@@ -247,10 +248,11 @@ resource "aws_lambda_function" "auth" {
 
   environment {
     variables = {
-      ALLOWED_EMAIL_DOMAINS = join(",", var.allowed_email_domains)
-      APP_CLIENT_ID         = var.app_client_id
-      REGION                = var.region
-      USER_POOL_ID          = var.user_pool_id
+      ALLOWED_EMAIL_DOMAINS  = join(",", var.allowed_email_domains)
+      ALLOWED_EMAIL_PATTERNS = jsonencode(var.allowed_email_patterns)
+      APP_CLIENT_ID          = var.app_client_id
+      REGION                 = var.region
+      USER_POOL_ID           = var.user_pool_id
     }
   }
 
@@ -273,6 +275,8 @@ resource "aws_apigatewayv2_route" "auth" {
     "POST /auth/v1/register",
     "POST /auth/v1/login",
     "POST /auth/v1/refresh",
+    "POST /auth/v1/forgot",
+    "POST /auth/v1/reset",
   ])
 
   api_id             = aws_apigatewayv2_api.control.id

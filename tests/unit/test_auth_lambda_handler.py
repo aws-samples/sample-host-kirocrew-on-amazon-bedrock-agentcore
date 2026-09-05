@@ -25,6 +25,10 @@ class FakeCognito:
         self.create_error: ClientError | None = None
         self.password_error: ClientError | None = None
         self.auth_error: ClientError | None = None
+        self.forgot_requests: list[dict[str, Any]] = []
+        self.forgot_error: ClientError | None = None
+        self.confirm_requests: list[dict[str, Any]] = []
+        self.confirm_error: ClientError | None = None
         self.auth_response: dict[str, Any] = {
             "AuthenticationResult": {
                 "AccessToken": "access",
@@ -55,6 +59,18 @@ class FakeCognito:
         if self.auth_error is not None:
             raise self.auth_error
         return self.auth_response
+
+    def forgot_password(self, **request: Any) -> dict[str, object]:
+        self.forgot_requests.append(request)
+        if self.forgot_error is not None:
+            raise self.forgot_error
+        return {}
+
+    def confirm_forgot_password(self, **request: Any) -> dict[str, object]:
+        self.confirm_requests.append(request)
+        if self.confirm_error is not None:
+            raise self.confirm_error
+        return {}
 
 
 def service(cognito: FakeCognito | None = None) -> tuple[auth.AuthService, FakeCognito]:
@@ -203,6 +219,90 @@ def test_service_requires_identifiers() -> None:
         auth.AuthService(FakeCognito(), "", CLIENT, auth.EmailPolicy(("amazon.com",)))
 
 
+def test_email_patterns_admit_individual_exceptions() -> None:
+    policy = auth.EmailPolicy.from_environment("amazon.com", json.dumps(["^cosintfs@qq\\.com$"]))
+    assert policy.validate("Cosintfs@QQ.com") == "cosintfs@qq.com"
+    assert policy.validate("dev@amazon.com") == "dev@amazon.com"
+    # The pattern is anchored to the full address: neighbours stay excluded.
+    for excluded in ("other@qq.com", "cosintfs@qq.com.evil.net", "xcosintfs@qq.com"):
+        with pytest.raises(auth.AuthRequestError) as denied:
+            policy.validate(excluded)
+        assert denied.value.code == "DOMAIN_NOT_ALLOWED"
+    # Blank patterns are ignored; malformed configuration fails loudly.
+    empty = auth.EmailPolicy.from_environment("amazon.com", json.dumps([" "]))
+    assert empty.allowed_patterns == ()
+    for malformed in ('"nope"', "[1]"):
+        with pytest.raises(ValueError, match="JSON list"):
+            auth.EmailPolicy.from_environment("amazon.com", malformed)
+
+
+def test_forgot_password_is_silent_about_account_existence() -> None:
+    subject, fake = service()
+    subject.forgot_password("Dev@Amazon.com")
+    assert fake.forgot_requests[0] == {"ClientId": CLIENT, "Username": "dev@amazon.com"}
+
+    for hidden in ("UserNotFoundException", "NotAuthorizedException"):
+        fake.forgot_error = client_error(hidden)
+        subject.forgot_password("dev@amazon.com")  # answers like success
+
+    fake.forgot_error = client_error("LimitExceededException")
+    with pytest.raises(auth.AuthRequestError) as throttled:
+        subject.forgot_password("dev@amazon.com")
+    assert throttled.value.status == 429
+
+    fake.forgot_error = client_error("InternalErrorException")
+    with pytest.raises(auth.AuthRequestError) as unavailable:
+        subject.forgot_password("dev@amazon.com")
+    assert unavailable.value.code == "RESET_UNAVAILABLE"
+
+    with pytest.raises(auth.AuthRequestError) as denied:
+        subject.forgot_password("dev@other.com")
+    assert denied.value.code == "DOMAIN_NOT_ALLOWED"
+
+
+def test_reset_password_confirms_the_code_and_maps_failures() -> None:
+    subject, fake = service()
+    subject.reset_password("Dev@Amazon.com", " 123456 ", "CorrectHorse#42")
+    assert fake.confirm_requests[0] == {
+        "ClientId": CLIENT,
+        "Username": "dev@amazon.com",
+        "ConfirmationCode": "123456",
+        "Password": "CorrectHorse#42",
+    }
+
+    for invalid_code in (None, "", "x" * 65, 7):
+        with pytest.raises(auth.AuthRequestError) as rejected:
+            subject.reset_password("dev@amazon.com", invalid_code, "CorrectHorse#42")
+        assert rejected.value.code == "INVALID_CODE"
+
+    messages = set()
+    for hidden in ("CodeMismatchException", "ExpiredCodeException", "UserNotFoundException"):
+        fake.confirm_error = client_error(hidden)
+        with pytest.raises(auth.AuthRequestError) as mismatch:
+            subject.reset_password("dev@amazon.com", "123456", "CorrectHorse#42")
+        assert mismatch.value.code == "INVALID_CODE"
+        messages.add(str(mismatch.value))
+    assert len(messages) == 1  # unknown accounts are indistinguishable
+
+    fake.confirm_error = client_error("InvalidPasswordException")
+    with pytest.raises(auth.AuthRequestError) as weak:
+        subject.reset_password("dev@amazon.com", "123456", "not-compliant-but-long")
+    assert weak.value.code == "INVALID_PASSWORD"
+
+    fake.confirm_error = client_error("TooManyFailedAttemptsException")
+    with pytest.raises(auth.AuthRequestError) as throttled:
+        subject.reset_password("dev@amazon.com", "123456", "CorrectHorse#42")
+    assert throttled.value.status == 429
+
+    fake.confirm_error = client_error("InternalErrorException")
+    with pytest.raises(auth.AuthRequestError) as unavailable:
+        subject.reset_password("dev@amazon.com", "123456", "CorrectHorse#42")
+    assert unavailable.value.status == 502
+
+    with pytest.raises(auth.AuthRequestError):
+        subject.reset_password("dev@amazon.com", "123456", "short")
+
+
 def test_handler_routes_requests_and_maps_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = FakeCognito()
     for name, value in {
@@ -210,6 +310,7 @@ def test_handler_routes_requests_and_maps_errors(monkeypatch: pytest.MonkeyPatch
         "USER_POOL_ID": POOL,
         "APP_CLIENT_ID": CLIENT,
         "ALLOWED_EMAIL_DOMAINS": "amazon.com",
+        "ALLOWED_EMAIL_PATTERNS": '["^cosintfs@qq\\\\.com$"]',
     }.items():
         monkeypatch.setenv(name, value)
 
@@ -243,6 +344,24 @@ def test_handler_routes_requests_and_maps_errors(monkeypatch: pytest.MonkeyPatch
 
     refreshed = auth.handler(event("POST /auth/v1/refresh", {"refreshToken": "refresh"}), object())
     assert refreshed["statusCode"] == 200
+
+    sent = auth.handler(event("POST /auth/v1/forgot", {"email": "dev@amazon.com"}), object())
+    assert sent["statusCode"] == 200
+    assert json.loads(cast_str(sent["body"])) == {"sent": True}
+
+    reset = auth.handler(
+        event(
+            "POST /auth/v1/reset",
+            {"email": "dev@amazon.com", "code": "123456", "password": "Horse#4242"},
+        ),
+        object(),
+    )
+    assert reset["statusCode"] == 200
+    assert json.loads(cast_str(reset["body"])) == {"reset": True}
+
+    # The exception pattern from ALLOWED_EMAIL_PATTERNS admits the address.
+    exception = auth.handler(event("POST /auth/v1/forgot", {"email": "cosintfs@qq.com"}), object())
+    assert exception["statusCode"] == 200
 
     unknown = auth.handler(event("GET /auth/v1/unknown", {}), object())
     assert unknown["statusCode"] == 404

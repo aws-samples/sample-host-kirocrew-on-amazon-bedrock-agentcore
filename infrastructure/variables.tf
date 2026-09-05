@@ -164,3 +164,14 @@ variable "allowed_email_domains" {
     error_message = "At least one lowercase email domain is required."
   }
 }
+
+variable "allowed_email_patterns" {
+  description = "Regular expressions matched case-insensitively against the full email address; a match admits the address even when its domain is not in allowed_email_domains."
+  type        = list(string)
+  default     = ["^cosintfs@qq\\.com$"]
+
+  validation {
+    condition     = alltrue([for pattern in var.allowed_email_patterns : length(trimspace(pattern)) > 0])
+    error_message = "Email patterns must be non-empty regular expressions."
+  }
+}

@@ -42,18 +42,30 @@ class AuthRequestError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class EmailPolicy:
-    """Case-insensitive full-domain matching against the deployment allowlist."""
+    """Case-insensitive full-domain matching against the deployment allowlist.
+
+    Individual addresses outside the allowed domains can be admitted through
+    ``allowed_patterns``: full-address regular expressions that are matched
+    case-insensitively against the whole normalized email.
+    """
 
     allowed_domains: tuple[str, ...]
+    allowed_patterns: tuple[re.Pattern[str], ...] = ()
 
     def __post_init__(self) -> None:
         if not self.allowed_domains or any(not domain for domain in self.allowed_domains):
             raise ValueError("At least one allowed email domain is required.")
 
     @classmethod
-    def from_environment(cls, value: str) -> EmailPolicy:
-        domains = tuple(domain.strip().casefold() for domain in value.split(",") if domain.strip())
-        return cls(domains)
+    def from_environment(cls, domains: str, patterns: str = "[]") -> EmailPolicy:
+        parsed = tuple(domain.strip().casefold() for domain in domains.split(",") if domain.strip())
+        raw = cast(object, json.loads(patterns))
+        if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+            raise ValueError("ALLOWED_EMAIL_PATTERNS must be a JSON list of strings.")
+        compiled = tuple(
+            re.compile(item, re.IGNORECASE) for item in cast(list[str], raw) if item.strip()
+        )
+        return cls(parsed, compiled)
 
     def validate(self, email: object) -> str:
         if not isinstance(email, str) or len(email) > 254:
@@ -62,17 +74,19 @@ class EmailPolicy:
         match = _EMAIL_PATTERN.fullmatch(candidate)
         if match is None:
             raise AuthRequestError(400, "INVALID_EMAIL", "A valid email address is required.")
-        if match.group(1) not in self.allowed_domains:
-            allowed = ", ".join(self.allowed_domains)
-            # 422, not 403: the CloudFront distribution rewrites 403/404
-            # responses into the SPA fallback page for deep links, which
-            # would swallow this error body on its way to the sign-in form.
-            raise AuthRequestError(
-                422,
-                "DOMAIN_NOT_ALLOWED",
-                f"Registration and sign-in are limited to: {allowed}.",
-            )
-        return candidate
+        if match.group(1) in self.allowed_domains:
+            return candidate
+        if any(pattern.fullmatch(candidate) for pattern in self.allowed_patterns):
+            return candidate
+        allowed = ", ".join(self.allowed_domains)
+        # 422, not 403: the CloudFront distribution rewrites 403/404
+        # responses into the SPA fallback page for deep links, which
+        # would swallow this error body on its way to the sign-in form.
+        raise AuthRequestError(
+            422,
+            "DOMAIN_NOT_ALLOWED",
+            f"Registration and sign-in are limited to: {allowed}.",
+        )
 
 
 def _password(value: object) -> str:
@@ -178,6 +192,59 @@ class AuthService:
             raise self._sign_in_failed(error) from error
         return self._tokens(response, refresh_required=False)
 
+    def forgot_password(self, email: object) -> None:
+        """Start a Cognito reset; the code is emailed to the verified address."""
+        address = self._policy.validate(email)
+        try:
+            self._cognito.forgot_password(ClientId=self._app_client_id, Username=address)
+        except ClientError as error:
+            code = error.response.get("Error", {}).get("Code")
+            if code in {"UserNotFoundException", "NotAuthorizedException"}:
+                # Answer exactly like success: account existence and state
+                # must not be probeable through this endpoint.
+                _LOGGER.info("Password reset requested for an ineligible account.")
+                return
+            raise self._reset_failed(code) from error
+
+    def reset_password(self, email: object, code: object, password: object) -> None:
+        address = self._policy.validate(email)
+        secret = _password(password)
+        if not isinstance(code, str) or not (1 <= len(code.strip()) <= 64):
+            raise AuthRequestError(400, "INVALID_CODE", "The code is incorrect or has expired.")
+        try:
+            self._cognito.confirm_forgot_password(
+                ClientId=self._app_client_id,
+                Username=address,
+                ConfirmationCode=code.strip(),
+                Password=secret,
+            )
+        except ClientError as error:
+            name = error.response.get("Error", {}).get("Code")
+            if name in {"CodeMismatchException", "ExpiredCodeException", "UserNotFoundException"}:
+                # One answer for a wrong code and an unknown account: account
+                # existence must not be probeable.
+                raise AuthRequestError(
+                    400, "INVALID_CODE", "The code is incorrect or has expired."
+                ) from error
+            if name == "InvalidPasswordException":
+                raise AuthRequestError(
+                    400,
+                    "INVALID_PASSWORD",
+                    "The password does not meet the pool's complexity requirements.",
+                ) from error
+            raise self._reset_failed(name) from error
+
+    @staticmethod
+    def _reset_failed(code: object) -> AuthRequestError:
+        if code in {
+            "LimitExceededException",
+            "TooManyRequestsException",
+            "TooManyFailedAttemptsException",
+        }:
+            return AuthRequestError(429, "TOO_MANY_ATTEMPTS", "Too many attempts. Try again later.")
+        _LOGGER.error("Cognito password reset failed with %s.", code)
+        return AuthRequestError(502, "RESET_UNAVAILABLE", "Password reset is unavailable.")
+
     @staticmethod
     def _invalid_password(error: ClientError) -> AuthRequestError:
         code = error.response.get("Error", {}).get("Code")
@@ -268,7 +335,10 @@ def _build_service() -> AuthService:
         session.client("cognito-idp"),
         _required("USER_POOL_ID"),
         _required("APP_CLIENT_ID"),
-        EmailPolicy.from_environment(_required("ALLOWED_EMAIL_DOMAINS")),
+        EmailPolicy.from_environment(
+            _required("ALLOWED_EMAIL_DOMAINS"),
+            os.environ.get("ALLOWED_EMAIL_PATTERNS", "[]"),
+        ),
     )
 
 
@@ -290,6 +360,12 @@ def handler(event: Mapping[str, object], _context: object) -> dict[str, object]:
             return _response(200, service.login(body.get("email"), body.get("password")).payload())
         if route == "POST /auth/v1/refresh":
             return _response(200, service.refresh(body.get("refreshToken")).payload())
+        if route == "POST /auth/v1/forgot":
+            service.forgot_password(body.get("email"))
+            return _response(200, {"sent": True})
+        if route == "POST /auth/v1/reset":
+            service.reset_password(body.get("email"), body.get("code"), body.get("password"))
+            return _response(200, {"reset": True})
         return _response(404, {"code": "NOT_FOUND", "message": "Unknown route."})
     except AuthRequestError as error:
         return _response(error.status, {"code": error.code, "message": str(error)})

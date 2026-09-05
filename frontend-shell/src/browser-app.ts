@@ -349,6 +349,10 @@ export class BrowserApplication {
     this.#shell = mountBrowserShell(root, {
       signIn: (credentials): Promise<void> => this.signIn(credentials),
       register: (credentials): Promise<void> => this.register(credentials),
+      forgotPassword: (email): Promise<void> =>
+        this.#auth.forgotPassword(email),
+      resetPassword: (request): Promise<void> =>
+        this.#auth.resetPassword(request.email, request.code, request.password),
       start: (): Promise<void> => this.start(),
       stop: (): void => this.stop(),
       retry: (): Promise<void> => this.retry(),

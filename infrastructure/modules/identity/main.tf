@@ -17,6 +17,13 @@ resource "aws_cognito_user_pool" "this" {
   username_attributes      = ["email"]
   mfa_configuration        = "OPTIONAL"
 
+  account_recovery_setting {
+    recovery_mechanism {
+      name     = "verified_email"
+      priority = 1
+    }
+  }
+
   software_token_mfa_configuration {
     enabled = true
   }

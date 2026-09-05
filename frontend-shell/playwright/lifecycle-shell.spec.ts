@@ -85,6 +85,8 @@ async function installShell(page: Page): Promise<void> {
     const calls = {
       signIn: 0,
       register: 0,
+      forgotPassword: [] as unknown[],
+      resetPassword: [] as unknown[],
       start: 0,
       stop: 0,
       retry: 0,
@@ -99,6 +101,12 @@ async function installShell(page: Page): Promise<void> {
       },
       register: (): void => {
         calls.register += 1;
+      },
+      forgotPassword: (email: unknown): void => {
+        calls.forgotPassword.push(email);
+      },
+      resetPassword: (request: unknown): void => {
+        calls.resetPassword.push(request);
       },
       start: (): void => {
         calls.start += 1;
@@ -703,4 +711,79 @@ test("signed-out view offers the credential form and submits sign-in", async ({
   // Other lifecycle views hide the form again.
   await render(page, { view: "stopped", activeRequestAccepted: false });
   await expect(email).toBeHidden();
+});
+
+test("the eye toggle reveals and hides the password text", async ({ page }) => {
+  await render(page, { view: "signed-out", activeRequestAccepted: false });
+  await ensureExpanded(page);
+  const password = page.getByLabel("Password", { exact: true });
+  await password.fill("hunter2hunter2");
+  await expect(password).toHaveAttribute("type", "password");
+  const eye = page.getByRole("button", { name: "Show password" }).first();
+  await eye.click();
+  await expect(password).toHaveAttribute("type", "text");
+  await expect(
+    page.getByRole("button", { name: "Hide password" }).first(),
+  ).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Hide password" }).first().click();
+  await expect(password).toHaveAttribute("type", "password");
+});
+
+test("forgot password sends a code and resets through the form", async ({
+  page,
+}) => {
+  await render(page, { view: "signed-out", activeRequestAccepted: false });
+  await ensureExpanded(page);
+  await page.getByRole("button", { name: "Forgot password?" }).click();
+  // The sign-in controls yield to the reset controls.
+  await expect(
+    page.getByRole("button", { name: "Sign in", exact: true }),
+  ).toBeHidden();
+  const email = page.getByLabel("Email address");
+  // Sending a code requires an email address.
+  await page.getByRole("button", { name: "Send code" }).click();
+  await expect(page.locator(".kcac-auth-hint")).toContainText(
+    "Enter your email",
+  );
+  await email.fill("dev@amazon.com");
+  await page.getByRole("button", { name: "Send code" }).click();
+  await expect(page.locator(".kcac-auth-hint")).toContainText(
+    "on its way to dev@amazon.com",
+  );
+  const newPassword = ["correct", "horse", "again"].join("-");
+  await page.getByLabel("Verification code").fill("123456");
+  await page.getByLabel("New password").fill(newPassword);
+  await page.getByRole("button", { name: "Reset password" }).click();
+  await expect(page.locator(".kcac-auth-hint")).toContainText(
+    "Password updated",
+  );
+  // Success returns to the sign-in mode with the credentials cleared.
+  await expect(
+    page.getByRole("button", { name: "Sign in", exact: true }),
+  ).toBeVisible();
+  const calls = await page.evaluate(
+    () =>
+      (
+        globalThis as typeof globalThis & {
+          __task12Calls: {
+            forgotPassword: unknown[];
+            resetPassword: unknown[];
+          };
+        }
+      ).__task12Calls,
+  );
+  expect(calls.forgotPassword).toEqual(["dev@amazon.com"]);
+  expect(calls.resetPassword).toEqual([
+    {
+      email: "dev@amazon.com",
+      code: "123456",
+      password: newPassword,
+    },
+  ]);
+  // The way back to sign-in never requires a successful reset.
+  await page.getByRole("button", { name: "Forgot password?" }).click();
+  await page.getByRole("button", { name: "Back to sign in" }).click();
+  await expect(
+    page.getByRole("button", { name: "Sign in", exact: true }),
+  ).toBeVisible();
 });

@@ -149,6 +149,44 @@ describe("PasswordAuthClient", () => {
     expect(subject.auth.session()).toBeUndefined();
   });
 
+  it("requests a reset code and confirms the new password", async () => {
+    subject = client([
+      jsonResponse(200, { sent: true }),
+      jsonResponse(200, { reset: true }),
+    ]);
+    const newPassword = ["n3w", "Secret"].join("-");
+    await subject.auth.forgotPassword("dev@amazon.com");
+    await subject.auth.resetPassword("dev@amazon.com", "123456", newPassword);
+    expect(subject.requests).toEqual([
+      { url: "/auth/v1/forgot", body: { email: "dev@amazon.com" } },
+      {
+        url: "/auth/v1/reset",
+        body: {
+          email: "dev@amazon.com",
+          code: "123456",
+          password: newPassword,
+        },
+      },
+    ]);
+    expect(subject.auth.session()).toBeUndefined();
+  });
+
+  it("maps reset failures onto credential errors", async () => {
+    subject = client([
+      jsonResponse(400, { code: "INVALID_CODE", message: "Expired." }),
+      jsonResponse(429, { code: "TOO_MANY_ATTEMPTS", message: "Later." }),
+    ]);
+    await expect(
+      subject.auth.resetPassword("dev@amazon.com", "000000", "irrelevant"),
+    ).rejects.toMatchObject({
+      code: "INVALID_CREDENTIALS",
+      message: "Expired.",
+    });
+    await expect(
+      subject.auth.forgotPassword("dev@amazon.com"),
+    ).rejects.toMatchObject({ code: "AUTH_UNAVAILABLE", message: "Later." });
+  });
+
   it("rejects malformed token payloads", async () => {
     subject = client([jsonResponse(200, { accessToken: "", expiresIn: 0 })]);
     await expect(subject.auth.signIn("a@b.com", "p")).rejects.toMatchObject({

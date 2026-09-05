@@ -2,6 +2,7 @@ import type { LifecycleModel, LifecycleView } from "./lifecycle.js";
 import { lifecyclePresentation } from "./lifecycle.js";
 
 const STYLE_ID = "kirocrew-agentcore-shell-style";
+const SVG_NS = "http://www.w3.org/2000/svg";
 
 export interface KiroSsoLogin {
   readonly method: "sso";
@@ -14,9 +15,19 @@ export interface AuthCredentials {
   readonly password: string;
 }
 
+export interface PasswordResetRequest {
+  readonly email: string;
+  readonly code: string;
+  readonly password: string;
+}
+
 export interface BrowserShellActions {
   readonly signIn: (credentials: AuthCredentials) => void | Promise<void>;
   readonly register: (credentials: AuthCredentials) => void | Promise<void>;
+  readonly forgotPassword: (email: string) => void | Promise<void>;
+  readonly resetPassword: (
+    request: PasswordResetRequest,
+  ) => void | Promise<void>;
   readonly start: () => void | Promise<void>;
   readonly stop: () => void | Promise<void>;
   readonly retry: () => void | Promise<void>;
@@ -242,6 +253,45 @@ function installStyles(document: Document): void {
     /* In this column layout the shared input's flex-basis would become
        HEIGHT and inflate each field to ~180px; pin them to one text line. */
     .kcac-auth .kcac-input { flex: none; width: 100%; box-sizing: border-box; }
+    /* The two auth modes share the email field and the hint; each group of
+       mode-specific rows joins the column via display: contents. */
+    .kcac-auth [data-authpart] { display: none; }
+    .kcac-auth[data-authmode="sign-in"] [data-authpart="sign-in"],
+    .kcac-auth[data-authmode="reset"] [data-authpart="reset"] { display: contents; }
+    .kcac-pw { position: relative; }
+    .kcac-pw .kcac-input { padding-right: 42px; }
+    .kcac-pw-eye {
+      position: absolute;
+      right: 5px;
+      top: 50%;
+      transform: translateY(-50%);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 30px;
+      height: 26px;
+      padding: 0;
+      border: none;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .kcac-pw-eye:hover { color: var(--text-strong, var(--text)); background: var(--bg-hover, transparent); }
+    .kcac-pw-eye:focus-visible { outline: 3px solid var(--accent); outline-offset: 1px; }
+    .kcac-auth-link {
+      align-self: flex-start;
+      padding: 0;
+      border: none;
+      background: none;
+      color: var(--accent);
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+      text-decoration: underline;
+    }
+    .kcac-auth-link:hover { color: var(--accent-hover, var(--accent)); }
+    .kcac-auth-link:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
     .kcac-device {
       display: none;
       gap: 10px;
@@ -441,16 +491,75 @@ export function mountBrowserShell(
 
   const auth = createElement(document, "section", "kcac-auth");
   auth.setAttribute("aria-label", "Sign in or create an account");
+  auth.dataset.authmode = "sign-in";
   const authEmail = createElement(document, "input", "kcac-input");
   authEmail.type = "email";
   authEmail.autocomplete = "username";
   authEmail.placeholder = "you@amazon.com";
   authEmail.setAttribute("aria-label", "Email address");
-  const authPassword = createElement(document, "input", "kcac-input");
-  authPassword.type = "password";
-  authPassword.autocomplete = "current-password";
-  authPassword.placeholder = "Password";
-  authPassword.setAttribute("aria-label", "Password");
+
+  const eyeIcon = (open: boolean): SVGSVGElement => {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("width", "16");
+    svg.setAttribute("height", "16");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("aria-hidden", "true");
+    const shapes = open
+      ? [
+          "M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z",
+          "M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z",
+        ]
+      : [
+          "M9.88 9.88a3 3 0 1 0 4.24 4.24",
+          "M10.73 5.08A10.4 10.4 0 0 1 12 5c7 0 10 7 10 7a13.2 13.2 0 0 1-1.67 2.68",
+          "M6.61 6.61A13.5 13.5 0 0 0 2 12s3 7 10 7a9.7 9.7 0 0 0 5.39-1.61",
+          "M2 2l20 20",
+        ];
+    for (const d of shapes) {
+      const path = document.createElementNS(SVG_NS, "path");
+      path.setAttribute("d", d);
+      svg.append(path);
+    }
+    return svg;
+  };
+
+  const passwordField = (
+    autocomplete: string,
+    placeholder: string,
+    label: string,
+  ): { readonly wrap: HTMLDivElement; readonly input: HTMLInputElement } => {
+    const wrap = createElement(document, "div", "kcac-pw");
+    const input = createElement(document, "input", "kcac-input");
+    input.type = "password";
+    input.setAttribute("autocomplete", autocomplete);
+    input.placeholder = placeholder;
+    input.setAttribute("aria-label", label);
+    const eye = createElement(document, "button", "kcac-pw-eye");
+    eye.type = "button";
+    eye.setAttribute("aria-label", "Show password");
+    eye.setAttribute("aria-pressed", "false");
+    eye.append(eyeIcon(true));
+    eye.addEventListener("click", () => {
+      const reveal = input.type === "password";
+      input.type = reveal ? "text" : "password";
+      eye.setAttribute("aria-pressed", String(reveal));
+      eye.setAttribute(
+        "aria-label",
+        reveal ? "Hide password" : "Show password",
+      );
+      eye.replaceChildren(eyeIcon(!reveal));
+    });
+    wrap.append(input, eye);
+    return { wrap, input };
+  };
+
+  const signinField = passwordField("current-password", "Password", "Password");
+  const authPassword = signinField.input;
   const authActions = createElement(document, "div", "kcac-kiro-actions");
   const authSignIn = createElement(document, "button", "kcac-button");
   authSignIn.type = "button";
@@ -462,10 +571,44 @@ export function mountBrowserShell(
   authRegister.dataset.auth = "register";
   authRegister.textContent = "Create account";
   authActions.append(authSignIn, authRegister);
+  const authForgotLink = createElement(document, "button", "kcac-auth-link");
+  authForgotLink.type = "button";
+  authForgotLink.textContent = "Forgot password?";
+  const signinPart = createElement(document, "div");
+  signinPart.dataset.authpart = "sign-in";
+  signinPart.append(signinField.wrap, authActions, authForgotLink);
+
+  const authCode = createElement(document, "input", "kcac-input");
+  authCode.type = "text";
+  authCode.inputMode = "numeric";
+  authCode.setAttribute("autocomplete", "one-time-code");
+  authCode.placeholder = "Code from the email";
+  authCode.setAttribute("aria-label", "Verification code");
+  const resetField = passwordField(
+    "new-password",
+    "New password",
+    "New password",
+  );
+  const resetActions = createElement(document, "div", "kcac-kiro-actions");
+  const authSendCode = createElement(document, "button", "kcac-button");
+  authSendCode.type = "button";
+  authSendCode.textContent = "Send code";
+  const authResetSubmit = createElement(document, "button", "kcac-button");
+  authResetSubmit.type = "button";
+  authResetSubmit.dataset.primary = "true";
+  authResetSubmit.textContent = "Reset password";
+  resetActions.append(authSendCode, authResetSubmit);
+  const authBackLink = createElement(document, "button", "kcac-auth-link");
+  authBackLink.type = "button";
+  authBackLink.textContent = "Back to sign in";
+  const resetPart = createElement(document, "div");
+  resetPart.dataset.authpart = "reset";
+  resetPart.append(authCode, resetField.wrap, resetActions, authBackLink);
+
   const authHint = createElement(document, "p", "kcac-auth-hint");
   authHint.setAttribute("role", "alert");
   authHint.hidden = true;
-  auth.append(authEmail, authPassword, authActions, authHint);
+  auth.append(authEmail, signinPart, resetPart, authHint);
 
   const kiro = createElement(document, "section", "kcac-kiro");
   kiro.setAttribute("aria-label", "Kiro account");
@@ -671,6 +814,71 @@ export function mountBrowserShell(
     if (event.key === "Enter") {
       submitAuth(actions.signIn);
     }
+  });
+
+  const setAuthMode = (mode: "sign-in" | "reset"): void => {
+    auth.dataset.authmode = mode;
+    authHint.hidden = true;
+  };
+  authForgotLink.addEventListener("click", () => setAuthMode("reset"));
+  authBackLink.addEventListener("click", () => setAuthMode("sign-in"));
+
+  const authNotice = (message: string): void => {
+    authHint.hidden = false;
+    authHint.textContent = message;
+  };
+  authSendCode.addEventListener("click", () => {
+    const email = authEmail.value.trim();
+    if (!email.includes("@")) {
+      authNotice("Enter your email address first.");
+      return;
+    }
+    authHint.hidden = true;
+    authSendCode.disabled = true;
+    void (async (): Promise<void> => {
+      try {
+        await actions.forgotPassword(email);
+        authNotice(`If that account exists, a code is on its way to ${email}.`);
+      } catch (error: unknown) {
+        authNotice(
+          error instanceof Error
+            ? error.message
+            : "The code could not be sent. Try again.",
+        );
+      } finally {
+        authSendCode.disabled = false;
+      }
+    })();
+  });
+  authResetSubmit.addEventListener("click", () => {
+    const email = authEmail.value.trim();
+    const code = authCode.value.trim();
+    const password = resetField.input.value;
+    if (!email.includes("@") || code.length === 0 || password.length === 0) {
+      authNotice("Enter your email, the emailed code, and a new password.");
+      return;
+    }
+    authHint.hidden = true;
+    authResetSubmit.disabled = true;
+    authSendCode.disabled = true;
+    void (async (): Promise<void> => {
+      try {
+        await actions.resetPassword({ email, code, password });
+        authCode.value = "";
+        resetField.input.value = "";
+        setAuthMode("sign-in");
+        authNotice("Password updated. Sign in with your new password.");
+      } catch (error: unknown) {
+        authNotice(
+          error instanceof Error
+            ? error.message
+            : "The password could not be reset. Try again.",
+        );
+      } finally {
+        authResetSubmit.disabled = false;
+        authSendCode.disabled = false;
+      }
+    })();
   });
 
   primary.addEventListener("click", () => {

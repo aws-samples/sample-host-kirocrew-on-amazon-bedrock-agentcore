@@ -89,10 +89,13 @@ def test_gated_auth_lambda_is_least_privilege_and_domain_limited() -> None:
     assert '"POST /auth/v1/register",' in control_api
     assert '"POST /auth/v1/login",' in control_api
     assert '"POST /auth/v1/refresh",' in control_api
+    assert '"POST /auth/v1/forgot",' in control_api
+    assert '"POST /auth/v1/reset",' in control_api
     assert '"cognito-idp:AdminCreateUser",' in control_api
     assert '"cognito-idp:AdminInitiateAuth",' in control_api
     assert "resources = [var.user_pool_arn]" in control_api
     assert "ALLOWED_EMAIL_DOMAINS" in control_api
+    assert "ALLOWED_EMAIL_PATTERNS" in control_api
     # Authenticated control routes require the password-auth scope.
     assert 'authorization_scopes = ["aws.cognito.signin.user.admin"]' in control_api
 

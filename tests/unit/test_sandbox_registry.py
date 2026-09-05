@@ -108,17 +108,21 @@ def test_start_lease_serializes_owners_and_supports_heartbeat() -> None:
     first = store.acquire_start("alice", "runtime-a", ttl=timedelta(seconds=90))
     assert first.authoritative
     assert first.record.state is SandboxState.STARTING
-    assert store.acquire_start("alice", "runtime-a", ttl=timedelta(seconds=90)).authoritative
+    # The lease owner is the rotated session id: the container that owns
+    # this start authenticates every later call with it.
+    owner = first.record.lease_owner
+    assert owner == first.record.runtime_session_id
+    assert store.acquire_start("alice", owner, ttl=timedelta(seconds=90)).authoritative
     assert not store.acquire_start("alice", "runtime-b", ttl=timedelta(seconds=90)).authoritative
     with pytest.raises(ValueError, match="positive"):
-        store.heartbeat("alice", "runtime-a", ttl=timedelta(0))
-    heartbeat = store.heartbeat("alice", "runtime-a", ttl=timedelta(seconds=90))
+        store.heartbeat("alice", owner, ttl=timedelta(0))
+    heartbeat = store.heartbeat("alice", owner, ttl=timedelta(seconds=90))
     assert heartbeat.state_version == first.record.state_version + 1
     with pytest.raises(LeaseConflictError, match="not owned"):
         store.heartbeat("alice", "runtime-b", ttl=timedelta(seconds=90))
     clock.advance(timedelta(seconds=91))
     with pytest.raises(LeaseConflictError, match="not owned"):
-        store.heartbeat("alice", "runtime-a", ttl=timedelta(seconds=90))
+        store.heartbeat("alice", owner, ttl=timedelta(seconds=90))
 
 
 def test_expired_active_lease_requires_confirmation_before_reclaim() -> None:
@@ -135,25 +139,29 @@ def test_expired_active_lease_requires_confirmation_before_reclaim() -> None:
         confirmed_inactive=True,
     )
     assert reclaimed.authoritative
-    assert reclaimed.record.lease_owner == "runtime-b"
+    # The reclaim rotates the session; the new session owns the lease.
+    assert reclaimed.record.lease_owner == reclaimed.record.runtime_session_id
 
 
 def test_authoritative_owner_reclaims_its_own_expired_lease_without_confirmation() -> None:
     clock = MutableClock()
     store = registry(clock)
-    store.acquire_start("alice", "runtime-a", ttl=timedelta(seconds=10))
+    held = store.acquire_start("alice", "runtime-a", ttl=timedelta(seconds=10))
     clock.advance(timedelta(seconds=11))
-    reclaimed = store.acquire_start("alice", "runtime-a", ttl=timedelta(seconds=10))
+    reclaimed = store.acquire_start(
+        "alice", held.record.lease_owner or "", ttl=timedelta(seconds=10)
+    )
     assert reclaimed.authoritative
-    assert reclaimed.record.lease_owner == "runtime-a"
+    assert reclaimed.record.lease_owner == reclaimed.record.runtime_session_id
     assert reclaimed.record.state is SandboxState.STARTING
 
 
 def test_lifecycle_version_owner_and_transition_guards() -> None:
     store = registry()
     start = store.acquire_start("alice", "runtime", ttl=timedelta(seconds=90)).record
+    runtime = start.lease_owner or ""
     with pytest.raises(StateConflictError, match="version"):
-        store.transition("alice", SandboxState.RESTORING, expected_version=0, lease_owner="runtime")
+        store.transition("alice", SandboxState.RESTORING, expected_version=0, lease_owner=runtime)
     with pytest.raises(LeaseConflictError, match="not owned"):
         store.transition(
             "alice",
@@ -166,34 +174,34 @@ def test_lifecycle_version_owner_and_transition_guards() -> None:
             "alice",
             SandboxState.BUSY,
             expected_version=start.state_version,
-            lease_owner="runtime",
+            lease_owner=runtime,
         )
 
 
 def test_complete_lifecycle_request_checkpoint_and_stop() -> None:
     store = registry()
     record = store.acquire_start("alice", "runtime", ttl=timedelta(seconds=90)).record
+    runtime = record.lease_owner or ""
     record = store.transition(
         "alice",
         SandboxState.RESTORING,
         expected_version=record.state_version,
-        lease_owner="runtime",
+        lease_owner=runtime,
     )
     record = store.transition(
         "alice",
         SandboxState.READY,
         expected_version=record.state_version,
-        lease_owner="runtime",
+        lease_owner=runtime,
     )
     with pytest.raises(ValueError, match="required"):
-        store.accept_request("alice", "runtime", "", "digest")
-    assert store.accept_request("alice", "runtime", "request", "digest") is RequestDisposition.NEW
+        store.accept_request("alice", runtime, "", "digest")
+    assert store.accept_request("alice", runtime, "request", "digest") is RequestDisposition.NEW
     assert (
-        store.accept_request("alice", "runtime", "request", "digest")
-        is RequestDisposition.DUPLICATE
+        store.accept_request("alice", runtime, "request", "digest") is RequestDisposition.DUPLICATE
     )
     with pytest.raises(IdempotencyConflictError, match="another payload"):
-        store.accept_request("alice", "runtime", "request", "changed")
+        store.accept_request("alice", runtime, "request", "changed")
     with pytest.raises(LeaseConflictError, match="not owned"):
         store.accept_request("alice", "other", "other", "digest")
     record = store.get("alice")
@@ -201,34 +209,34 @@ def test_complete_lifecycle_request_checkpoint_and_stop() -> None:
         "alice",
         SandboxState.BUSY,
         expected_version=record.state_version,
-        lease_owner="runtime",
+        lease_owner=runtime,
     )
     assert record.active_request_id == "request"
     record = store.transition(
         "alice",
         SandboxState.CHECKPOINTING,
         expected_version=record.state_version,
-        lease_owner="runtime",
+        lease_owner=runtime,
     )
     assert record.active_request_id is None
     with pytest.raises(ValueError, match="positive"):
-        store.record_checkpoint("alice", "runtime", 0)
+        store.record_checkpoint("alice", runtime, 0)
     with pytest.raises(LeaseConflictError, match="not owned"):
         store.record_checkpoint("alice", "other", 1)
-    record = store.record_checkpoint("alice", "runtime", 7, "RESTORED")
+    record = store.record_checkpoint("alice", runtime, 7, "RESTORED")
     assert record.last_checkpoint_generation == 7
     assert record.last_restore == "RESTORED"
     record = store.transition(
         "alice",
         SandboxState.STOPPING,
         expected_version=record.state_version,
-        lease_owner="runtime",
+        lease_owner=runtime,
     )
     record = store.transition(
         "alice",
         SandboxState.STOPPED,
         expected_version=record.state_version,
-        lease_owner="runtime",
+        lease_owner=runtime,
     )
     assert record.lease_owner is None
     assert record.lease_expires_at is None
@@ -237,27 +245,32 @@ def test_complete_lifecycle_request_checkpoint_and_stop() -> None:
 def test_error_state_can_restart_or_stop() -> None:
     store = registry()
     record = store.acquire_start("alice", "runtime", ttl=timedelta(seconds=90)).record
+    runtime = record.lease_owner or ""
     record = store.transition(
-        "alice", SandboxState.ERROR, expected_version=record.state_version, lease_owner="runtime"
+        "alice", SandboxState.ERROR, expected_version=record.state_version, lease_owner=runtime
     )
     restarted = store.transition(
         "alice",
         SandboxState.STARTING,
         expected_version=record.state_version,
-        lease_owner="runtime",
+        lease_owner=runtime,
     )
     assert restarted.state is SandboxState.STARTING
 
     second = registry()
     failed = second.acquire_start("alice", "runtime", ttl=timedelta(seconds=90)).record
+    second_runtime = failed.lease_owner or ""
     failed = second.transition(
-        "alice", SandboxState.ERROR, expected_version=failed.state_version, lease_owner="runtime"
+        "alice",
+        SandboxState.ERROR,
+        expected_version=failed.state_version,
+        lease_owner=second_runtime,
     )
     stopped = second.transition(
         "alice",
         SandboxState.STOPPED,
         expected_version=failed.state_version,
-        lease_owner="runtime",
+        lease_owner=second_runtime,
     )
     assert stopped.state is SandboxState.STOPPED
 

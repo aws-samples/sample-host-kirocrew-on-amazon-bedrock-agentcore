@@ -604,3 +604,17 @@ def test_in_memory_history_rejects_a_nonpositive_limit() -> None:
     assert len(registry.history(record.sandbox_id)) == 1
     with pytest.raises(ValueError, match="positive"):
         registry.history(record.sandbox_id, limit=0)
+
+
+def test_authoritative_start_rotates_the_runtime_session_and_resume_does_not() -> None:
+    clock = MutableClock()
+    registry = InMemorySandboxRegistry(clock=clock)
+    record = registry.get_or_create(SUBJECT)
+    original = record.runtime_session_id
+    lease = registry.acquire_start(SUBJECT, "owner-a", ttl=timedelta(seconds=90))
+    # A dead session's id must never be reused: the corpse poisons every
+    # restart until the platform reclaims it.
+    assert lease.record.runtime_session_id != original
+    # While the lease is live, reconnects keep the same session.
+    resumed = registry.acquire_start(SUBJECT, "owner-a", ttl=timedelta(seconds=90))
+    assert resumed.record.runtime_session_id == lease.record.runtime_session_id

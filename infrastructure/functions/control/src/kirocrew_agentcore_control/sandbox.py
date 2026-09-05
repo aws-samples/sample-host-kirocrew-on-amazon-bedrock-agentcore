@@ -264,11 +264,18 @@ class InMemorySandboxRegistry:
                 and not confirmed_inactive
             ):
                 raise LeaseConflictError("Expired lease requires authoritative-owner confirmation.")
+            # Rotated on every authoritative start: reusing the id of a
+            # session that died without a clean stop turns every restart
+            # into failures until the platform reclaims the corpse. The
+            # lease owner follows the rotation so the next start still
+            # recognizes its own lease.
+            rotated = self._runtime_session_id_factory()
             updated = replace(
                 record,
                 state=SandboxState.STARTING,
                 state_version=record.state_version + 1,
-                lease_owner=lease_owner,
+                runtime_session_id=rotated,
+                lease_owner=rotated,
                 lease_expires_at=now + ttl,
                 active_request_id=None,
                 updated_at=now,

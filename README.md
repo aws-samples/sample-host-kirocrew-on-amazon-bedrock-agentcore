@@ -214,7 +214,9 @@ checkpoint in seconds.
   until the 8-hour session lifetime.
 - **Observe.** Runtime logs are in the AgentCore runtime log group; control-plane
   and persistence logs are in the two Lambda log groups. CloudWatch alarms can be
-  routed with the `alarm_actions` variable.
+  routed with the `alarm_actions` variable. The full operations runbook, including
+  log locations, lifecycle invariants, and known failure modes, is in
+  [docs/operations.md](docs/operations.md).
 
 ## Costs and cleanup
 

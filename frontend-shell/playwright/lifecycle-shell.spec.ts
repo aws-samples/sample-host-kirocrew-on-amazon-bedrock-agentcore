@@ -883,6 +883,8 @@ test("sandbox details show observed history and persisted paths", async ({
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  // Stopped sandbox: no live microVM, the uptime says so.
+  await expect(page.getByLabel("MicroVM uptime")).toContainText("not running");
   const history = page.getByLabel("Sandbox state history");
   await expect(history.locator("li")).toHaveCount(2);
   await expect(history.locator("li").first()).toContainText("ready");
@@ -891,4 +893,31 @@ test("sandbox details show observed history and persisted paths", async ({
   await expect(paths.locator("li").first()).toHaveText(
     "/mnt/workspace/projects",
   );
+  // A running sandbox whose newest STARTING event is recent shows a live
+  // uptime derived from that transition.
+  await render(page, {
+    view: "ready",
+    activeRequestAccepted: false,
+    details: {
+      events: [
+        {
+          at: new Date(Date.now() - 30_000).toISOString(),
+          state: "READY",
+          stateVersion: 6,
+        },
+        {
+          at: new Date(Date.now() - 90_000).toISOString(),
+          state: "RESTORING",
+          stateVersion: 5,
+        },
+        {
+          at: new Date(Date.now() - 200_000).toISOString(),
+          state: "STOPPED",
+          stateVersion: 4,
+        },
+      ],
+      persistedPaths: ["/mnt/workspace/projects"],
+    },
+  });
+  await expect(page.getByLabel("MicroVM uptime")).toContainText("1m");
 });

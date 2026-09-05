@@ -201,11 +201,13 @@ def test_registry_start_transition_delete_and_conditional_updates() -> None:
         store.acquire_start("subject", "other", ttl=timedelta(minutes=1))
     reclaimed_by_owner = store.acquire_start("subject", "owner", ttl=timedelta(minutes=1))
     assert reclaimed_by_owner.authoritative
-    assert reclaimed_by_owner.record.lease_owner == "owner"
+    # The lease owner follows the rotated session id.
+    assert reclaimed_by_owner.record.lease_owner == reclaimed_by_owner.record.runtime_session_id
     started = store.acquire_start(
         "subject", "other", ttl=timedelta(minutes=1), confirmed_inactive=True
     )
-    assert started.record.lease_owner == "other"
+    # Confirmed reclaim also rotates: the new session owns the lease.
+    assert started.record.lease_owner == started.record.runtime_session_id
 
     stopping = record(
         state=SandboxState.STOPPING,

@@ -228,11 +228,20 @@ class DynamoSandboxRegistry(InMemorySandboxRegistry):
             and not confirmed_inactive
         ):
             raise LeaseConflictError("Expired lease requires authoritative-owner confirmation.")
+        # A fresh AgentCore session for every authoritative start: a
+        # previous session that died without a clean stop (lost browser,
+        # failed checkpoint, stuck microVM) leaves its session id
+        # poisoned, and reusing it turns every restart into 424s until
+        # the platform reclaims the corpse. The lease owner follows the
+        # rotation - the new session owns the sandbox now - otherwise the
+        # next start would read a mismatched owner and 409 forever.
+        rotated = new_runtime_session_id()
         updated = replace(
             record,
             state=SandboxState.STARTING,
             state_version=record.state_version + 1,
-            lease_owner=lease_owner,
+            runtime_session_id=rotated,
+            lease_owner=rotated,
             lease_expires_at=now + ttl,
             active_request_id=None,
             updated_at=now,

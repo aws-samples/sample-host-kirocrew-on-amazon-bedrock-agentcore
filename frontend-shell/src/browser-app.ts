@@ -336,6 +336,7 @@ export class BrowserApplication {
   #clientSequence = 1;
   #connectionGeneration = 0;
   #pendingStop = false;
+  #stopQueued = false;
   #destroyed = false;
 
   public constructor(
@@ -468,11 +469,29 @@ export class BrowserApplication {
   }
 
   public stop(): void {
-    if (this.#duplex === undefined || this.#pendingStop) {
+    if (this.#pendingStop) {
+      return;
+    }
+    if (this.#duplex === undefined) {
+      // The ready view can appear while the duplex handshake is still in
+      // flight (connection.ready arrives before openWebSocket resolves), so
+      // an early Stop used to be swallowed silently. Queue the intent; the
+      // connect path flushes it the moment the channel is up.
+      this.#stopQueued = true;
+      this.#store.dispatch({ type: "stop-requested" });
       return;
     }
     this.#pendingStop = true;
     this.#store.dispatch({ type: "stop-requested" });
+    this.#send("sandbox.prepare_stop", {}, ulid(this.#crypto, this.#now()));
+  }
+
+  #flushQueuedStop(): void {
+    if (!this.#stopQueued || this.#duplex === undefined) {
+      return;
+    }
+    this.#stopQueued = false;
+    this.#pendingStop = true;
     this.#send("sandbox.prepare_stop", {}, ulid(this.#crypto, this.#now()));
   }
 
@@ -581,6 +600,7 @@ export class BrowserApplication {
     this.#kiroDescriptor = descriptor;
     this.#duplex = await channel.openWebSocket(invocation);
     this.#schedulePing();
+    this.#flushQueuedStop();
     // The Kiro status probe waits for connection.ready: a second invocation
     // during cold-start session initialization races the initializer and
     // fails the sandbox (ConditionalCheckFailedException).
@@ -874,6 +894,7 @@ export class BrowserApplication {
       this.#terminal(error);
     } finally {
       this.#pendingStop = false;
+      this.#stopQueued = false;
     }
   }
 

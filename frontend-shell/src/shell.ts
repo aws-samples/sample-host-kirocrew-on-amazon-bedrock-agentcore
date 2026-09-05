@@ -102,7 +102,8 @@ function installStyles(document: Document): void {
     .kcac-float[data-mode="pill"] .kcac-rail,
     .kcac-float[data-mode="pill"] .kcac-auth,
     .kcac-float[data-mode="pill"] .kcac-device,
-    .kcac-float[data-mode="pill"] .kcac-kiro { display: none !important; }
+    .kcac-float[data-mode="pill"] .kcac-kiro,
+    .kcac-float[data-mode="pill"] .kcac-info { display: none !important; }
     .kcac-float[data-mode="panel"] .kcac-pill { display: none; }
     .kcac-pill {
       display: flex;
@@ -366,16 +367,27 @@ function installStyles(document: Document): void {
     }
     .kcac-info[data-visible="true"] { display: flex; }
     .kcac-info-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
       align-self: flex-start;
       padding: 0;
       border: none;
       background: none;
-      color: var(--accent);
+      color: var(--text-strong, var(--text));
       cursor: pointer;
       font: inherit;
       font-size: 12px;
-      text-decoration: underline;
+      font-weight: 600;
     }
+    .kcac-info-caret {
+      display: inline-block;
+      transition: transform .15s ease;
+      font-size: 10px;
+      color: var(--muted);
+    }
+    .kcac-info-toggle[aria-expanded="true"] .kcac-info-caret { transform: rotate(90deg); }
+    .kcac-info-uptime { color: var(--text-strong, var(--text)); font-variant-numeric: tabular-nums; }
     .kcac-info-toggle:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
     .kcac-info-body[hidden] { display: none; }
     .kcac-info-title {
@@ -784,10 +796,20 @@ export function mountBrowserShell(
   info.setAttribute("aria-label", "Sandbox details");
   const infoToggle = createElement(document, "button", "kcac-info-toggle");
   infoToggle.type = "button";
-  infoToggle.textContent = "Sandbox details";
+  const infoCaret = createElement(document, "span", "kcac-info-caret");
+  infoCaret.textContent = "\u25B6";
+  infoCaret.setAttribute("aria-hidden", "true");
+  const infoLabel = createElement(document, "span");
+  infoLabel.textContent = "Sandbox details";
+  infoToggle.append(infoCaret, infoLabel);
   infoToggle.setAttribute("aria-expanded", "false");
   const infoBody = createElement(document, "div", "kcac-info-body");
   infoBody.hidden = true;
+  const uptimeTitle = createElement(document, "p", "kcac-info-title");
+  uptimeTitle.textContent = "MicroVM uptime";
+  const uptimeValue = createElement(document, "p", "kcac-info-uptime");
+  uptimeValue.textContent = "\u2014";
+  uptimeValue.setAttribute("aria-label", "MicroVM uptime");
   const historyTitle = createElement(document, "p", "kcac-info-title");
   historyTitle.textContent = "Recent activity";
   const historyList = createElement(document, "ul", "kcac-info-list");
@@ -799,7 +821,15 @@ export function mountBrowserShell(
     "Files under these paths survive Stop safely and restarts; everything else is ephemeral.";
   const pathsList = createElement(document, "ul", "kcac-info-paths");
   pathsList.setAttribute("aria-label", "Persisted paths");
-  infoBody.append(historyTitle, historyList, pathsTitle, pathsHint, pathsList);
+  infoBody.append(
+    uptimeTitle,
+    uptimeValue,
+    historyTitle,
+    historyList,
+    pathsTitle,
+    pathsHint,
+    pathsList,
+  );
   info.append(infoToggle, infoBody);
   infoToggle.addEventListener("click", () => {
     infoBody.hidden = !infoBody.hidden;
@@ -1238,6 +1268,42 @@ export function mountBrowserShell(
       model.view !== "signed-out" && details !== undefined,
     );
     if (details !== undefined) {
+      // The current microVM's birth is the oldest event of the newest
+      // unbroken run of live states: brief transitions (STARTING can last
+      // under a second) are often missed by the observing poll, so any
+      // event before the last STOPPED/ERROR boundary anchors the uptime.
+      const live = new Set([
+        "STARTING",
+        "RESTORING",
+        "READY",
+        "BUSY",
+        "CHECKPOINTING",
+        "STOPPING",
+      ]);
+      let born: string | undefined;
+      for (const event of details.events) {
+        if (!live.has(event.state.toUpperCase())) {
+          break;
+        }
+        born = event.at;
+      }
+      const running =
+        model.view === "ready" ||
+        model.view === "active-response" ||
+        model.view === "starting" ||
+        model.view === "restoring";
+      if (born !== undefined && running) {
+        const seconds = Math.max(
+          0,
+          Math.floor((Date.now() - Date.parse(born)) / 1000),
+        );
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        uptimeValue.textContent =
+          hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m ${seconds % 60}s`;
+      } else {
+        uptimeValue.textContent = "\u2014 (not running)";
+      }
       historyList.replaceChildren(
         ...details.events.map((event) => {
           const item = createElement(document, "li");

@@ -106,6 +106,15 @@ class StartLease:
     authoritative: bool
 
 
+@dataclass(frozen=True, slots=True)
+class HistoryEvent:
+    """One observed sandbox state transition, keyed by its state version."""
+
+    state_version: int
+    state: SandboxState
+    at: datetime
+
+
 class OwnerHasher:
     """Derives a stable, opaque owner hash from a Cognito subject.
 
@@ -151,7 +160,33 @@ class InMemorySandboxRegistry:
         self._by_owner: dict[str, SandboxRecord] = {}
         self._owner_by_sandbox: dict[str, str] = {}
         self._requests: dict[tuple[str, str], str] = {}
+        self._history: dict[str, dict[int, HistoryEvent]] = {}
         self._lock = threading.RLock()
+
+    def record_observation(self, record: SandboxRecord) -> None:
+        """Remember the state this record is in, once per state version.
+
+        The control plane observes transitions rather than intercepting every
+        writer (the runtime and the persistence broker also move the state
+        machine): the event timestamp is the record's own updatedAt, so a
+        transition that happened while nobody was polling is still dated
+        correctly when it is eventually seen.
+        """
+        with self._lock:
+            events = self._history.setdefault(record.sandbox_id, {})
+            events.setdefault(
+                record.state_version,
+                HistoryEvent(record.state_version, record.state, record.updated_at),
+            )
+
+    def history(self, sandbox_id: str, limit: int = 20) -> list[HistoryEvent]:
+        """The most recent observed transitions, newest first."""
+        if limit <= 0:
+            raise ValueError("History limit must be positive.")
+        with self._lock:
+            events = self._history.get(sandbox_id, {})
+            ordered = sorted(events.values(), key=lambda event: event.state_version, reverse=True)
+            return ordered[:limit]
 
     def get_or_create(self, cognito_subject: str) -> SandboxRecord:
         owner_hash = self._hasher.derive(cognito_subject)

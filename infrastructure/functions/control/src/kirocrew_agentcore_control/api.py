@@ -37,6 +37,7 @@ ROUTES: Final = {
     ("POST", "/control/v1/sandbox/start"): "startSandbox",
     ("POST", "/control/v1/sandbox/stop"): "stopSandbox",
     ("GET", "/control/v1/sandbox/checkpoints"): "listCheckpoints",
+    ("GET", "/control/v1/sandbox/history"): "getSandboxHistory",
 }
 
 
@@ -335,6 +336,7 @@ class ControlConfig:
     deployment_mode: Literal["microvm", "instances"]
     frontend_compatibility_version: str
     token_audience: str
+    persisted_paths: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -401,8 +403,26 @@ class SandboxControlService:
                 return self._response(200, self._public_config(), correlation_id)
             identity = self._claims.validate(self._claims_from_event(request_context))
             if operation == "getSandbox":
-                body = self._sandbox(self._registry.get_or_create(identity.subject))
-                return self._response(200, body, correlation_id)
+                record = self._registry.get_or_create(identity.subject)
+                # The status poll doubles as the history observer: every
+                # state transition the browser can see lands in the record.
+                self._registry.record_observation(record)
+                return self._response(200, self._sandbox(record), correlation_id)
+            if operation == "getSandboxHistory":
+                record = self._registry.get_or_create(identity.subject)
+                self._registry.record_observation(record)
+                history_body: dict[str, object] = {
+                    "events": [
+                        {
+                            "at": _timestamp(event.at),
+                            "state": event.state.value,
+                            "stateVersion": event.state_version,
+                        }
+                        for event in self._registry.history(record.sandbox_id)
+                    ],
+                    "persistedPaths": list(self._config.persisted_paths),
+                }
+                return self._response(200, history_body, correlation_id)
             if operation == "startSandbox":
                 body = self._start(identity, self._idempotency_key(event))
                 return self._response(200, body, correlation_id)

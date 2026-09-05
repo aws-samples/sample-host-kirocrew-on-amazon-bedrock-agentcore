@@ -355,6 +355,46 @@ function installStyles(document: Document): void {
       font-size: 13px;
     }
     .kcac-kiro[data-visible="true"] { display: flex; }
+    .kcac-info {
+      display: none;
+      flex-direction: column;
+      gap: 6px;
+      padding: 10px 18px;
+      border-top: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .kcac-info[data-visible="true"] { display: flex; }
+    .kcac-info-toggle {
+      align-self: flex-start;
+      padding: 0;
+      border: none;
+      background: none;
+      color: var(--accent);
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+      text-decoration: underline;
+    }
+    .kcac-info-toggle:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+    .kcac-info-body[hidden] { display: none; }
+    .kcac-info-title {
+      margin: 6px 0 2px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .kcac-info-list { margin: 0; padding: 0; list-style: none; }
+    .kcac-info-list li {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 1px 0;
+    }
+    .kcac-info-list .kcac-info-state { color: var(--text-strong, var(--text)); font-weight: 500; }
+    .kcac-info-paths { margin: 0; padding: 0; list-style: none; font-family: ui-monospace, monospace; font-size: 11px; }
     .kcac-kiro-header { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
     .kcac-kiro-name { font-weight: 700; color: var(--text-strong, var(--text)); }
     .kcac-kiro-state { color: var(--muted); }
@@ -740,7 +780,33 @@ export function mountBrowserShell(
   pillLabel.textContent = "Sandbox";
   pill.append(pillDot, pillLabel);
 
-  float.append(header, auth, device, kiro, pill);
+  const info = createElement(document, "section", "kcac-info");
+  info.setAttribute("aria-label", "Sandbox details");
+  const infoToggle = createElement(document, "button", "kcac-info-toggle");
+  infoToggle.type = "button";
+  infoToggle.textContent = "Sandbox details";
+  infoToggle.setAttribute("aria-expanded", "false");
+  const infoBody = createElement(document, "div", "kcac-info-body");
+  infoBody.hidden = true;
+  const historyTitle = createElement(document, "p", "kcac-info-title");
+  historyTitle.textContent = "Recent activity";
+  const historyList = createElement(document, "ul", "kcac-info-list");
+  historyList.setAttribute("aria-label", "Sandbox state history");
+  const pathsTitle = createElement(document, "p", "kcac-info-title");
+  pathsTitle.textContent = "Persisted paths";
+  const pathsHint = createElement(document, "p", "kcac-auth-note");
+  pathsHint.textContent =
+    "Files under these paths survive Stop safely and restarts; everything else is ephemeral.";
+  const pathsList = createElement(document, "ul", "kcac-info-paths");
+  pathsList.setAttribute("aria-label", "Persisted paths");
+  infoBody.append(historyTitle, historyList, pathsTitle, pathsHint, pathsList);
+  info.append(infoToggle, infoBody);
+  infoToggle.addEventListener("click", () => {
+    infoBody.hidden = !infoBody.hidden;
+    infoToggle.setAttribute("aria-expanded", String(!infoBody.hidden));
+  });
+
+  float.append(header, auth, device, kiro, info, pill);
 
   const content = createElement(document, "main", "kcac-content");
   content.id = "kirocrew-upstream-application";
@@ -1167,6 +1233,35 @@ export function mountBrowserShell(
     content.setAttribute("aria-hidden", String(shouldBlockContent(model.view)));
 
     auth.dataset.visible = String(model.view === "signed-out");
+    const details = model.details;
+    info.dataset.visible = String(
+      model.view !== "signed-out" && details !== undefined,
+    );
+    if (details !== undefined) {
+      historyList.replaceChildren(
+        ...details.events.map((event) => {
+          const item = createElement(document, "li");
+          const state = createElement(document, "span", "kcac-info-state");
+          state.textContent = event.state.toLowerCase().replace(/_/gu, " ");
+          const when = createElement(document, "span");
+          when.textContent = new Date(event.at).toLocaleString();
+          item.append(state, when);
+          return item;
+        }),
+      );
+      if (details.events.length === 0) {
+        const empty = createElement(document, "li");
+        empty.textContent = "No activity recorded yet.";
+        historyList.append(empty);
+      }
+      pathsList.replaceChildren(
+        ...details.persistedPaths.map((path) => {
+          const item = createElement(document, "li");
+          item.textContent = path;
+          return item;
+        }),
+      );
+    }
     if (model.view !== "signed-out") {
       authHint.hidden = true;
     }

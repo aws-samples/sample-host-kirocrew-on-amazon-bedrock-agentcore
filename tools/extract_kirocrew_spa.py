@@ -37,6 +37,9 @@ _COMPILED_SUFFIXES: Final = frozenset(
     }
 )
 _SOURCE_SUFFIXES: Final = frozenset({".jsx", ".map", ".ts", ".tsx"})
+# Precompressed duplicates of compiled assets (0.3.0 ships Brotli variants).
+# CloudFront compresses at the edge, so serving the originals is enough.
+_PRECOMPRESSED_SUFFIXES: Final = frozenset({".br", ".gz"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +94,8 @@ def _compiled_files(source: Path) -> tuple[Path, ...]:
         if candidate.is_symlink():
             raise ValueError(f"Upstream SPA contains a symbolic link: {candidate}")
         if not candidate.is_file():
+            continue
+        if candidate.suffix in _PRECOMPRESSED_SUFFIXES:
             continue
         if candidate.suffix in _SOURCE_SUFFIXES:
             raise ValueError(f"Upstream SPA contains a source artifact: {candidate}")

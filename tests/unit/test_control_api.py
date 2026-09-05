@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from cryptography.exceptions import InvalidSignature
@@ -148,6 +148,7 @@ def service(
     stopper: FakeStopper | None = None,
     signer: LocalAsymmetricKmsSigner | None = None,
     max_attempts: int = 4,
+    config_value: ControlConfig | None = None,
 ) -> tuple[
     SandboxControlService,
     InMemorySandboxRegistry,
@@ -173,7 +174,7 @@ def service(
     selected_stopper = stopper or FakeStopper()
     sleeps: list[float] = []
     control = SandboxControlService(
-        config(),
+        config_value or config(),
         selected_registry,
         ClaimsValidator(ISSUER, CLIENT, clock=selected_clock),
         tokens,
@@ -568,8 +569,38 @@ def test_route_table_matches_canonical_control_operations() -> None:
         "deleteSandbox",
         "getPublicConfig",
         "getSandbox",
+        "getSandboxHistory",
         "listCheckpoints",
         "startSandbox",
         "stopSandbox",
     }
     assert Path("contracts/openapi.yaml").is_file()
+
+
+def test_history_route_reports_observed_transitions_and_persisted_paths() -> None:
+    control, registry, _, _, _, _ = service(
+        config_value=config(persisted_paths=("/mnt/workspace/projects", "/mnt/workspace/user"))
+    )
+    # The status poll observes the initial state...
+    first = control.handle(event("GET", "/control/v1/sandbox", claim_values=claims()))
+    assert first["statusCode"] == 200
+    # ...and the history route returns it alongside the persisted paths.
+    response = control.handle(event("GET", "/control/v1/sandbox/history", claim_values=claims()))
+    assert response["statusCode"] == 200
+    body = cast(dict[str, Any], response_body(response))
+    assert body["persistedPaths"] == ["/mnt/workspace/projects", "/mnt/workspace/user"]
+    events = cast(list[dict[str, Any]], body["events"])
+    assert len(events) == 1
+    assert events[0]["state"] == "STOPPED"
+    assert events[0]["stateVersion"] == 0
+    assert cast(str, events[0]["at"]).endswith("Z")
+
+
+def test_in_memory_history_rejects_a_nonpositive_limit() -> None:
+    _, registry, _, _, _, _ = service()
+    record = registry.get_or_create(SUBJECT)
+    registry.record_observation(record)
+    registry.record_observation(record)  # same version: deduplicated
+    assert len(registry.history(record.sandbox_id)) == 1
+    with pytest.raises(ValueError, match="positive"):
+        registry.history(record.sandbox_id, limit=0)

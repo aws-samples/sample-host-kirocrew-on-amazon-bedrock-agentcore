@@ -55,6 +55,17 @@ export interface LifecycleError {
   readonly retryable: boolean;
 }
 
+export interface SandboxHistoryEvent {
+  readonly at: string;
+  readonly state: string;
+  readonly stateVersion: number;
+}
+
+export interface SandboxDetails {
+  readonly events: readonly SandboxHistoryEvent[];
+  readonly persistedPaths: readonly string[];
+}
+
 export interface LifecycleModel {
   readonly view: LifecycleView;
   readonly sandbox?: SandboxSnapshot;
@@ -64,6 +75,7 @@ export interface LifecycleModel {
   readonly restoreOutcome?: string;
   readonly deviceFlow?: DeviceFlowPresentation;
   readonly kiroAuth?: KiroAuthPresentation;
+  readonly details?: SandboxDetails;
   readonly error?: LifecycleError;
   readonly startedAt?: number;
 }
@@ -85,6 +97,7 @@ export type LifecycleEvent =
     }
   | { readonly type: "device-authenticated" }
   | { readonly type: "kiro-status"; readonly state: KiroAuthState }
+  | { readonly type: "details"; readonly value: SandboxDetails }
   | { readonly type: "stop-requested" };
 
 const VIEW_COPY: Readonly<
@@ -364,6 +377,8 @@ export function reduceLifecycle(
         };
       }
       return { ...model, kiroAuth: { state: event.state } };
+    case "details":
+      return { ...model, details: event.value };
     case "stop-requested":
       return { ...model, view: "stopping" };
   }

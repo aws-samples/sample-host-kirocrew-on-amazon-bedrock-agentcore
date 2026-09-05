@@ -109,6 +109,12 @@ resource "aws_dynamodb_table" "sandboxes" {
     type = "S"
   }
 
+  # Sandbox history events (SANDBOX#id / EVENT#version) expire on their own.
+  ttl {
+    attribute_name = "expiresAt"
+    enabled        = true
+  }
+
   point_in_time_recovery { enabled = true }
   server_side_encryption {
     enabled     = true

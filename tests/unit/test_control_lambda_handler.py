@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 import pytest
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
@@ -379,3 +380,54 @@ def test_build_service_and_cached_handler(monkeypatch: pytest.MonkeyPatch) -> No
     assert control.handler({"event": 1}, object()) == {"ok": True}
     assert control.handler({"event": 2}, object()) == {"ok": True}
     assert builds == [1]
+
+
+def test_registry_records_observations_idempotently_with_ttl() -> None:
+    fake = FakeDynamo()
+    store = registry(fake)
+    observed = record(state=SandboxState.READY, state_version=3)
+    store.record_observation(observed)
+    kind, request = fake.requests[-1]
+    assert kind == "put"
+    item = cast(dict[str, dict[str, str]], request["Item"])
+    assert item["pk"]["S"] == f"SANDBOX#{SANDBOX}"
+    assert item["sk"]["S"] == "EVENT#000000000003"
+    assert item["state"]["S"] == "READY"
+    assert item["at"]["S"] == NOW.isoformat()
+    assert int(item["expiresAt"]["N"]) == int(NOW.timestamp()) + 7 * 24 * 3600
+    assert request["ConditionExpression"] == "attribute_not_exists(pk)"
+
+    # A poll seeing the same version again is a silent no-op.
+    fake.put_error = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "PutItem")
+    store.record_observation(observed)
+
+    fake.put_error = ClientError({"Error": {"Code": "InternalError"}}, "PutItem")
+    with pytest.raises(ClientError):
+        store.record_observation(observed)
+
+
+def test_registry_history_queries_events_newest_first() -> None:
+    fake = FakeDynamo()
+    store = registry(fake)
+    fake.query_items = [
+        {
+            "pk": {"S": f"SANDBOX#{SANDBOX}"},
+            "sk": {"S": "EVENT#000000000004"},
+            "state": {"S": "READY"},
+            "at": {"S": NOW.isoformat()},
+        },
+        # Malformed rows never break the panel.
+        {"pk": {"S": f"SANDBOX#{SANDBOX}"}, "sk": {"S": "EVENT#000000000003"}},
+        {"pk": {"S": f"SANDBOX#{SANDBOX}"}, "sk": {"S": "OTHER"}, "state": {"S": "X"}},
+    ]
+    events = store.history(SANDBOX)
+    assert len(events) == 1
+    assert events[0].state_version == 4
+    assert events[0].state is SandboxState.READY
+    assert events[0].at == NOW
+    kind, request = fake.requests[-1]
+    assert kind == "query"
+    assert request["ScanIndexForward"] is False
+    assert request["Limit"] == 20
+    with pytest.raises(ValueError, match="positive"):
+        store.history(SANDBOX, limit=0)

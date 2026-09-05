@@ -88,6 +88,32 @@ paths:
                   $ref: "#/components/schemas/Checkpoint"
         default:
           $ref: "#/components/responses/Error"
+  /control/v1/sandbox/history:
+    get:
+      operationId: getSandboxHistory
+      responses:
+        "200":
+          description: Observed sandbox state transitions and the persisted paths.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events, persistedPaths]
+                properties:
+                  events:
+                    type: array
+                    items:
+                      type: object
+                      required: [at, state, stateVersion]
+                      properties:
+                        at: { type: string, format: date-time }
+                        state: { type: string }
+                        stateVersion: { type: integer }
+                  persistedPaths:
+                    type: array
+                    items: { type: string }
+        default:
+          $ref: "#/components/responses/Error"
   /invocations:
     post:
       operationId: invokeRuntime

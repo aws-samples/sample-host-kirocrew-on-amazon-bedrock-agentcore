@@ -5,6 +5,7 @@ variable "user_pool_id" { type = string }
 variable "user_pool_arn" { type = string }
 variable "allowed_email_domains" { type = list(string) }
 variable "allowed_email_patterns" { type = list(string) }
+variable "persisted_paths" { type = list(string) }
 variable "allowed_origin" { type = string }
 variable "sandbox_table_name" { type = string }
 variable "sandbox_table_arn" { type = string }
@@ -123,6 +124,7 @@ resource "aws_lambda_function" "control" {
       APP_CLIENT_ID                  = var.app_client_id
       BINDING_AUDIENCE               = var.binding_audience
       BINDING_KEY_ARN                = var.binding_key_arn
+      PERSISTED_PATHS                = jsonencode(var.persisted_paths)
       DEPLOYMENT_MODE                = var.deployment_mode
       FRONTEND_COMPATIBILITY_VERSION = var.frontend_compatibility_version
       ISSUER                         = var.issuer
@@ -175,6 +177,7 @@ locals {
     "POST /control/v1/sandbox/start",
     "POST /control/v1/sandbox/stop",
     "GET /control/v1/sandbox/checkpoints",
+    "GET /control/v1/sandbox/history",
   ])
 }
 

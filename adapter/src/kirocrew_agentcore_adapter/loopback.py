@@ -71,7 +71,7 @@ class KiroCrewRoutePolicy:
     Cognito subject hash on every invocation, so tenancy is enforced there — not
     by route filtering. `/api/chat` and `/api/terminal` already grant arbitrary
     in-sandbox execution, so filtering feature routes buys no isolation while
-    breaking most of the product. Upstream 0.2.0 registers 496 `/api/*` routes
+    breaking most of the product. Upstream 0.3.0 registers hundreds of `/api/*` routes
     and its browser bundle references 308 route families; an enumerated
     allowlist cannot track that surface, and every gap shows up as a 403 on a
     working feature.
@@ -82,7 +82,7 @@ class KiroCrewRoutePolicy:
     bundle, so denying them removes no functionality.
     """
 
-    VERSION: Final = "0.2.0"
+    VERSION: Final = "0.3.0"
     _SYNTHETIC: Final = (
         RouteRule(frozenset({"GET"}), "/api/auth/status", False),
         RouteRule(frozenset({"GET"}), "/api/auth/local-token", False),
@@ -113,6 +113,10 @@ class KiroCrewRoutePolicy:
         # lifecycle: a browser-initiated exit is indistinguishable from a crash
         # and races checkpoint/restore.
         "/api/shutdown",
+        # Upstream 0.3.0 adds `POST /api/restart` (and the dev-fleet app's
+        # `/api/restart-gateway`): the same lifecycle seizure as /api/shutdown
+        # with a reconnect race on top.
+        "/api/restart",
     )
 
     def classify(self, method: str, path_with_query: str) -> RouteDisposition:

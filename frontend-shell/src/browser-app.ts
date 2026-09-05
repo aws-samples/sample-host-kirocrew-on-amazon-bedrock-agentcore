@@ -6,6 +6,8 @@ import type { BootstrapTarget } from "./bootstrap.js";
 import {
   LifecycleStore,
   classifyRuntimeError,
+  type SandboxDetails,
+  type SandboxHistoryEvent,
   type SandboxSnapshot,
   type SandboxState,
 } from "./lifecycle.js";
@@ -85,6 +87,30 @@ function isSandboxState(value: unknown): value is SandboxState {
     value === "STOPPING" ||
     value === "ERROR"
   );
+}
+
+function parseDetails(value: unknown): SandboxDetails {
+  const record = (value ?? {}) as {
+    events?: unknown;
+    persistedPaths?: unknown;
+  };
+  const events = Array.isArray(record.events) ? record.events : [];
+  const paths = Array.isArray(record.persistedPaths)
+    ? record.persistedPaths
+    : [];
+  return {
+    events: events.filter(
+      (entry): entry is SandboxHistoryEvent =>
+        typeof entry === "object" &&
+        entry !== null &&
+        typeof (entry as SandboxHistoryEvent).at === "string" &&
+        typeof (entry as SandboxHistoryEvent).state === "string" &&
+        typeof (entry as SandboxHistoryEvent).stateVersion === "number",
+    ),
+    persistedPaths: paths.filter(
+      (entry): entry is string => typeof entry === "string",
+    ),
+  };
 }
 
 function parseSandbox(value: unknown): SandboxSnapshot {
@@ -219,6 +245,10 @@ class ControlApiClient {
     return parseSandbox(
       await this.#request("POST", "/sandbox/stop", { checkpointReceipt }, true),
     );
+  }
+
+  public async history(): Promise<SandboxDetails> {
+    return parseDetails(await this.#request("GET", "/sandbox/history"));
   }
 
   async #request(
@@ -851,6 +881,7 @@ export class BrowserApplication {
     try {
       const sandbox = await this.#control.status();
       this.#store.dispatch({ type: "sandbox", sandbox });
+      this.#refreshDetails(sandbox.stateVersion);
       if (
         connectActive &&
         sandbox.state !== "STOPPED" &&
@@ -869,6 +900,26 @@ export class BrowserApplication {
         this.#terminal(error);
       }
     }
+  }
+
+  #detailsVersion: number | undefined;
+
+  #refreshDetails(stateVersion: number): void {
+    if (this.#detailsVersion === stateVersion) {
+      return;
+    }
+    this.#detailsVersion = stateVersion;
+    void this.#control
+      .history()
+      .then((details) => {
+        if (!this.#destroyed) {
+          this.#store.dispatch({ type: "details", value: details });
+        }
+      })
+      .catch(() => {
+        // Decorative data: a failed fetch retries on the next transition.
+        this.#detailsVersion = undefined;
+      });
   }
 
   #scheduleStatusPoll(): void {

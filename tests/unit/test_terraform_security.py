@@ -213,3 +213,15 @@ def test_runtime_and_persistence_can_use_encrypted_table_only_through_dynamodb()
     assert actions in persistence
     assert "resources = [aws_kms_key.snapshots.arn]" in persistence
     assert via_dynamodb in persistence
+
+
+def test_panel_persisted_paths_mirror_the_persistence_policy() -> None:
+    from kirocrew_agentcore_persistence.manifest import PersistencePolicy
+
+    variables = terraform("variables.tf")
+    # The panel shows exactly what the checkpoint engine persists: every
+    # policy root appears in the terraform default, and nothing else does.
+    for root in PersistencePolicy._roots:
+        assert f'"/mnt/workspace/{root.as_posix()}",' in variables
+    declared = re.findall(r'"(/mnt/workspace/[^"]+)",', variables)
+    assert len(declared) == len(PersistencePolicy._roots)

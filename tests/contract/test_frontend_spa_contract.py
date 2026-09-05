@@ -10,7 +10,7 @@ import pytest
 from kirocrew_agentcore_adapter.loopback import KiroCrewRoutePolicy, RouteDisposition
 
 ROOT = Path(__file__).parents[2]
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 ASSET_ROOT = ROOT / "frontend-shell" / "upstream" / VERSION
 CONTRACT_PATH = ROOT / "frontend-shell" / "upstream-contracts" / f"{VERSION}.json"
 API_LITERAL = re.compile(rb"/api/[A-Za-z0-9_.?=&/$-]+")

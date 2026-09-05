@@ -50,6 +50,7 @@ def test_openapi_and_asyncapi_publish_required_surfaces() -> None:
         "/control/v1/sandbox/start",
         "/control/v1/sandbox/stop",
         "/control/v1/sandbox/checkpoints",
+        "/control/v1/sandbox/history",
         "/invocations",
     }
     asyncapi = cast(

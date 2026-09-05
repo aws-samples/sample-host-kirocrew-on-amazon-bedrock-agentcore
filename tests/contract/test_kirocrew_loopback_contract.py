@@ -28,7 +28,7 @@ from kirocrew_agentcore_runtime.supervisor import (
 
 ROOT = Path(__file__).parents[2]
 ARTIFACT = json.loads((ROOT / "runtime" / "kirocrew-artifact.json").read_text())
-DIGEST = "329b4b2e271d1253eb9b2115f19950485181934f2ba7ded1a993edfbf48c6f90"
+DIGEST = "30bd90fcf5e0adc87541f67162866dcc3b5b2d5a0a44418c6d42022c8c7abbb2"
 
 
 class StaticToken:
@@ -38,7 +38,7 @@ class StaticToken:
 
 
 def runtime_metadata() -> RuntimeMetadata:
-    return RuntimeMetadata("0.2.0", DIGEST, "kirocrew-agentcore.v1")
+    return RuntimeMetadata("0.3.0", DIGEST, "kirocrew-agentcore.v1")
 
 
 def process_state(pid: int) -> str | None:
@@ -71,11 +71,11 @@ def test_pinned_official_kirocrew_start_token_pause_resume_shutdown_and_crash(
     assert ARTIFACT == {
         "schemaVersion": 1,
         "distribution": "kirocrew",
-        "version": "0.2.0",
-        "wheel": "kirocrew-0.2.0-py3-none-any.whl",
+        "version": "0.3.0",
+        "wheel": "kirocrew-0.3.0-py3-none-any.whl",
         "sha256": DIGEST,
         "entrypoint": "kirocrew",
-        "source": "https://github.com/kirodotdev/KiroCrew/releases/tag/v0.2.0",
+        "source": "https://github.com/kirodotdev/KiroCrew/releases/tag/v0.3.0",
     }
     assert version("kirocrew") == ARTIFACT["version"]
 
@@ -257,10 +257,10 @@ def test_real_loopback_rest_sse_websocket_allowlist_and_secret_boundary() -> Non
 @pytest.mark.contract
 def test_route_allowlist_contract_matches_versioned_adapter_boundary() -> None:
     contract = json.loads(
-        (ROOT / "contracts" / "kirocrew" / "0.2.0-route-allowlist.json").read_text()
+        (ROOT / "contracts" / "kirocrew" / "0.3.0-route-allowlist.json").read_text()
     )
     assert contract["schemaVersion"] == 2
-    assert contract["kirocrewVersion"] == "0.2.0"
+    assert contract["kirocrewVersion"] == "0.3.0"
     assert KiroCrewRoutePolicy.VERSION == contract["kirocrewVersion"]
     # Default-forward: the product must work end to end, so the contract records
     # only the families that stay blocked and why.
@@ -273,8 +273,16 @@ def test_route_allowlist_contract_matches_versioned_adapter_boundary() -> None:
         "/api/secrets",
         "/api/config/export",
         "/api/shutdown",
+        "/api/restart",
     }
+    # /api/restart is the one deliberate exception to "never deny what the
+    # bundle calls": 0.3.0's settings page offers a gateway restart button,
+    # but the supervisor owns gateway lifecycle in this deployment - a
+    # browser-initiated restart races checkpoint/restore exactly like
+    # /api/shutdown. Losing that button is the accepted cost.
     for entry in contract["deniedPrefixes"]:
+        if entry["prefix"] == "/api/restart":
+            continue
         assert entry["calledByBundle"] is False, (
             f"{entry['prefix']} is denied but the upstream bundle calls it; "
             "denying it would remove product functionality"

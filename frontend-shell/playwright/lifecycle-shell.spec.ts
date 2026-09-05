@@ -13,6 +13,14 @@ interface LifecycleFixture {
   readonly view: string;
   readonly activeRequestAccepted: boolean;
   readonly startedAt?: number;
+  readonly details?: {
+    readonly events: readonly {
+      readonly at: string;
+      readonly state: string;
+      readonly stateVersion: number;
+    }[];
+    readonly persistedPaths: readonly string[];
+  };
   readonly sandbox?: {
     readonly sandboxId: string;
     readonly state: string;
@@ -839,4 +847,48 @@ test("forgot password sends a code and resets through the form", async ({
   await expect(
     page.getByRole("button", { name: "Sign in", exact: true }),
   ).toBeVisible();
+});
+
+test("sandbox details show observed history and persisted paths", async ({
+  page,
+}) => {
+  await render(page, { view: "signed-out", activeRequestAccepted: false });
+  await ensureExpanded(page);
+  // Signed out: no details section even when data exists.
+  await render(page, {
+    view: "signed-out",
+    activeRequestAccepted: false,
+    details: {
+      events: [{ at: "2026-09-05T10:00:00Z", state: "READY", stateVersion: 3 }],
+      persistedPaths: ["/mnt/workspace/projects"],
+    },
+  });
+  await expect(
+    page.getByRole("button", { name: "Sandbox details" }),
+  ).toBeHidden();
+  // Signed in with details: collapsed by default, expands on demand.
+  await render(page, {
+    view: "stopped",
+    activeRequestAccepted: false,
+    details: {
+      events: [
+        { at: "2026-09-05T10:00:00Z", state: "READY", stateVersion: 3 },
+        { at: "2026-09-05T09:00:00Z", state: "STOPPED", stateVersion: 2 },
+      ],
+      persistedPaths: ["/mnt/workspace/projects", "/mnt/workspace/user"],
+    },
+  });
+  const toggle = page.getByRole("button", { name: "Sandbox details" });
+  await expect(toggle).toBeVisible();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  const history = page.getByLabel("Sandbox state history");
+  await expect(history.locator("li")).toHaveCount(2);
+  await expect(history.locator("li").first()).toContainText("ready");
+  const paths = page.getByLabel("Persisted paths");
+  await expect(paths.locator("li")).toHaveCount(2);
+  await expect(paths.locator("li").first()).toHaveText(
+    "/mnt/workspace/projects",
+  );
 });

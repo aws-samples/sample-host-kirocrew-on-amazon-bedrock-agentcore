@@ -11,7 +11,7 @@ from kirocrew_agentcore_persistence.checkpoint import SystemFlusher
 from kirocrew_agentcore_runtime.image_runtime import ImageMetadata, smoke_gateway
 from kirocrew_agentcore_runtime.supervisor import GatewayReady, KiroCrewSupervisor
 
-DIGEST = "329b4b2e271d1253eb9b2115f19950485181934f2ba7ded1a993edfbf48c6f90"
+DIGEST = "30bd90fcf5e0adc87541f67162866dcc3b5b2d5a0a44418c6d42022c8c7abbb2"
 BASE_DIGEST = "sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7"
 
 

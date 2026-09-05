@@ -105,6 +105,7 @@ module "control_api" {
   user_pool_arn                  = module.identity.user_pool_arn
   allowed_email_domains          = var.allowed_email_domains
   allowed_email_patterns         = var.allowed_email_patterns
+  persisted_paths                = var.persisted_paths
   tags                           = module.naming.tags
 }
 

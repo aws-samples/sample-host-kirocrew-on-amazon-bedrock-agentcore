@@ -28,13 +28,28 @@ variable "environment" {
 variable "frontend_compatibility_version" {
   description = "Pinned upstream KiroCrew frontend compatibility version."
   type        = string
-  default     = "0.2.0"
+  default     = "0.3.0"
+}
+
+variable "persisted_paths" {
+  description = "Workspace paths included in checkpoints, shown in the panel. Must mirror PersistencePolicy in the persistence engine; a unit test pins the two together."
+  type        = list(string)
+  default = [
+    "/mnt/workspace/home/.kiro",
+    "/mnt/workspace/home/.config",
+    "/mnt/workspace/home/.local/share/kiro-cli",
+    "/mnt/workspace/artifacts",
+    "/mnt/workspace/knowledge",
+    "/mnt/workspace/memory",
+    "/mnt/workspace/projects",
+    "/mnt/workspace/user",
+  ]
 }
 
 variable "frontend_asset_directory" {
   description = "Directory containing the compiled upstream SPA and injected bootstrap assets."
   type        = string
-  default     = "../frontend-shell/upstream/0.2.0"
+  default     = "../frontend-shell/upstream/0.3.0"
 }
 
 variable "oauth_callback_paths" {

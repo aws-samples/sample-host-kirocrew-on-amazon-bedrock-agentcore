@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 2,
+  "kirocrewVersion": "0.3.0",
+  "defaultDisposition": "allowed",
+  "rationale": [
+    "The sandbox is a single-tenant microVM. AgentCore validates the Cognito authorization header and the adapter verifies a binding token against the Cognito subject hash on every invocation, so tenancy is enforced by the transport, not by route filtering.",
+    "/api/chat and /api/terminal already grant arbitrary in-sandbox execution, so filtering feature routes buys no isolation while breaking the product.",
+    "Upstream 0.2.0 registers 496 /api/* routes and its browser bundle references 308 route families. An enumerated allowlist cannot track that surface: every gap surfaces as a 403 on a working feature.",
+    "Only credential-minting and lifecycle-seizing routes stay denied. None of them are called by the upstream browser bundle, so denying them removes no functionality."
+  ],
+  "synthetic": [
+    {
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/auth/status"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/auth/local-token"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/auth/refresh"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/auth/logout"
+    }
+  ],
+  "unavailablePrefixes": [
+    {
+      "prefix": "/api/desktop",
+      "registeredUpstream": false,
+      "reason": "Host-native desktop control; not registered by upstream 0.3.0 and impossible inside a microVM."
+    },
+    {
+      "prefix": "/api/files/pick",
+      "registeredUpstream": false,
+      "reason": "Native OS file picker; not registered by upstream 0.3.0 and impossible inside a microVM."
+    }
+  ],
+  "deniedPrefixes": [
+    {
+      "prefix": "/api/token",
+      "registeredUpstream": true,
+      "calledByBundle": false,
+      "reason": "GET /api/token/local mints a dashboard session token for same-host callers holding the local secret. The supervisor already holds that token and the browser must never receive it."
+    },
+    {
+      "prefix": "/api/auth/token",
+      "registeredUpstream": false,
+      "calledByBundle": false,
+      "reason": "Defensive alias so a future rename of the token family cannot silently become reachable."
+    },
+    {
+      "prefix": "/api/secrets",
+      "registeredUpstream": false,
+      "calledByBundle": false,
+      "reason": "Defensive: no secret-bearing family may become reachable by upstream rename."
+    },
+    {
+      "prefix": "/api/config/export",
+      "registeredUpstream": false,
+      "calledByBundle": false,
+      "reason": "Defensive: a full config export would carry MCP credentials and model API keys into browser storage."
+    },
+    {
+      "prefix": "/api/shutdown",
+      "registeredUpstream": true,
+      "calledByBundle": false,
+      "reason": "The supervisor owns gateway lifecycle; a browser-initiated exit is indistinguishable from a crash and races checkpoint/restore."
+    },
+    {
+      "prefix": "/api/restart",
+      "registeredUpstream": true,
+      "calledByBundle": true,
+      "reason": "Upstream 0.3.0 registers POST /api/restart (and the dev-fleet app's /api/restart-gateway). The supervisor owns gateway lifecycle: a browser-initiated restart races checkpoint/restore exactly like /api/shutdown."
+    }
+  ]
+}

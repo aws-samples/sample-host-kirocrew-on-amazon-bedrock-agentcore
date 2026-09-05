@@ -257,3 +257,17 @@ describe("classifyRuntimeError", () => {
     );
   });
 });
+
+it("records sandbox details for the panel", () => {
+  const store = new LifecycleStore(true);
+  store.dispatch({
+    type: "details",
+    value: {
+      events: [{ at: "2026-09-05T10:00:00Z", state: "READY", stateVersion: 3 }],
+      persistedPaths: ["/mnt/workspace/projects"],
+    },
+  });
+  const model = store.snapshot();
+  expect(model.details?.events[0]?.state).toBe("READY");
+  expect(model.details?.persistedPaths).toEqual(["/mnt/workspace/projects"]);
+});

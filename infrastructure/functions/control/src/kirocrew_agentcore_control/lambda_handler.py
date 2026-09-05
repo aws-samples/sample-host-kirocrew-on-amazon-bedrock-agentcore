@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from collections.abc import Mapping
 from dataclasses import replace
@@ -21,6 +22,7 @@ from kirocrew_agentcore_control.api import (
     SignedControlTokens,
 )
 from kirocrew_agentcore_control.sandbox import (
+    HistoryEvent,
     InMemorySandboxRegistry,
     LeaseConflictError,
     SandboxRecord,
@@ -149,6 +151,60 @@ class DynamoSandboxRegistry(InMemorySandboxRegistry):
         if not item:
             raise SandboxUnavailableError("Sandbox is unavailable.")
         return self._record(cast(Mapping[str, Mapping[str, str]], item))
+
+    _HISTORY_TTL_SECONDS = 7 * 24 * 3600
+
+    def record_observation(self, record: SandboxRecord) -> None:
+        # One event per state version: the version key makes repeated polls
+        # of the same state a cheap conditional no-op. The stored timestamp
+        # is the record's updatedAt - the actual transition time - so late
+        # observation does not distort the history. Events expire via TTL.
+        try:
+            self._client.put_item(
+                TableName=self._table_name,
+                Item={
+                    "pk": {"S": f"SANDBOX#{record.sandbox_id}"},
+                    "sk": {"S": f"EVENT#{record.state_version:012d}"},
+                    "state": {"S": record.state.value},
+                    "at": {"S": record.updated_at.isoformat()},
+                    "expiresAt": {
+                        "N": str(int(record.updated_at.timestamp()) + self._HISTORY_TTL_SECONDS)
+                    },
+                },
+                ConditionExpression="attribute_not_exists(pk)",
+            )
+        except ClientError as error:
+            if error.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise
+
+    def history(self, sandbox_id: str, limit: int = 20) -> list[HistoryEvent]:
+        if limit <= 0:
+            raise ValueError("History limit must be positive.")
+        response = self._client.query(
+            TableName=self._table_name,
+            KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
+            ExpressionAttributeValues={
+                ":pk": {"S": f"SANDBOX#{sandbox_id}"},
+                ":prefix": {"S": "EVENT#"},
+            },
+            ScanIndexForward=False,
+            Limit=limit,
+        )
+        events: list[HistoryEvent] = []
+        for item in cast(list[Mapping[str, Mapping[str, str]]], response.get("Items", [])):
+            key = item.get("sk", {}).get("S", "")
+            state = item.get("state", {}).get("S", "")
+            at = item.get("at", {}).get("S", "")
+            if not key.startswith("EVENT#") or not state or not at:
+                continue
+            events.append(
+                HistoryEvent(
+                    int(key.removeprefix("EVENT#")),
+                    SandboxState(state),
+                    datetime.fromisoformat(at),
+                )
+            )
+        return events
 
     def acquire_start(
         self,
@@ -455,6 +511,7 @@ def _build_service() -> SandboxControlService:
         cast(Any, _required("DEPLOYMENT_MODE")),
         _required("FRONTEND_COMPATIBILITY_VERSION"),
         _required("BINDING_AUDIENCE"),
+        persisted_paths=tuple(cast(list[str], json.loads(os.environ.get("PERSISTED_PATHS", "[]")))),
     )
     return SandboxControlService(
         config,

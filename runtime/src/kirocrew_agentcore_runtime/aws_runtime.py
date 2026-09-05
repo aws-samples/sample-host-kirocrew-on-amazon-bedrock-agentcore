@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -436,6 +437,10 @@ class ProductionRuntimeBackend:
         loopback: LoopbackKiroCrewBackend,
         readiness: RuntimeReadiness,
         identity: KiroIdentityManager | None = None,
+        *,
+        busy_probe_ttl_seconds: float = 10.0,
+        busy_max_seconds: float = 14400.0,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._loopback = loopback
         self._readiness = readiness
@@ -445,6 +450,17 @@ class ProductionRuntimeBackend:
         self._broker_client: LambdaBrokerClient | None = None
         self._checkpoint_lock = asyncio.Lock()
         self._durability_tasks: set[asyncio.Task[bool]] = set()
+        # Background-activity keepalive: /ping reports HealthyBusy while
+        # unattended work (task runner, subagents, workflows) is running,
+        # which is what keeps AgentCore from idle-reclaiming a working
+        # sandbox whose browser has disconnected.
+        self._busy_probe_ttl = busy_probe_ttl_seconds
+        self._busy_max = busy_max_seconds
+        self._monotonic = monotonic
+        self._busy_cache: tuple[float, bool] | None = None
+        self._busy_since: float | None = None
+        self._was_busy = False
+        self._fuse_logged = False
 
     def configure(
         self,
@@ -564,6 +580,76 @@ class ProductionRuntimeBackend:
             receipt.generation,
         )
         return True
+
+    async def background_busy(self) -> bool:
+        """Report whether unattended work is still running in the sandbox.
+
+        Drives the /ping status: HealthyBusy keeps AgentCore from
+        idle-reclaiming a sandbox whose task runner, subagents, or
+        workflows are still working after the browser disconnected.
+        Probe failures count as idle: a broken gateway must be reclaimable,
+        never immortal.
+        """
+        if self._busy_probe_ttl <= 0:
+            return False
+        now = self._monotonic()
+        if self._busy_cache is not None and now - self._busy_cache[0] < self._busy_probe_ttl:
+            busy = self._busy_cache[1]
+        else:
+            try:
+                busy = await asyncio.wait_for(self._probe_background_activity(), 2.5)
+            except Exception:
+                busy = False
+            self._busy_cache = (now, busy)
+        if busy:
+            if self._busy_since is None:
+                self._busy_since = now
+            elif self._busy_max > 0 and now - self._busy_since > self._busy_max:
+                # Fuse: a task stuck busy forever must not pin the microVM
+                # until MaxLifetime. Report idle so the platform reclaims it;
+                # the idle-transition checkpoint below preserves the state.
+                if not self._fuse_logged:
+                    _LOGGER.warning(
+                        "Background work busy for over %.0f seconds; reporting idle.",
+                        self._busy_max,
+                    )
+                    self._fuse_logged = True
+                busy = False
+        else:
+            self._busy_since = None
+            self._fuse_logged = False
+        if self._was_busy and not busy:
+            # The sandbox just went quiet. Commit now instead of waiting for
+            # the periodic interval: the platform may reclaim the session at
+            # any point after this answer.
+            self._schedule_durability_checkpoint("background-idle")
+        self._was_busy = busy
+        return busy
+
+    async def _probe_background_activity(self) -> bool:
+        with contextlib.suppress(Exception):
+            data = await self._loopback.fetch_json("/api/taskrunner")
+            if isinstance(data, Mapping):
+                runs = data.get("runs")
+                if isinstance(runs, list) and any(
+                    isinstance(run, Mapping) and run.get("running") for run in runs
+                ):
+                    return True
+        with contextlib.suppress(Exception):
+            status = await self._loopback.fetch_json("/api/status")
+            if isinstance(status, Mapping):
+                subagents = status.get("subagents")
+                if isinstance(subagents, int) and subagents > 0:
+                    return True
+        with contextlib.suppress(Exception):
+            workflows = await self._loopback.fetch_json("/api/workflows/runs")
+            if isinstance(workflows, Mapping):
+                runs = workflows.get("runs")
+                if isinstance(runs, list) and any(
+                    isinstance(run, Mapping) and run.get("status") == "running" for run in runs
+                ):
+                    return True
+        return False
 
     async def run_periodic_checkpoints(
         self,
@@ -886,7 +972,15 @@ async def build_runtime_application(
         ),
         LocalKiroCommandRunner(),
     )
-    backend = ProductionRuntimeBackend(loopback, readiness, identity=identity_manager)
+    backend = ProductionRuntimeBackend(
+        loopback,
+        readiness,
+        identity=identity_manager,
+        # 0 disables the probe; the fuse bounds a stuck-busy task so it cannot
+        # pin the microVM until MaxLifetime.
+        busy_probe_ttl_seconds=float(environment.get("KIROCREW_BUSY_PROBE_TTL_SECONDS", "10")),
+        busy_max_seconds=float(environment.get("KIROCREW_BUSY_MAX_SECONDS", "14400")),
+    )
     initializer = AwsSessionInitializer(
         lambda_client,
         _required(environment, "PERSISTENCE_BROKER_ARN"),

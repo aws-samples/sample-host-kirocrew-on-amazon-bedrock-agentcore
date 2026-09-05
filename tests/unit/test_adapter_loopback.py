@@ -701,3 +701,76 @@ def test_websocket_empty_and_ignored_control_frames() -> None:
         ]
 
     asyncio.run(scenario())
+
+
+class FakeProbeResponse:
+    def __init__(self, status: int = 200, payload: object = None) -> None:
+        self.status = status
+        self._payload = payload
+
+    async def json(self) -> object:
+        return self._payload
+
+
+class FakeProbeContext:
+    def __init__(self, response: FakeProbeResponse | None, error: BaseException | None) -> None:
+        self._response = response
+        self._error = error
+
+    async def __aenter__(self) -> FakeProbeResponse:
+        if self._error is not None:
+            raise self._error
+        assert self._response is not None
+        return self._response
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        return None
+
+
+class FakeProbeSession(FakeSession):
+    def __init__(
+        self,
+        *,
+        probe_response: FakeProbeResponse | None = None,
+        probe_error: BaseException | None = None,
+    ) -> None:
+        super().__init__()
+        self.probe_response = probe_response
+        self.probe_error = probe_error
+        self.get_call: dict[str, object] = {}
+
+    def get(self, url: str, **kwargs: object) -> FakeProbeContext:
+        self.get_call = {"url": url, **kwargs}
+        return FakeProbeContext(self.probe_response, self.probe_error)
+
+
+def test_fetch_json_probes_the_gateway_with_the_session_cookie() -> None:
+    async def scenario() -> None:
+        session = FakeProbeSession(
+            probe_response=FakeProbeResponse(200, {"runs": [{"running": True}]})
+        )
+        subject = backend(session)
+        value = await subject.fetch_json("/api/taskrunner")
+        assert value == {"runs": [{"running": True}]}
+        assert session.get_call["url"] == "http://127.0.0.1:5476/api/taskrunner"
+        headers = cast(Mapping[str, str], session.get_call["headers"])
+        assert headers["authorization"].startswith("Bearer ")
+        assert headers["cookie"].startswith("mc_token_5476=")
+        assert session.get_call["allow_redirects"] is False
+
+    asyncio.run(scenario())
+
+
+def test_fetch_json_raises_transient_errors_for_failures() -> None:
+    async def scenario() -> None:
+        unavailable = backend(FakeProbeSession(probe_response=FakeProbeResponse(503)))
+        with pytest.raises(TransientBackendError, match="503"):
+            await unavailable.fetch_json("/api/status")
+        broken = backend(FakeProbeSession(probe_error=ClientConnectionError("down")))
+        with pytest.raises(TransientBackendError, match="unavailable"):
+            await broken.fetch_json("/api/status")
+        timed_out = backend(FakeProbeSession(probe_error=TimeoutError()))
+        with pytest.raises(TransientBackendError, match="unavailable"):
+            await timed_out.fetch_json("/api/status")
+
+    asyncio.run(scenario())

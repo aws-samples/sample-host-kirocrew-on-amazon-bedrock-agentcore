@@ -339,6 +339,25 @@ def test_ping_readiness_and_config_validation_over_real_http() -> None:
             assert busy.status == 200
             assert (await busy.json())["status"] == "HealthyBusy"
             fixture.adapter._readiness.initializing = False
+            # A backend advertising background activity keeps the sandbox
+            # alive past the idle timeout; a quiet one lets it reclaim.
+            background = {"busy": True}
+
+            async def background_busy() -> bool:
+                return background["busy"]
+
+            fixture.backend.background_busy = background_busy  # type: ignore[attr-defined]
+            working = await session.get(f"{base}/ping")
+            assert (await working.json())["status"] == "HealthyBusy"
+            background["busy"] = False
+            quiet = await session.get(f"{base}/ping")
+            assert (await quiet.json())["status"] == "Healthy"
+            # Initialization outranks the probe: it is never consulted then.
+            background["busy"] = True
+            fixture.adapter._readiness.initializing = True
+            initializing = await session.get(f"{base}/ping")
+            assert (await initializing.json())["status"] == "HealthyBusy"
+            fixture.adapter._readiness.initializing = False
 
     asyncio.run(scenario())
     with pytest.raises(ValueError, match="configuration"):

@@ -294,6 +294,32 @@ class LoopbackKiroCrewBackend:
         finally:
             self._cancellations.pop(request_id, None)
 
+    async def fetch_json(self, path: str, *, timeout_seconds: float = 2.0) -> object:
+        """Directly GET a gateway JSON endpoint for internal probes.
+
+        This bypasses the envelope machinery: the runtime itself asks the
+        gateway questions (background activity, health) that never originate
+        from a browser. Authentication mirrors the tunnel: the dashboard
+        token as the long-lived session cookie.
+        """
+        token = self._token_provider.token()
+        headers = {
+            "authorization": f"Bearer {token}",
+            "cookie": f"mc_token_{_LOOPBACK_PORT}={token}",
+        }
+        try:
+            async with self._session.get(
+                f"{_LOOPBACK_ORIGIN}{path}",
+                headers=headers,
+                timeout=ClientTimeout(total=timeout_seconds),
+                allow_redirects=False,
+            ) as response:
+                if response.status != 200:
+                    raise TransientBackendError(f"Loopback probe answered {response.status}.")
+                return cast(object, await response.json())
+        except (TimeoutError, ClientConnectionError) as error:
+            raise TransientBackendError("Loopback KiroCrew is temporarily unavailable.") from error
+
     async def cancel(self, request_id: str) -> bool:
         cancellation = self._cancellations.get(request_id)
         if cancellation is None:

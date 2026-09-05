@@ -206,7 +206,12 @@ checkpoint in seconds.
 - **Stop and start.** **Stop safely** checkpoints the workspace and releases compute.
   **Start** restores the latest committed generation. Sandboxes idle for
   `runtime_idle_session_timeout_seconds` (default 15 minutes) are scaled to zero by
-  AgentCore.
+  AgentCore. A sandbox whose task runner, subagents, or workflows are still
+  working reports itself busy and stays alive past that timeout even with no
+  browser connected; when the work finishes it commits a checkpoint and
+  returns to normal idle reclaim. A task stuck busy is cut off after
+  `KIROCREW_BUSY_MAX_SECONDS` (default 4 hours) so it cannot pin the microVM
+  until the 8-hour session lifetime.
 - **Observe.** Runtime logs are in the AgentCore runtime log group; control-plane
   and persistence logs are in the two Lambda log groups. CloudWatch alarms can be
   routed with the `alarm_actions` variable.

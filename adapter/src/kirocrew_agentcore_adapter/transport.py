@@ -304,8 +304,19 @@ class AgentCoreAdapter:
         and it suspends the microVM between invocations unless the status
         is HealthyBusy. A long restore or gateway startup therefore must
         report HealthyBusy, never an error.
+
+        Beyond initialization, HealthyBusy is driven by the backend's
+        background-activity capability (an optional async ``background_busy``
+        method): a sandbox whose task runner, subagents, or workflows are
+        still working stays alive past the idle timeout even with no browser
+        connected, and returns to Healthy - and normal idle reclaim - once
+        the work finishes.
         """
         busy = self._readiness.initializing
+        if not busy:
+            probe = getattr(self._backend, "background_busy", None)
+            if probe is not None:
+                busy = bool(await probe())
         return web.json_response(
             {"status": "HealthyBusy" if busy else "Healthy"},
             status=200,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -1226,3 +1226,170 @@ def test_staged_state_flusher_writes_state_back_before_flushing(tmp_path: Path) 
     default = StagedStateFlusher(cast(KiroCrewSupervisor, FakeSupervisor()))
     with pytest.raises(CheckpointError):
         default.flush(tmp_path / "missing")
+
+
+class ProbeLoopback(FakeLoopbackBackend):
+    """FakeLoopbackBackend with programmable probe answers per path."""
+
+    def __init__(self) -> None:
+        self.responses: dict[str, object] = {}
+        self.calls: list[str] = []
+
+    async def fetch_json(self, path: str, *, timeout_seconds: float = 2.0) -> object:
+        del timeout_seconds
+        self.calls.append(path)
+        value = self.responses.get(path, RuntimeError("probe unavailable"))
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+
+def probe_backend(
+    loopback: ProbeLoopback,
+    *,
+    ttl: float = 10.0,
+    busy_max: float = 14400.0,
+    clock: Callable[[], float] | None = None,
+) -> ProductionRuntimeBackend:
+    readiness = RuntimeReadiness(True, True, False)
+    return ProductionRuntimeBackend(
+        cast(Any, loopback),
+        readiness,
+        busy_probe_ttl_seconds=ttl,
+        busy_max_seconds=busy_max,
+        monotonic=clock or (lambda: 0.0),
+    )
+
+
+def test_background_busy_detects_each_activity_source_and_tolerates_failures() -> None:
+    async def scenario() -> None:
+        loopback = ProbeLoopback()
+        # Task runner run in flight.
+        loopback.responses["/api/taskrunner"] = {"runs": [{"running": True}]}
+        assert await probe_backend(loopback).background_busy() is True
+        # Running subagents count.
+        loopback.responses["/api/taskrunner"] = {"runs": [{"running": False}]}
+        loopback.responses["/api/status"] = {"subagents": 2}
+        assert await probe_backend(loopback).background_busy() is True
+        # Workflow run marked running.
+        loopback.responses["/api/status"] = {"subagents": 0}
+        loopback.responses["/api/workflows/runs"] = {"runs": [{"status": "running"}]}
+        assert await probe_backend(loopback).background_busy() is True
+        # Everything quiet.
+        loopback.responses["/api/workflows/runs"] = {"runs": [{"status": "completed"}]}
+        assert await probe_backend(loopback).background_busy() is False
+        # Malformed answers and dead endpoints count as idle, never busy.
+        loopback.responses = {"/api/taskrunner": {"runs": "nope"}, "/api/status": []}
+        assert await probe_backend(loopback).background_busy() is False
+        loopback.responses = {"/api/taskrunner": [1], "/api/workflows/runs": [1]}
+        assert await probe_backend(loopback).background_busy() is False
+        loopback.responses = {}
+        assert await probe_backend(loopback).background_busy() is False
+
+    asyncio.run(scenario())
+
+
+def test_background_busy_caches_probes_and_honours_disable() -> None:
+    async def scenario() -> None:
+        loopback = ProbeLoopback()
+        loopback.responses["/api/taskrunner"] = {"runs": [{"running": True}]}
+        clock = {"now": 0.0}
+        backend = probe_backend(loopback, ttl=10.0, clock=lambda: clock["now"])
+        assert await backend.background_busy() is True
+        assert await backend.background_busy() is True
+        # Two answers, one probe: the second call hit the cache.
+        assert loopback.calls.count("/api/taskrunner") == 1
+        clock["now"] = 11.0
+        assert await backend.background_busy() is True
+        assert loopback.calls.count("/api/taskrunner") == 2
+        # A zero TTL disables probing entirely.
+        disabled = probe_backend(loopback, ttl=0.0)
+        assert await disabled.background_busy() is False
+        assert loopback.calls.count("/api/taskrunner") == 2
+
+    asyncio.run(scenario())
+
+
+def test_background_busy_probe_errors_and_timeouts_count_as_idle() -> None:
+    async def scenario() -> None:
+        loopback = ProbeLoopback()
+        backend = probe_backend(loopback)
+
+        async def exploding_probe() -> bool:
+            raise RuntimeError("probe blew up")
+
+        backend._probe_background_activity = exploding_probe  # type: ignore[method-assign]
+        assert await backend.background_busy() is False
+
+    asyncio.run(scenario())
+
+
+def test_background_busy_fuse_reports_idle_and_checkpoint_fires_on_transition() -> None:
+    async def scenario() -> None:
+        loopback = ProbeLoopback()
+        loopback.responses["/api/taskrunner"] = {"runs": [{"running": True}]}
+        clock = {"now": 0.0}
+        backend = probe_backend(loopback, ttl=1.0, busy_max=100.0, clock=lambda: clock["now"])
+        engine = FakeCheckpointEngine()
+        broker_client = FakeBrokerClient()
+        backend.configure(
+            cast(CheckpointEngine, engine),
+            cast(BrokeredCheckpointStore, FakeCheckpointStore()),
+            cast(LambdaBrokerClient, broker_client),
+        )
+        assert await backend.background_busy() is True
+        # Still busy beyond the fuse: reported idle so the platform can
+        # reclaim, and the forced transition commits a checkpoint first.
+        clock["now"] = 102.0
+        assert await backend.background_busy() is False
+        await asyncio.sleep(0)
+        await asyncio.gather(*backend._durability_tasks)
+        assert engine.calls == [(5, False)]
+        # The fuse warning is logged once; staying busy repeats the verdict.
+        clock["now"] = 104.0
+        assert await backend.background_busy() is False
+        # Work finishing resets the fuse for the next task.
+        loopback.responses["/api/taskrunner"] = {"runs": []}
+        clock["now"] = 106.0
+        assert await backend.background_busy() is False
+        loopback.responses["/api/taskrunner"] = {"runs": [{"running": True}]}
+        clock["now"] = 108.0
+        assert await backend.background_busy() is True
+
+    asyncio.run(scenario())
+
+
+def test_background_idle_transition_commits_a_durability_checkpoint() -> None:
+    async def scenario() -> None:
+        loopback = ProbeLoopback()
+        loopback.responses["/api/taskrunner"] = {"runs": [{"running": True}]}
+        clock = {"now": 0.0}
+        backend = probe_backend(loopback, ttl=1.0, clock=lambda: clock["now"])
+        engine = FakeCheckpointEngine()
+        backend.configure(
+            cast(CheckpointEngine, engine),
+            cast(BrokeredCheckpointStore, FakeCheckpointStore()),
+            cast(LambdaBrokerClient, FakeBrokerClient()),
+        )
+        assert await backend.background_busy() is True
+        # The task finishes; the very next answer is Healthy and the state
+        # is committed before the platform gets a chance to reclaim.
+        loopback.responses["/api/taskrunner"] = {"runs": [{"running": False}]}
+        clock["now"] = 2.0
+        assert await backend.background_busy() is False
+        await asyncio.gather(*backend._durability_tasks)
+        assert engine.calls == [(5, False)]
+        # Idle staying idle does not checkpoint again.
+        clock["now"] = 4.0
+        assert await backend.background_busy() is False
+        assert engine.calls == [(5, False)]
+        # An unconfigured backend just skips the commit.
+        bare = probe_backend(loopback, ttl=1.0, clock=lambda: clock["now"])
+        loopback.responses["/api/taskrunner"] = {"runs": [{"running": True}]}
+        assert await bare.background_busy() is True
+        clock["now"] = 6.0
+        loopback.responses["/api/taskrunner"] = {"runs": []}
+        assert await bare.background_busy() is False
+        assert bare._durability_tasks == set()
+
+    asyncio.run(scenario())

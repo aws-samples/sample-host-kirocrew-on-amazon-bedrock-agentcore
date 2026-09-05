@@ -110,6 +110,11 @@ function installStyles(document: Document): void {
       justify-content: center;
       gap: 8px;
       height: 40px;
+      /* The pill is a drag handle: without this, mobile browsers claim the
+         touch for page scrolling and cancel the drag immediately. */
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
       padding: 0 14px;
       border: 0;
       background: transparent;
@@ -126,6 +131,9 @@ function installStyles(document: Document): void {
       outline-offset: 2px;
     }
     .kcac-rail {
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -766,6 +774,7 @@ export function mountBrowserShell(
   let pointerId: number | undefined;
   let dragMoved = false;
   let pressedPill = false;
+  let dragSlop = 4;
   let startX = 0;
   let startY = 0;
   let originLeft = 0;
@@ -785,6 +794,9 @@ export function mountBrowserShell(
     }
     pointerId = event.pointerId;
     dragMoved = false;
+    // Fingers jitter more than mice: with a tight slop a tap on the pill
+    // often registered as a tiny drag and refused to open the panel.
+    dragSlop = event.pointerType === "mouse" ? 4 : 12;
     pressedPill = target === pill || (target !== null && pill.contains(target));
     const rect = float.getBoundingClientRect();
     originLeft = rect.left;
@@ -799,7 +811,7 @@ export function mountBrowserShell(
     }
     const deltaX = event.clientX - startX;
     const deltaY = event.clientY - startY;
-    if (!dragMoved && Math.abs(deltaX) + Math.abs(deltaY) < 4) {
+    if (!dragMoved && Math.abs(deltaX) + Math.abs(deltaY) < dragSlop) {
       return;
     }
     dragMoved = true;

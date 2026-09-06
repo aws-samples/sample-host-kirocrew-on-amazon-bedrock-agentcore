@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1409,3 +1410,19 @@ def test_initializer_evicts_the_legacy_model_cache(tmp_path: Path) -> None:
     assert (neighbour / "keep.md").read_text() == "kept"
     # Absent directory: a no-op, not an error.
     initializer._evict_legacy_model_cache()
+
+
+def test_workspace_disk_report_logs_capacity_and_handles_errors(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Startup logs the container-disk capacity; a probe failure only warns."""
+    import kirocrew_agentcore_runtime.aws_runtime as module
+
+    with caplog.at_level(logging.INFO, logger=module.__name__):
+        module._report_workspace_disk(tmp_path)
+    assert "Workspace disk at" in caplog.text
+    assert "free" in caplog.text
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger=module.__name__):
+        module._report_workspace_disk(tmp_path / "missing" / "nested")
+    assert "unavailable" in caplog.text

@@ -139,7 +139,7 @@ def test_outputs_and_browser_config_are_public_metadata_only() -> None:
     assert "jsonencode(var.public_config)" in frontend
 
 
-def test_microvm_runtime_uses_official_agentcore_types_and_managed_storage() -> None:
+def test_microvm_runtime_uses_official_agentcore_types_and_container_disk() -> None:
     runtime = terraform("modules/runtime-microvm/main.tf")
     variables = terraform("variables.tf")
     assert '"Authorization",' in variables
@@ -147,7 +147,10 @@ def test_microvm_runtime_uses_official_agentcore_types_and_managed_storage() -> 
     assert 'type_name = "AWS::BedrockAgentCore::RuntimeEndpoint"' in runtime
     assert 'Type = "AWS::BedrockAgentCore::Runtime"' in runtime
     assert 'Type = "AWS::BedrockAgentCore::RuntimeEndpoint"' in runtime
-    assert 'MountPath = "/mnt/workspace"' in runtime
+    # The workspace lives on the container disk; managed session storage
+    # (1GB quota, 14-day retention) must stay out - durability is S3-only.
+    assert "FilesystemConfigurations" not in runtime
+    assert "SessionStorage" not in runtime
     assert 'NetworkMode = "PUBLIC"' in runtime
     assert 'ProtocolConfiguration = "HTTP"' in runtime
     assert "CustomJWTAuthorizer" in runtime

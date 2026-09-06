@@ -44,11 +44,11 @@ locals {
             }
           }
           EnvironmentVariables = var.environment_variables
-          FilesystemConfigurations = [{
-            SessionStorage = {
-              MountPath = "/mnt/workspace"
-            }
-          }]
+          # No filesystem configuration blocks: the workspace lives on the
+          # microVM's own container disk, and durability comes exclusively
+          # from the encrypted S3 checkpoints. Managed per-session storage
+          # (1GB quota, 14-day retention) was dropped after its quota and
+          # validation semantics caused repeated incidents.
           LifecycleConfiguration = {
             IdleRuntimeSessionTimeout = var.idle_session_timeout_seconds
             MaxLifetime               = var.max_lifetime_seconds

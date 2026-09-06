@@ -1054,7 +1054,37 @@ async def build_runtime_application(
     return adapter.application
 
 
+def _report_workspace_disk(workspace: Path) -> None:
+    """Log the workspace filesystem capacity at startup.
+
+    The workspace lives on the microVM's container disk and durability is
+    S3-only, so this line is the operational record of how much scratch
+    space a sandbox actually has (managed session storage capped it at 1GB
+    and caused repeated incidents before it was dropped).
+    """
+    try:
+        usage = shutil.disk_usage(workspace)
+    except OSError as error:
+        _LOGGER.warning("Workspace disk usage unavailable: %s", error)
+        return
+    _LOGGER.info(
+        "Workspace disk at %s: total %.1f GiB, free %.1f GiB",
+        workspace,
+        usage.total / 2**30,
+        usage.free / 2**30,
+    )
+
+
 def serve_runtime(environment: Mapping[str, str] = os.environ) -> None:
+    # Python logging drops INFO records without a configured handler; the
+    # runtime's own log lines must reach stdout to appear in the AgentCore
+    # application log group.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
+    )
+    _report_workspace_disk(Path(environment.get("WORKSPACE_ROOT", "/mnt/workspace")))
     web.run_app(
         build_runtime_application(environment),
         host="0.0.0.0",  # noqa: S104  # nosec B104 - AgentCore ingress port.

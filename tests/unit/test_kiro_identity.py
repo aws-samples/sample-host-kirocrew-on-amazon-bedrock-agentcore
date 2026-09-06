@@ -345,7 +345,9 @@ def test_organization_login_validation_and_sso_command(tmp_path: Path) -> None:
             "us-east-1",
         ]
         # The pre-filled Start URL and Region prompts are confirmed with Enter.
-        assert process.written == [b"\n\n"]
+        # PTY Enter is carriage return: "\n" corrupts dialoguer's edit
+        # buffer and the SSO login hangs on an empty start URL forever.
+        assert process.written == [b"\r\r"]
 
     asyncio.run(scenario())
 

@@ -1393,3 +1393,19 @@ def test_background_idle_transition_commits_a_durability_checkpoint() -> None:
         assert bare._durability_tasks == set()
 
     asyncio.run(scenario())
+
+
+def test_initializer_evicts_the_legacy_model_cache(tmp_path: Path) -> None:
+    initializer = StubAwsSessionInitializer()
+    initializer._workspace = tmp_path
+    legacy = tmp_path / "home" / ".kiro" / "crew" / "models"
+    legacy.mkdir(parents=True)
+    (legacy / "qwen3-embedding-0.6b.gguf").write_bytes(b"weights")
+    neighbour = tmp_path / "home" / ".kiro" / "crew" / "skills"
+    neighbour.mkdir(parents=True)
+    (neighbour / "keep.md").write_text("kept")
+    initializer._evict_legacy_model_cache()
+    assert not legacy.exists()
+    assert (neighbour / "keep.md").read_text() == "kept"
+    # Absent directory: a no-op, not an error.
+    initializer._evict_legacy_model_cache()

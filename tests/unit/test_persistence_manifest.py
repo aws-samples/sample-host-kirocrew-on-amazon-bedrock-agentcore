@@ -202,3 +202,14 @@ def test_manifest_records_symlinked_persistence_root_without_traversal(tmp_path:
     assert built.manifest.entries[0].path == "user"
     assert built.manifest.entries[0].type == "symlink"
     assert "outside.txt" not in {entry.path for entry in built.manifest.entries}
+
+
+def test_policy_excludes_the_in_workspace_embedding_model_cache() -> None:
+    policy = PersistencePolicy()
+    # The model ships in the image; a workspace copy is dead weight that
+    # bloats checkpoints and eats the 1GB session-storage quota.
+    assert not policy.includes(PurePosixPath("home/.kiro/crew/models/qwen3-embedding-0.6b.gguf"))
+    assert not policy.includes(PurePosixPath("home/.kiro/crew/models"))
+    # Only that exact directory: user files merely named "models" survive.
+    assert policy.includes(PurePosixPath("projects/default/models/data.txt"))
+    assert policy.includes(PurePosixPath("home/.kiro/crew/skills/models.md"))

@@ -106,6 +106,10 @@ class PersistencePolicy:
             ".ssh",
             "__pycache__",
             "node_modules",
+            # The embedding model ships in the image (KIROCREW_EMBED_MODEL_PATH);
+            # a legacy in-workspace copy is ~640MB of re-downloadable weights
+            # that would bloat every checkpoint and eat the 1GB session quota.
+            "home/.kiro/crew/models",
         }
     )
     _excluded_names: Final = frozenset(

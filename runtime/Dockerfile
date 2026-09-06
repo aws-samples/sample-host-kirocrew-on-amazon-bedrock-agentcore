@@ -116,6 +116,21 @@ RUN python -m pip install --no-index --no-deps /wheels/*.whl \
     && rm -rf /wheels
 COPY --from=kiro-cli-builder /opt/kiro-cli-home/.local/bin/kiro-cli /usr/local/bin/kiro-cli
 COPY --from=kiro-cli-builder /opt/kiro-cli-home/.local/bin/kiro-cli-chat /usr/local/bin/kiro-cli-chat
+# The KiroCrew embedding model (Qwen3-Embedding-0.6B, ~640MB) lives in the
+# IMAGE, not the workspace. Left to its own devices the gateway downloads it
+# to ~/.kiro/crew/models inside the 1GB session storage, which both fills
+# nearly two thirds of the quota and bloats every checkpoint. Baking it here
+# and pinning KIROCREW_EMBED_MODEL_PATH (the upstream escape hatch: with the
+# path set the gateway never downloads or installs the bundled default)
+# keeps session storage for actual user data. The sha pin mirrors upstream's
+# own integrity anchor for this artifact.
+ARG EMBED_MODEL_SHA256=06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439
+RUN set -eux; \
+    mkdir -p /opt/kirocrew/models; \
+    curl -fsSL --retry 3 -o /opt/kirocrew/models/qwen3-embedding-0.6b.gguf \
+        "https://d3j0sthz5doyui.cloudfront.net/models/qwen3-embedding-0.6b.gguf"; \
+    echo "${EMBED_MODEL_SHA256}  /opt/kirocrew/models/qwen3-embedding-0.6b.gguf" | sha256sum -c -; \
+    chmod 0444 /opt/kirocrew/models/qwen3-embedding-0.6b.gguf
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN set -eux; \
@@ -131,6 +146,7 @@ ENV HOME=/mnt/workspace/home \
     KIROCREW_HOME=/mnt/workspace/home/.kiro/crew \
     KIROCREW_PORT=5476 \
     KIROCREW_HOST=127.0.0.1 \
+    KIROCREW_EMBED_MODEL_PATH=/opt/kirocrew/models/qwen3-embedding-0.6b.gguf \
     PROJECT_ROOT=/mnt/workspace/projects/default \
     KIROCREW_VERSION=${KIROCREW_VERSION} \
     KIROCREW_ARTIFACT_SHA256=${KIROCREW_ARTIFACT_SHA256} \

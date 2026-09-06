@@ -319,9 +319,11 @@ class KiroIdentityManager:
         self._process = process
         if organization is not None:
             # kiro-cli pre-fills the Start URL and Region prompts from the
-            # flags but still waits for interactive confirmation; two Enter
-            # keys accept both pre-filled values.
-            await process.write(b"\n\n")
+            # flags but still waits for interactive confirmation. A PTY
+            # Enter is carriage return: dialoguer accepts "\r" and submits
+            # the pre-filled value, whereas "\n" corrupts the edit buffer
+            # and the login hangs on an empty start URL forever.
+            await process.write(b"\r\r")
         try:
             async for line in process.lines():
                 authorization = self._parser.feed(line)

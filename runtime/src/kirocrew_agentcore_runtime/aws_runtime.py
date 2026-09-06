@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import shutil
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
@@ -852,6 +853,21 @@ class AwsSessionInitializer:
                 # Losing one beat is survivable; the lease lasts 90 seconds.
                 _LOGGER.warning("Initialization heartbeat failed.", exc_info=True)
 
+    def _evict_legacy_model_cache(self) -> None:
+        """Delete the in-workspace embedding-model copy older checkpoints carry.
+
+        The model ships in the image now (KIROCREW_EMBED_MODEL_PATH), so a
+        restored ~/.kiro/crew/models directory is ~640MB of dead weight
+        inside the 1GB session-storage quota - enough to break kiro-cli
+        sign-in with ENOSPC. New checkpoints already exclude the directory;
+        this reclaims the space for sandboxes restored from older ones.
+        """
+        legacy = self._workspace / "home" / ".kiro" / "crew" / "models"
+        if not legacy.is_dir() or legacy.is_symlink():
+            return
+        shutil.rmtree(legacy, ignore_errors=True)
+        _LOGGER.info("Evicted the legacy in-workspace embedding model cache.")
+
     def _initialize_sync(
         self,
         binding_token: str,
@@ -901,6 +917,7 @@ class AwsSessionInitializer:
             list(report.attempted_generations),
             list(report.reasons),
         )
+        self._evict_legacy_model_cache()
         self._supervisor.start(timeout_seconds=self._startup_timeout)
         if not self._supervisor.ready:
             raise SessionInitializationError("Loopback gateway did not become ready.")

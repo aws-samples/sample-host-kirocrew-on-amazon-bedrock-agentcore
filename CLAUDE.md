@@ -114,8 +114,16 @@ and supply them at deploy time. This repository ships only placeholders.
 
 ## Working conventions
 
-- Keep `docs/operations.md` in sync in the same change that alters a behavior it
-  documents — the doc is part of the deliverable.
+- **Documentation is part of the deliverable, in the same change.** When a
+  behavior changes, update every document that describes it before calling the
+  work done: `docs/operations.md` (runbook, incident history), `docs/persistence.md`
+  (normative contract), `README.md` **and its mirror `README.zh-CN.md`** (both
+  READMEs must say the same thing), and the Chinese design docs under `docs/`
+  where they cover the area. Grep for the old behavior's key words across
+  `README*.md docs/*.md CLAUDE.md` before you finish — 2026-09-07 found the
+  Chinese README four days and seven changes behind the English one, a stale
+  route-allowlist version pin, and a log-location table pointing at the wrong
+  group. Drift like that is a defect, not a nice-to-have.
 - Commit only when asked; if on `main`, branch first unless told otherwise.
   Preserve the user as author and add the agent trailer the project uses.
 - Terraform state for this deployment is a local file passed with `-state`; it

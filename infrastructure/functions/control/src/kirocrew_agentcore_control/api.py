@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import secrets
 import time
 from collections.abc import Callable, Mapping
@@ -21,6 +22,8 @@ from kirocrew_agentcore_control.sandbox import (
     SandboxUnavailableError,
     StateConflictError,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 PROTOCOL_VERSION: Final = "kirocrew-agentcore.v1"
 # Long enough for a cold-start restore of a multi-hundred-megabyte checkpoint
@@ -541,12 +544,17 @@ class SandboxControlService:
             except AgentCoreStopError as error:
                 retryable = error.status_code in {409, 429} or error.status_code >= 500
                 if not retryable:
-                    raise ControlApiError(
-                        502,
-                        "INTERNAL_ERROR",
-                        "PROVISIONING",
-                        "Runtime stop was rejected.",
-                    ) from error
+                    # The data plane refused the teardown for good (the JWT-authed
+                    # runtime rejects this SigV4 call as an auth-method mismatch, or
+                    # the session is already gone). Durability is already committed
+                    # and idle reclaim frees the microVM, so finalize STOPPED rather
+                    # than stranding the record at STOPPING until a manual reset.
+                    _LOGGER.warning(
+                        "Runtime stop rejected (status %d); finalizing STOPPED on the "
+                        "committed checkpoint and leaving the session to idle reclaim.",
+                        error.status_code,
+                    )
+                    return
                 attempt += 1
                 if attempt == self._max_stop_attempts:
                     raise ControlApiError(

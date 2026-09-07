@@ -36,21 +36,6 @@ build/
 runtime/reports/
 runtime/sbom/
 
-# Agent workspace and test artifacts (session transcripts may contain credentials)
-.tmm/
+# Test artifacts
 .hypothesis/
 test-results/
-
-# aws-samples public bundle output (built from release/release-manifest.yaml)
-_public/
-
-# Internal-only material stays local under temp/: process notes (handoffs,
-# publish plan), Kiro spec/task records and agent settings, and the aws-samples
-# release tooling. None of it belongs in the public tree.
-temp/
-docs/*HANDOFF*.md
-docs/internal/
-release/
-.kiro/
-*.tmp.mjs
-_MEMORY.md

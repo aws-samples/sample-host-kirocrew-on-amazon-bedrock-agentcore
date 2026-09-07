@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -485,31 +486,38 @@ class LoopbackKiroCrewBackend:
 
         self._cancellations[request_id] = cancel_websocket
         self._tunnels[request_id] = websocket
-        yield "request.accepted", {"status": 101, "transport": "websocket"}
-        for frame in request.frames:
-            await websocket.send_str(frame)
-        async for message in websocket:
-            if message.type is WSMsgType.TEXT:
-                yield (
-                    "output.delta",
-                    {
-                        "data": message.data,
-                        "encoding": "utf8",
-                        "transport": "websocket",
-                    },
-                )
-            elif message.type is WSMsgType.BINARY:
-                yield (
-                    "output.delta",
-                    {
-                        "data": base64.b64encode(message.data).decode(),
-                        "encoding": "base64",
-                        "transport": "websocket",
-                    },
-                )
-            elif message.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR}:
-                break
-        self._tunnels.pop(request_id, None)
+        try:
+            yield "request.accepted", {"status": 101, "transport": "websocket"}
+            for frame in request.frames:
+                await websocket.send_str(frame)
+            async for message in websocket:
+                if message.type is WSMsgType.TEXT:
+                    yield (
+                        "output.delta",
+                        {
+                            "data": message.data,
+                            "encoding": "utf8",
+                            "transport": "websocket",
+                        },
+                    )
+                elif message.type is WSMsgType.BINARY:
+                    yield (
+                        "output.delta",
+                        {
+                            "data": base64.b64encode(message.data).decode(),
+                            "encoding": "base64",
+                            "transport": "websocket",
+                        },
+                    )
+                elif message.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR}:
+                    break
+        finally:
+            # A receive timeout, a browser that vanished, or a gateway that
+            # died mid-stream all leave this generator by exception. The
+            # upstream socket must not outlive the tunnel it served.
+            if self._tunnels.pop(request_id, None) is not None:
+                with contextlib.suppress(Exception):
+                    await websocket.close(code=1000, message=b"tunnel closed")
         yield "request.completed", {"status": 101}
 
 

@@ -798,8 +798,6 @@ export class KiroCrewRemoteWebSocket extends EventTarget {
   public onclose: ((event: CloseEvent) => void) | null = null;
   readonly #abort = new AbortController();
   readonly #transport: KiroCrewRemoteTransport;
-  readonly #pending: string[] = [];
-  #streaming = false;
   #tunnelId: string | undefined;
 
   public constructor(
@@ -820,13 +818,14 @@ export class KiroCrewRemoteWebSocket extends EventTarget {
         403,
       );
     }
-    // Open on a macrotask so callers can attach handlers first. Frames sent
-    // synchronously from the open handler (the upstream SPA's subscribe
-    // messages) are buffered and relayed as the tunnel's initial frames —
-    // the adapter's loopback WebSocket bridge sends them once after it
-    // connects and then streams upstream messages back down.
+    // Connect on a macrotask so callers can attach handlers first. Like a
+    // native socket, `open` fires only once the upstream handshake succeeded
+    // (the tunnel's `request.accepted`). Announcing `open` before a tunnel
+    // existed made the upstream SPA treat every failed attempt as a fresh
+    // connection: it reset its reconnect backoff each time and refetched its
+    // whole dashboard, which turned a dead gateway into a request storm.
     setTimeout(() => {
-      this.#open();
+      void this.#connect();
     }, 0);
   }
 
@@ -834,14 +833,9 @@ export class KiroCrewRemoteWebSocket extends EventTarget {
     if (this.readyState !== KiroCrewRemoteWebSocket.OPEN) {
       throw new DOMException("WebSocket is not open.", "InvalidStateError");
     }
-    if (!this.#streaming && typeof data === "string") {
-      // Frames queued before the tunnel starts ride along as initial frames.
-      this.#pending.push(data);
-      return;
-    }
     const tunnelId = this.#tunnelId;
     if (tunnelId === undefined) {
-      // No live tunnel yet and the frame is binary: nothing can carry it.
+      // Cannot happen once open, but the tunnel id is what carries frames.
       return;
     }
     const bytes =
@@ -894,25 +888,22 @@ export class KiroCrewRemoteWebSocket extends EventTarget {
   }
 
   #open(): void {
-    if (this.#abort.signal.aborted) {
+    if (
+      this.#abort.signal.aborted ||
+      this.readyState !== KiroCrewRemoteWebSocket.CONNECTING
+    ) {
       return;
     }
     this.readyState = KiroCrewRemoteWebSocket.OPEN;
     const open = new Event("open");
     this.dispatchEvent(open);
     this.onopen?.(open);
-    // Give the open handlers one more macrotask to queue their subscribe
-    // frames before the tunnel starts.
-    setTimeout(() => {
-      void this.#connect();
-    }, 0);
   }
 
   async #connect(): Promise<void> {
     if (this.#abort.signal.aborted) {
       return;
     }
-    this.#streaming = true;
     let expectedSequence = 0;
     try {
       const events = this.#transport.stream(
@@ -922,7 +913,7 @@ export class KiroCrewRemoteWebSocket extends EventTarget {
         new Uint8Array(),
         new Headers(),
         this.#abort.signal,
-        this.#pending.splice(0),
+        [],
         (requestId): void => {
           this.#tunnelId = requestId;
         },
@@ -938,6 +929,11 @@ export class KiroCrewRemoteWebSocket extends EventTarget {
         expectedSequence += 1;
         if (event.operation === "error") {
           throw eventError(event.payload);
+        }
+        if (event.operation === "request.accepted") {
+          // The adapter connected to the upstream socket: now we are open.
+          this.#open();
+          continue;
         }
         if (event.operation === "output.delta") {
           const raw = event.payload.data;
@@ -979,7 +975,13 @@ export class KiroCrewRemoteWebSocket extends EventTarget {
       Object.defineProperty(event, "error", { value: error });
       this.dispatchEvent(event);
       this.onerror?.(event);
-      this.#closed(1011, "Remote WebSocket failed.", false);
+      // 1006 when the handshake never completed, 1011 when a live tunnel
+      // failed: the SPA's reconnect logic keys its backoff off `close`.
+      this.#closed(
+        this.readyState === KiroCrewRemoteWebSocket.OPEN ? 1011 : 1006,
+        "Remote WebSocket failed.",
+        false,
+      );
     }
   }
 

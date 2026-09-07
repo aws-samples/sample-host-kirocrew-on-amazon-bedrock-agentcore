@@ -569,6 +569,40 @@ def test_websocket_translation_text_binary_close_and_frames() -> None:
     asyncio.run(scenario())
 
 
+def test_websocket_tunnel_closes_upstream_socket_when_the_stream_fails() -> None:
+    """A receive timeout must not leak the gateway socket or the tunnel entry."""
+
+    class FailingWebSocket(FakeWebSocket):
+        async def __anext__(self) -> SimpleNamespace:
+            if not self.messages:
+                raise TimeoutError("ws_receive idle timeout")
+            return self.messages.pop(0)
+
+    async def scenario() -> None:
+        websocket = FailingWebSocket([SimpleNamespace(type=WSMsgType.TEXT, data="first")])
+        adapter = backend(FakeSession(websocket=websocket))
+        events: list[str] = []
+        with pytest.raises(TransientBackendError):
+            async for operation, _payload in adapter.execute(
+                "kirocrew.http",
+                "ws-fail",
+                {"method": "GET", "path": "/api/ws", "transport": "websocket"},
+            ):
+                events.append(operation)
+        assert events == ["request.accepted", "output.delta"]
+        assert websocket.closed == [(1000, b"tunnel closed")]
+        assert adapter._tunnels == {}
+        # Closing an already-closed socket must never mask the original failure.
+        assert await adapter.execute(
+            "kirocrew.ws.close", "x", {"tunnelId": "ws-fail"}
+        ).__anext__() == (
+            "request.completed",
+            {"closed": False},
+        )
+
+    asyncio.run(scenario())
+
+
 def test_live_tunnel_send_and_close_bridge_interactive_terminals() -> None:
     async def scenario() -> None:
         websocket = FakeWebSocket([SimpleNamespace(type=WSMsgType.TEXT, data="shell-output")])

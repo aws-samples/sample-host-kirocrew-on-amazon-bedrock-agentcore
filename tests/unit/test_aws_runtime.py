@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os as module_os
+import signal
+import threading
 from collections.abc import AsyncIterator, Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,6 +24,7 @@ from kirocrew_agentcore_adapter.transport import (
     LeaseAuthorizationError,
     RuntimeReadiness,
     SessionInitializationError,
+    TransientBackendError,
 )
 from kirocrew_agentcore_persistence.checkpoint import (
     CheckpointEngine,
@@ -42,6 +46,7 @@ from kirocrew_agentcore_runtime.aws_runtime import (
     _required,
 )
 from kirocrew_agentcore_runtime.supervisor import (
+    GatewayError,
     GatewayExitedError,
     KiroCrewSupervisor,
     RuntimeMetadata,
@@ -1545,5 +1550,281 @@ def test_lifetime_lease_heartbeat_propagates_cancellation_and_other_client_error
         finally:
             asyncio.sleep = original_sleep
         assert len(beats) == 2
+
+    asyncio.run(scenario())
+
+
+class FakeGateway:
+    """GatewayController double: dies on demand, restarts unless told to fail."""
+
+    def __init__(
+        self, *, ready: bool = True, failures: int = 0, gate: threading.Event | None = None
+    ) -> None:
+        self.ready = ready
+        self.failures = failures
+        self.gate = gate
+        self.starts: list[float] = []
+
+    def start(self, *, timeout_seconds: float = 60.0) -> object:
+        self.starts.append(timeout_seconds)
+        if self.gate is not None:
+            # Hold the restart until the test has queued the other callers.
+            assert self.gate.wait(timeout=5.0)
+        if self.failures > 0:
+            self.failures -= 1
+            raise GatewayError("gateway refused to come up")
+        self.ready = True
+        return object()
+
+
+class DyingLoopback(FakeLoopbackBackend):
+    """Loopback whose gateway token provider reports the gateway gone mid-request."""
+
+    async def execute(
+        self,
+        operation: str,
+        request_id: str,
+        payload: Mapping[str, object],
+    ) -> AsyncIterator[tuple[str, Mapping[str, object]]]:
+        del operation, request_id, payload
+        yield "request.accepted", {"status": 200}
+        raise GatewayExitedError("The upstream KiroCrew gateway is not running.")
+
+
+def gateway_backend(
+    gateway: FakeGateway | None,
+    loopback: FakeLoopbackBackend | None = None,
+    *,
+    clock: Callable[[], float] | None = None,
+    backoff: float = 30.0,
+    configured: bool = True,
+) -> tuple[ProductionRuntimeBackend, RuntimeReadiness]:
+    readiness = RuntimeReadiness(True, True, False)
+    backend = ProductionRuntimeBackend(
+        cast(Any, loopback or FakeLoopbackBackend()),
+        readiness,
+        gateway=gateway,
+        gateway_start_timeout_seconds=7.0,
+        gateway_restart_backoff_seconds=backoff,
+        monotonic=clock or (lambda: 0.0),
+    )
+    if configured:
+        backend.configure(
+            cast(Any, FakeCheckpointEngine()),
+            cast(Any, FakeCheckpointStore()),
+            cast(Any, FakeBrokerClient()),
+        )
+    return backend, readiness
+
+
+async def drain(backend: ProductionRuntimeBackend, operation: str = "kirocrew.http") -> list[str]:
+    return [
+        event_operation
+        async for event_operation, _payload in backend.execute(operation, "req", {"path": "/x"})
+    ]
+
+
+def test_backend_restarts_a_dead_gateway_before_tunnelling(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def scenario() -> None:
+        # No controller configured: legacy wiring keeps tunnelling unconditionally.
+        backend, _ = gateway_backend(None)
+        assert await drain(backend) == ["request.completed"]
+        assert await backend.ensure_gateway() is True
+        # Before initialization the initializer owns the gateway: the restore
+        # must never find a gateway already running on top of the workspace
+        # (r50 regression: /ping started it early and the restore failed).
+        cold = FakeGateway(ready=False)
+        uninitialized, _ = gateway_backend(cold, configured=False)
+        assert await uninitialized.ensure_gateway() is True
+        uninitialized._schedule_gateway_restart()
+        assert uninitialized._gateway_task is None
+        assert cold.starts == []
+
+        gateway = FakeGateway(ready=False)
+        backend, readiness = gateway_backend(gateway)
+        with caplog.at_level(logging.INFO):
+            assert await drain(backend) == ["request.completed"]
+        assert gateway.starts == [7.0]
+        assert backend.gateway_restarts == 1
+        assert readiness.loopback_ready is True
+        assert "restarting it (attempt 1)" in caplog.text
+        assert "gateway restarted" in caplog.text
+        # Healthy gateway: no further starts.
+        assert await drain(backend) == ["request.completed"]
+        assert gateway.starts == [7.0]
+
+    asyncio.run(scenario())
+
+
+def test_backend_restart_failure_is_typed_backed_off_and_flips_readiness() -> None:
+    now = [100.0]
+
+    async def scenario() -> None:
+        gateway = FakeGateway(ready=False, failures=1)
+        backend, readiness = gateway_backend(gateway, clock=lambda: now[0], backoff=30.0)
+
+        def loopback_ready() -> bool:
+            return readiness.loopback_ready
+
+        with pytest.raises(TransientBackendError, match="restarting"):
+            await drain(backend)
+        assert loopback_ready() is False
+        assert readiness.healthy is False
+        # Inside the backoff window nothing is retried.
+        now[0] = 110.0
+        with pytest.raises(TransientBackendError):
+            await drain(backend)
+        assert len(gateway.starts) == 1
+        # Past the backoff the restart is attempted again and succeeds.
+        now[0] = 131.0
+        assert await drain(backend) == ["request.completed"]
+        assert len(gateway.starts) == 2
+        assert loopback_ready() is True
+        assert backend.gateway_restarts == 2
+
+    asyncio.run(scenario())
+
+
+def test_gateway_death_under_a_request_is_a_transient_backend_error() -> None:
+    async def scenario() -> None:
+        backend, _ = gateway_backend(FakeGateway(), DyingLoopback())
+        with pytest.raises(TransientBackendError, match="not running"):
+            await drain(backend)
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_callers_share_one_restart() -> None:
+    async def scenario() -> None:
+        gate = threading.Event()
+        gateway = FakeGateway(ready=False, gate=gate)
+        backend, _ = gateway_backend(gateway)
+        drains = [asyncio.ensure_future(drain(backend)) for _ in range(3)]
+        # Let every caller reach the lock while the first restart is held open.
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert len(gateway.starts) == 1
+        gate.set()
+        results = await asyncio.gather(*drains)
+        assert list(results) == [["request.completed"]] * 3
+        assert len(gateway.starts) == 1
+
+    asyncio.run(scenario())
+
+
+def test_ping_path_schedules_a_restart_without_blocking() -> None:
+    async def scenario() -> None:
+        gateway = FakeGateway(ready=False)
+        loopback = ProbeLoopback()
+        readiness = RuntimeReadiness(True, True, False)
+        backend = ProductionRuntimeBackend(
+            cast(Any, loopback),
+            readiness,
+            gateway=gateway,
+            busy_probe_ttl_seconds=10.0,
+            monotonic=lambda: 0.0,
+        )
+        backend.configure(
+            cast(Any, FakeCheckpointEngine()),
+            cast(Any, FakeCheckpointStore()),
+            cast(Any, FakeBrokerClient()),
+        )
+        assert await backend.background_busy() is False
+        task = backend._gateway_task
+        assert task is not None
+        # A second poll while the restart is in flight does not start another.
+        backend._schedule_gateway_restart()
+        assert backend._gateway_task is task
+        assert await task is True
+        assert gateway.starts == [60.0]
+        # Healthy again: nothing new is scheduled.
+        backend._schedule_gateway_restart()
+        assert backend._gateway_task is task
+        # No controller: a no-op.
+        plain = probe_backend(ProbeLoopback())
+        plain._schedule_gateway_restart()
+        assert plain._gateway_task is None
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{"gateway_start_timeout_seconds": 0.0}, {"gateway_restart_backoff_seconds": -1.0}]
+)
+def test_backend_rejects_invalid_gateway_timings(kwargs: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="restart timing"):
+        ProductionRuntimeBackend(
+            cast(Any, FakeLoopbackBackend()), RuntimeReadiness(True, True, False), **kwargs
+        )
+
+
+def test_superseded_container_exits_so_the_platform_reschedules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A warm container bound to a rotated-away session must not squat.
+
+    AgentCore can route the NEW session's invocations to the old warm
+    container; the sandbox record is the authority on who is live.
+    """
+
+    async def scenario() -> None:
+        initializer = StubAwsSessionInitializer()
+        initializer._initialized_session = ("subject", "sandbox", "old-session")
+
+        class Meta:
+            runtime_session_id = "new-session"
+
+        initializer.state_store.read = lambda sandbox_id: Meta()  # type: ignore[attr-defined]
+        shutdowns: list[int] = []
+
+        async def checkpoint_on_shutdown(*, timeout_seconds: float = 15.0) -> None:
+            del timeout_seconds
+            shutdowns.append(1)
+
+        initializer.backend.checkpoint_on_shutdown = checkpoint_on_shutdown  # type: ignore[attr-defined]
+        kills: list[tuple[int, int]] = []
+        monkeypatch.setattr(module_os, "kill", lambda pid, sig: kills.append((pid, sig)))
+        await initializer._exit_if_superseded(("subject", "sandbox", "new-session"))
+        assert shutdowns == [1]
+        assert initializer.supervisor.terminated == 1
+        assert kills == [(module_os.getpid(), signal.SIGTERM)]
+
+    asyncio.run(scenario())
+
+
+def test_supersession_check_stays_put_in_every_other_case(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        initializer = StubAwsSessionInitializer()
+        kills: list[int] = []
+        monkeypatch.setattr(module_os, "kill", lambda pid, sig: kills.append(pid))
+
+        # Not initialized at all: nothing to compare against.
+        await initializer._exit_if_superseded(("s", "sbx", "x"))
+
+        initializer._initialized_session = ("subject", "sandbox", "current")
+
+        class Meta:
+            runtime_session_id = "current"
+
+        initializer.state_store.read = lambda sandbox_id: Meta()  # type: ignore[attr-defined]
+        # A different owner or sandbox is a binding violation, not supersession.
+        await initializer._exit_if_superseded(("intruder", "sandbox", "y"))
+        await initializer._exit_if_superseded(("subject", "other-box", "y"))
+        # The record still names this process: the caller is the stale one.
+        await initializer._exit_if_superseded(("subject", "sandbox", "stale"))
+
+        # A failing authority lookup degrades to staying put.
+        def boom(sandbox_id: str) -> object:
+            raise RuntimeError("dynamo down")
+
+        initializer.state_store.read = boom  # type: ignore[attr-defined]
+        await initializer._exit_if_superseded(("subject", "sandbox", "y"))
+
+        assert kills == []
+        assert initializer.supervisor.terminated == 0
 
     asyncio.run(scenario())

@@ -65,7 +65,20 @@ Implemented in `infrastructure/functions/control/` and pinned by
 - **Durability**: checkpoints commit on Stop safely (final), after Kiro
   sign-in/out, every `KIROCREW_CHECKPOINT_INTERVAL_SECONDS` (300) when the
   workspace fingerprint changed, at the busy→idle transition, and on
-  SIGTERM. Data loss from an unclean stop is bounded by the interval.
+  SIGTERM. Data loss from an unclean stop is bounded by the interval. A
+  non-final checkpoint freezes the gateway (SIGSTOP) only while the
+  snapshot is read into memory; uploads and the commit run with the
+  gateway live (`checkpoint.py`).
+- **Gateway liveness**: the upstream gateway is a child process that can
+  die on its own (its loop-stall watchdog `_exit`s after a long event-loop
+  freeze; the supervisor pins that budget to 300s via
+  `config.local.json`). `ProductionRuntimeBackend.ensure_gateway`
+  restarts a dead gateway before the next tunnelled request and from the
+  `/ping` path, with a 30s backoff between failed attempts; while it is
+  down the transport answers `503 KIROCREW_UNAVAILABLE` (retryable)
+  instead of an opaque 500. The supervisor logs `KiroCrew gateway exited
+  with code N. Output tail: ...` once per death — that line is the
+  forensic record, look for it first.
 - **Workspace disk**: `/mnt/workspace` lives on the microVM's container
   disk and is ephemeral — encrypted S3 checkpoints are the only durability
   layer. AgentCore managed session storage is deliberately **not**
@@ -85,10 +98,35 @@ Implemented in `infrastructure/functions/control/` and pinned by
   channel opens). If a record still wedges, reset it:
   `state=STOPPED`, clear `leaseOwner/leaseExpiresAt/activeRequestId`, keep
   `lastCheckpointGeneration` — the next start restores the checkpoint.
+- **Panel says `Sandbox ready` but KiroCrew shows `Gateway offline` and
+  every request fails (historically a few minutes after any workspace
+  change)**: the gateway died during a checkpoint freeze. Before r50 the
+  first periodic checkpoint SIGSTOPped it for the whole upload (~30s),
+  its 25s loop-stall watchdog killed it on resume, nothing restarted it,
+  and `/ping` stayed `Healthy`, so the record stayed READY while the
+  browser bridge — which announced WebSocket `open` before any tunnel
+  existed — reset the SPA's backoff on every attempt and produced 8–15
+  invocations/s of `500 INTERNAL_ERROR`. Fixed in r50 on all four sides
+  (snapshot-only freeze, pinned budget, auto-restart, honest `open`). If
+  it recurs, the runtime log carries `KiroCrew gateway exited with code`
+  with the gateway's last output lines and `Upstream KiroCrew gateway
+  restart failed` with the reason.
 - **`424 Received error (503) from runtime`** on invocations: the runtime
   answered before its session initialized, or a stale container failed
   authorization after rotation. Check the vended application log for the
   restore report and `SessionInitializationError`.
+- **Stop safely leaves the panel on "Saving and stopping" forever**: the
+  control plane's `StopRuntimeSession` call is SigV4-signed, but the runtime
+  is configured with a `CustomJWTAuthorizer`, so the data plane rejects it
+  with `AccessDeniedException: Authorization method mismatch`. The control
+  Lambda now treats a permanent stop rejection as best-effort: the final
+  checkpoint is already committed and idle reclaim frees the microVM, so it
+  finalizes `STOPPED` on the committed checkpoint instead of stranding the
+  record at `STOPPING`. The lingering session is torn down by
+  `runtime_idle_session_timeout_seconds`. A prompt teardown would need the
+  browser's JWT to drive `StopRuntimeSession` directly — tracked, not yet
+  built. Look for `Runtime stop rejected (status 403); finalizing STOPPED`
+  in the control log.
 - **Stop safely appears to do nothing**: the prepare-stop travels over the
   runtime channel; if the channel is still handshaking the intent is queued
   and flushed on open (`browser-app.ts`). A stop that never lands is not a
@@ -104,6 +142,56 @@ Implemented in `infrastructure/functions/control/` and pinned by
   added `/api/*` literal — the contract suite enforces the digest and the
   deny-list consistency across Python, TypeScript, and both fixtures.
 
+## Incident history and load-bearing invariants
+
+Most outages in this system shared one shape: a **health signal reported ready
+while the real serving path was broken**. The lease, the DynamoDB state, and
+`/ping` all answered healthy while invocations failed. When you add a health
+indicator, make it observe the path that actually serves traffic. The specific
+incidents and the invariants that now prevent them:
+
+- **Checkpoint froze the gateway to death.** A periodic checkpoint SIGSTOPs the
+  upstream gateway; the original code held it frozen through the whole S3
+  upload (tens of seconds). The gateway's own loop-stall watchdog hard-exits
+  after its budget, so it killed itself on resume, nothing restarted it, and
+  `/ping` still said healthy. *Invariant:* a non-final checkpoint freezes the
+  gateway only for the in-memory snapshot, then resumes before uploading
+  (`checkpoint.py`); the supervisor pins the gateway's loop-stall budget to its
+  maximum through `config.local.json`; the backend restarts a dead gateway
+  (`ProductionRuntimeBackend.ensure_gateway`) and never before the session is
+  initialized.
+- **Stop safely stranded the record at STOPPING.** The runtime uses a
+  `CustomJWTAuthorizer`, so its data plane rejects the control plane's
+  SigV4-signed `StopRuntimeSession` (`AccessDeniedException: Authorization
+  method mismatch`). *Invariant:* the teardown is best-effort — the committed
+  final checkpoint plus idle reclaim make it safe to finalize STOPPED anyway.
+- **Session rotation vs warm-container reuse.** Every authoritative start mints
+  a fresh `runtimeSessionId`; AgentCore can route it to a warm container still
+  bound to an older session. *Invariant:* the initializer consults the
+  authoritative DynamoDB record on a binding mismatch — if it was superseded it
+  checkpoints and SIGTERMs itself so the platform reschedules; if it is still
+  authoritative the caller is a stale page and is refused without exiting;
+  cross owner/sandbox is always refused.
+- **Managed session storage caused repeated incidents** (1GB quota filled by the
+  embedding model, 14-day retention, restore校验 rejecting excluded entries). It
+  is deliberately not configured; the workspace is ephemeral container disk and
+  encrypted S3 checkpoints are the only durability layer. A guard test prevents
+  re-adding it.
+- **Binding token expiry killed long sessions.** A 30-minute binding token with
+  no renewal turned a long-open page into a 503 storm. *Invariant:* a runtime
+  lease heartbeat keeps the session alive, `start` inside a live lease renews the
+  token without rotating the session, and the browser renews five minutes early.
+- **Opaque 5xx with no logs.** The transport mapped every failure to an opaque
+  envelope and logged nothing. *Invariant:* initialization rejections and
+  unhandled invocation errors now log their cause; runtime logs ship straight to
+  a role-writable CloudWatch group because the platform vended-log pipeline has
+  proven unreliable.
+
+The through-line for a new agent: **do not trust the panel, the lease, or
+`/ping` as evidence that KiroCrew is actually serving.** Confirm with a real
+invocation against the named endpoint, and read the runtime application log
+group, not the platform vended group.
+
 ## Documentation map
 
 | Document | Covers |
@@ -113,6 +201,7 @@ Implemented in `infrastructure/functions/control/` and pinned by
 | `docs/persistence-design.zh-CN.md` | 持久化设计（中文详解） |
 | `docs/architecture-design.zh-CN.md` | 整体架构设计（中文详解） |
 | `docs/operations.md` | This runbook |
+| `CLAUDE.md` (`AGENTS.md`) | Agent onboarding: build/verify/deploy commands and the invariants above |
 
 When code changes a behavior described here, update the section in the same
 pull request — the document is part of the deliverable, not an afterthought.

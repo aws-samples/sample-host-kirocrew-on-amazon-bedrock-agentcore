@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import signal
 import sqlite3
@@ -927,3 +928,110 @@ def test_default_staging_root_is_derived_from_the_platform_temporary_directory(
     with pytest.raises(GatewayError, match="does not match"):
         supervisor.start()
     assert supervisor.state_home == tmp_path / "tmp" / "kirocrew-state" / "crew"
+
+
+def test_start_pins_the_gateway_loop_stall_budget_and_preserves_user_overrides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    layout = WorkspaceLayout(tmp_path / "workspace")
+    monkeypatch.setattr(os, "killpg", lambda _pid, _signal: None)
+    layout.create(metadata())
+    overlay = layout.kirocrew_home / "config.local.json"
+    overlay.write_text(
+        json.dumps({"dashboard": {"theme": "dark"}, "agents": {"max": 3}}), encoding="utf-8"
+    )
+    supervisor = KiroCrewSupervisor(
+        layout,
+        metadata(),
+        process_factory=factory_for(FakeProcess(ready_line(layout))),
+        effective_uid=lambda: 10001,
+        sleep=lambda _delay: None,
+    )
+    supervisor.start(timeout_seconds=2)
+    written = json.loads(overlay.read_text(encoding="utf-8"))
+    assert written == {
+        "agents": {"max": 3},
+        "dashboard": {"loop_stall_exit_after_secs": 300, "theme": "dark"},
+    }
+    assert overlay.stat().st_mode & 0o777 == 0o600
+
+    # Already pinned: the overlay is left untouched byte for byte.
+    before = overlay.read_bytes()
+    KiroCrewSupervisor._pin_loop_stall_budget(layout.kirocrew_home)
+    assert overlay.read_bytes() == before
+
+    # A non-object dashboard section is replaced; a fresh home gets a new overlay.
+    overlay.write_text(json.dumps({"dashboard": "oops"}), encoding="utf-8")
+    KiroCrewSupervisor._pin_loop_stall_budget(layout.kirocrew_home)
+    assert json.loads(overlay.read_text(encoding="utf-8")) == {
+        "dashboard": {"loop_stall_exit_after_secs": 300}
+    }
+    fresh = tmp_path / "fresh-home"
+    KiroCrewSupervisor._pin_loop_stall_budget(fresh)
+    assert json.loads((fresh / "config.local.json").read_text(encoding="utf-8")) == {
+        "dashboard": {"loop_stall_exit_after_secs": 300}
+    }
+
+
+@pytest.mark.parametrize("content", ["{not json", "[1, 2]"])
+def test_unreadable_or_non_object_overlay_is_left_alone(
+    tmp_path: Path, content: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    overlay = home / "config.local.json"
+    overlay.write_text(content, encoding="utf-8")
+    with caplog.at_level(logging.WARNING):
+        KiroCrewSupervisor._pin_loop_stall_budget(home)
+    assert overlay.read_text(encoding="utf-8") == content
+    assert "leaving it as is" in caplog.text
+
+
+def test_gateway_exit_is_reported_once_with_output_tail_and_restart_is_possible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    layout = WorkspaceLayout(tmp_path / "workspace")
+    monkeypatch.setattr(os, "killpg", lambda _pid, _signal: None)
+    first = FakeProcess(ready_line(layout) + "loop stall watchdog armed\nfatal: loop stalled\n")
+    second = FakeProcess(ready_line(layout, pid=4300), pid=4300)
+    processes = [first, second]
+
+    def factory(command: list[str], env: Mapping[str, str]) -> FakeProcess:
+        del command, env
+        return processes.pop(0)
+
+    supervisor = KiroCrewSupervisor(
+        layout,
+        metadata(),
+        process_factory=factory,
+        effective_uid=lambda: 10001,
+        sleep=lambda _delay: None,
+    )
+
+    def is_ready() -> bool:
+        return supervisor.ready
+
+    supervisor.start(timeout_seconds=2)
+    assert is_ready()
+    deadline = time.monotonic() + 2
+    while "fatal: loop stalled" not in supervisor.output_tail and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert supervisor.output_tail[-1] == "fatal: loop stalled"
+
+    first.returncode = 1
+    assert not is_ready()
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(GatewayExitedError):
+            supervisor.assert_running()
+        with pytest.raises(GatewayExitedError):
+            supervisor.token()
+    assert caplog.text.count("KiroCrew gateway exited with code 1") == 1
+    assert "fatal: loop stalled" in caplog.text
+
+    # A restart is a plain start on the dead handle: the residue is scrubbed,
+    # the tail and the exit report reset, and the new process serves.
+    ready = supervisor.start(timeout_seconds=2)
+    assert ready.pid == 4300
+    assert is_ready()
+    assert supervisor.token() == "internal-ready-token"
+    assert "fatal: loop stalled" not in supervisor.output_tail

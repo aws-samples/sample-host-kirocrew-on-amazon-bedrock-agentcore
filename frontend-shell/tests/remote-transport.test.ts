@@ -385,12 +385,17 @@ describe("stream compatibility", () => {
     });
   });
 
-  it("relays open-time frames and streams tunnel output as messages", async (): Promise<void> => {
+  it("opens only after the upstream handshake and relays open-time frames live", async (): Promise<void> => {
     const channel = new FakeChannel();
+    const states: number[] = [];
     channel.events = async function* (
       invocation,
     ): AsyncIterable<AgentCoreRuntimeEvent> {
       await Promise.resolve();
+      if (invocation.operation === "kirocrew.ws.send") {
+        yield event(invocation, 0, "request.completed", { delivered: true });
+        return;
+      }
       yield event(invocation, 0, "request.accepted", {
         status: 101,
         transport: "websocket",
@@ -403,28 +408,79 @@ describe("stream compatibility", () => {
       yield event(invocation, 2, "request.completed", { status: 101 });
     };
     const socket = transport(channel).webSocket(`wss://shell.example/api/ws`);
+    // Native semantics: CONNECTING until the handshake, sends refused before.
+    expect(socket.readyState).toBe(KiroCrewRemoteWebSocket.CONNECTING);
+    expect(() => socket.send("too early")).toThrow(DOMException);
     const message = await new Promise<MessageEvent>((resolve, reject) => {
       socket.onopen = (): void => {
+        states.push(socket.readyState);
         socket.send('{"type":"subscribe_logs"}');
       };
       socket.onmessage = resolve;
       socket.onerror = (): void =>
         reject(new Error("Unexpected WebSocket error."));
     });
+    expect(states).toEqual([KiroCrewRemoteWebSocket.OPEN]);
     expect(message.data).toBe("reply");
-    expect(channel.invocations).toHaveLength(1);
+    await vi.waitFor(() => {
+      expect(channel.invocations).toHaveLength(2);
+    });
     expect(channel.invocations[0]).toMatchObject({
+      operation: "kirocrew.http",
       payload: {
         method: "GET",
         path: "/api/ws",
         transport: "websocket",
-        frames: ['{"type":"subscribe_logs"}'],
+        frames: [],
+      },
+    });
+    expect(channel.invocations[1]).toMatchObject({
+      operation: "kirocrew.ws.send",
+      payload: {
+        tunnelId: channel.invocations[0]?.requestId,
+        data: '{"type":"subscribe_logs"}',
+        encoding: "utf8",
       },
     });
     await vi.waitFor(() => {
       expect(socket.readyState).toBe(KiroCrewRemoteWebSocket.CLOSED);
     });
     socket.close();
+  });
+
+  it("closes without ever opening when the tunnel fails before the handshake", async (): Promise<void> => {
+    const channel = new FakeChannel();
+    channel.events = async function* (
+      invocation,
+    ): AsyncIterable<AgentCoreRuntimeEvent> {
+      await Promise.resolve();
+      yield event(invocation, 0, "error", {
+        code: "KIROCREW_UNAVAILABLE",
+        category: "KIROCREW",
+        message: "The runtime backend is temporarily unavailable.",
+        correlationId: "corr",
+        retryable: true,
+      });
+    };
+    const socket = transport(channel).webSocket(`wss://shell.example/api/ws`);
+    let opened = 0;
+    let errored = 0;
+    socket.onopen = (): void => {
+      opened += 1;
+    };
+    socket.onerror = (): void => {
+      errored += 1;
+    };
+    const closed = await new Promise<CloseEvent>((resolve) => {
+      socket.onclose = resolve;
+    });
+    // The SPA keys its reconnect backoff off `close`; a phantom `open`
+    // would reset it on every failed attempt.
+    expect(opened).toBe(0);
+    expect(errored).toBe(1);
+    expect(closed.code).toBe(1006);
+    expect(closed.wasClean).toBe(false);
+    expect(socket.readyState).toBe(KiroCrewRemoteWebSocket.CLOSED);
   });
 
   it("fails closed when a WebSocket channel is unavailable", async (): Promise<void> => {

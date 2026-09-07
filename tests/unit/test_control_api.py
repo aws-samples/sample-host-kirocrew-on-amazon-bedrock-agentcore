@@ -473,29 +473,45 @@ def test_stop_body_validation_nonretryable_and_retry_exhaustion_preserve_state()
             )
         )
         assert response["statusCode"] in {400, 404}
-    retry_cases: tuple[tuple[Sequence[int | None], int, bool], ...] = (
-        ([400], 502, False),
-        ([503, 503], 503, True),
+    # A permanent stop rejection (e.g. the JWT-authed runtime refusing this
+    # SigV4 teardown, or a session already gone) must not strand the record at
+    # STOPPING: durability is committed and idle reclaim frees the microVM, so
+    # the sandbox finalizes STOPPED. A transient failure that exhausts retries
+    # stays STOPPING and reports a retryable 503 so the client can try again.
+    nonretryable = FakeStopper([400])
+    control, registry, catalog, tokens, _, _ = service(stopper=nonretryable, max_attempts=1)
+    receipt = prepare_stopping(registry, catalog, tokens)
+    response = control.handle(
+        event(
+            "POST",
+            "/control/v1/sandbox/stop",
+            claim_values=claims(),
+            body={"checkpointReceipt": receipt},
+            headers={"Idempotency-Key": "stop-key-00000001"},
+        )
     )
-    for outcomes, status, retryable in retry_cases:
-        stopper = FakeStopper(outcomes)
-        control, registry, catalog, tokens, _, _ = service(
-            stopper=stopper, max_attempts=len(outcomes)
+    assert response["statusCode"] == 202
+    finalized = response_body(response)
+    assert isinstance(finalized, dict) and finalized["state"] == "STOPPED"
+    assert registry.get(SUBJECT).state is SandboxState.STOPPED
+    assert len(nonretryable.calls) == 1
+
+    exhausted = FakeStopper([503, 503])
+    control, registry, catalog, tokens, _, _ = service(stopper=exhausted, max_attempts=2)
+    receipt = prepare_stopping(registry, catalog, tokens)
+    response = control.handle(
+        event(
+            "POST",
+            "/control/v1/sandbox/stop",
+            claim_values=claims(),
+            body={"checkpointReceipt": receipt},
+            headers={"Idempotency-Key": "stop-key-00000001"},
         )
-        receipt = prepare_stopping(registry, catalog, tokens)
-        response = control.handle(
-            event(
-                "POST",
-                "/control/v1/sandbox/stop",
-                claim_values=claims(),
-                body={"checkpointReceipt": receipt},
-                headers={"Idempotency-Key": "stop-key-00000001"},
-            )
-        )
-        assert response["statusCode"] == status
-        body_value = response_body(response)
-        assert isinstance(body_value, dict) and body_value["retryable"] is retryable
-        assert registry.get(SUBJECT).state is SandboxState.STOPPING
+    )
+    assert response["statusCode"] == 503
+    body_value = response_body(response)
+    assert isinstance(body_value, dict) and body_value["retryable"] is True
+    assert registry.get(SUBJECT).state is SandboxState.STOPPING
 
 
 def test_administrator_only_deletion_requires_stopped_sandbox() -> None:

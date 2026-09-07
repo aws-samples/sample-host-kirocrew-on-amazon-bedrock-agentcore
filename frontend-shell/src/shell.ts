@@ -1355,7 +1355,13 @@ export function mountBrowserShell(
     if (model.view === "signed-out") {
       primary.hidden = true;
       delete primary.dataset.action;
-    } else if (model.view === "stopped") {
+    } else if (
+      model.view === "stopped" ||
+      (model.view === "terminal-error" && model.sandbox?.state === "ERROR")
+    ) {
+      // ERROR is a restartable state (ERROR -> STARTING): a parked sandbox
+      // must offer the way out itself instead of dead-ending the user on
+      // Reload and Sign out until an operator resets the record.
       primary.textContent = "Start sandbox";
       primary.dataset.action = "start";
     } else if (

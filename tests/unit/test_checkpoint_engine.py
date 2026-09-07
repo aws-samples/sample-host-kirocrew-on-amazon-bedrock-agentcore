@@ -129,6 +129,40 @@ def test_successful_periodic_checkpoint_commits_then_clears_and_resumes(tmp_path
     assert not checkpoint.read_only
 
 
+def test_periodic_checkpoint_resumes_processes_before_uploading(tmp_path: Path) -> None:
+    """The gateway is frozen only for the in-memory snapshot, never for S3 round trips.
+
+    The upstream gateway hard-exits when its event loop is silent longer than its
+    loop-stall budget; a pause spanning every chunk upload crossed it in production.
+    """
+    checkpoint, _, store, quiescer, _ = engine(tmp_path / "workspace")
+    resumed_at_upload: list[int] = []
+    original_upload = store.upload_chunk
+
+    def upload_chunk(digest: str, ciphertext: bytes) -> None:
+        resumed_at_upload.append(quiescer.resume_count)
+        original_upload(digest, ciphertext)
+
+    store.upload_chunk = upload_chunk  # type: ignore[method-assign]
+    checkpoint.checkpoint(1)
+    assert resumed_at_upload and all(count == 1 for count in resumed_at_upload)
+    assert quiescer.pause_count == quiescer.resume_count == 1
+
+    # A final checkpoint keeps the processes frozen through the upload: the
+    # sandbox is stopping and nothing may mutate state after the snapshot.
+    final_checkpoint, _, final_store, final_quiescer, _ = engine(tmp_path / "final")
+    paused_at_upload: list[int] = []
+    final_original_upload = final_store.upload_chunk
+
+    def final_upload_chunk(digest: str, ciphertext: bytes) -> None:
+        paused_at_upload.append(final_quiescer.resume_count)
+        final_original_upload(digest, ciphertext)
+
+    final_store.upload_chunk = final_upload_chunk  # type: ignore[method-assign]
+    final_checkpoint.checkpoint(1, final=True)
+    assert paused_at_upload and all(count == 0 for count in paused_at_upload)
+
+
 def test_final_checkpoint_leaves_processes_quiesced(tmp_path: Path) -> None:
     checkpoint, _, _, quiescer, _ = engine(tmp_path / "workspace")
     checkpoint.checkpoint(1, final=True)

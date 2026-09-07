@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import secrets
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
@@ -26,6 +27,8 @@ from kirocrew_agentcore_adapter.protocol import (
     validate_envelope,
     validate_schema,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 MAX_REQUEST_BYTES: Final = 1024 * 1024
 MAX_WEBSOCKET_FRAME_BYTES: Final = 32 * 1024
@@ -401,7 +404,9 @@ class AgentCoreAdapter:
                 "Runtime binding is invalid.",
                 correlation_id,
             )
-        except SessionInitializationError:
+        except SessionInitializationError as error:
+            # The client sees an opaque envelope; the log carries the cause.
+            _LOGGER.warning("Invocation rejected during initialization: %s", error)
             return self._error_response(
                 503,
                 "PERSISTENCE_RESTORE_FAILED",
@@ -410,6 +415,7 @@ class AgentCoreAdapter:
                 correlation_id,
             )
         except Exception:
+            _LOGGER.exception("Invocation failed with an unhandled error.")
             return self._error_response(
                 500,
                 "INTERNAL_ERROR",

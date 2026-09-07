@@ -296,6 +296,7 @@ classified.
 | `tests/` | Unit, cross-language contract, deployed-stack end-to-end, and browser UI tests |
 | `tools/` | Protocol code generation, upstream SPA extraction, Terraform wrapper, and image tooling |
 | `docs/` | Architecture source, screenshots, and the persistence contract |
+| `CLAUDE.md` (`AGENTS.md`) | Coding-agent onboarding: build/verify/deploy commands and load-bearing invariants |
 
 ## Security
 

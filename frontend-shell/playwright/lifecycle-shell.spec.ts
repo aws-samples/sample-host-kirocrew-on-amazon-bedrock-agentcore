@@ -940,3 +940,58 @@ test("a reload control is offered in every signed-in view", async ({
   await ensureExpanded(page);
   await Promise.all([page.waitForNavigation(), reloadButton.click()]);
 });
+
+test("a parked ERROR sandbox offers Start sandbox instead of a dead end", async ({
+  page,
+}) => {
+  const snapshot = {
+    sandboxId: "sbx_0123456789ABCDEFGHJKMNPQ",
+    stateVersion: 41,
+    lastCheckpointAt: null,
+    lastRestore: "RESTORED",
+    updatedAt: new Date().toISOString(),
+  };
+  // ERROR -> STARTING is a legal transition: the panel must expose it.
+  await render(page, {
+    view: "terminal-error",
+    activeRequestAccepted: false,
+    sandbox: { ...snapshot, state: "ERROR" },
+    error: {
+      code: "PERSISTENCE_RESTORE_FAILED",
+      message: "The latest checkpoint could not be restored.",
+      retryable: false,
+    },
+  });
+  await ensureExpanded(page);
+  const start = page.getByRole("button", { name: "Start sandbox" });
+  await expect(start).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry safely" })).toBeHidden();
+  await start.click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (
+            globalThis as typeof globalThis & {
+              __task12Calls: { start: number };
+            }
+          ).__task12Calls.start,
+      ),
+    )
+    .toBe(1);
+  // A terminal error with no ERROR record behind it (transport-level) keeps
+  // the conservative view: nothing to start.
+  await render(page, {
+    view: "terminal-error",
+    activeRequestAccepted: false,
+    error: {
+      code: "TRANSPORT_FAILED",
+      message: "The runtime could not be reached.",
+      retryable: true,
+    },
+  });
+  await expect(start).toBeHidden();
+  await expect(
+    page.getByRole("button", { name: "Retry safely" }),
+  ).toBeVisible();
+});

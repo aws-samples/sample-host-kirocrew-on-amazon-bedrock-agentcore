@@ -164,6 +164,15 @@ class CheckpointEngine:
                 now.isoformat().replace("+00:00", "Z"),
             )
             self._inject("manifest_built")
+            if not final:
+                # The snapshot is complete and entirely in memory: every chunk
+                # and the manifest were read while the gateway was frozen, so
+                # the uploads and the commit need no further quiescence. Resume
+                # now — the upstream gateway hard-exits when its event loop is
+                # silent for longer than its loop-stall budget, and a freeze
+                # spanning every S3 round trip crossed it on real workspaces.
+                self._quiescer.resume()
+                paused = False
             self._upload_chunks(built)
             self._inject("chunks_uploaded")
             manifest_blob = self._cipher.encrypt(built.manifest.to_json())

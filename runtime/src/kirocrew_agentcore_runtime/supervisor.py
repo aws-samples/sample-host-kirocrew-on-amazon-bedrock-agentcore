@@ -34,6 +34,15 @@ _HEALTH_PROBE_INTERVAL_SECONDS: Final = 1.0
 # KIROCREW_READY right after the dashboard starts listening; if it has not
 # shown up by then, the line was lost and will never come.
 _READY_LINE_GRACE_SECONDS: Final = 3.0
+# The upstream gateway arms a loop-stall watchdog that dumps every thread and
+# hard-exits when its event loop stays silent past this budget (upstream default
+# 25s, maximum 300s). A checkpoint quiesces the gateway with SIGSTOP; a freeze
+# longer than the budget therefore kills the gateway the moment it resumes. The
+# snapshot phase is short now, but a large workspace can still exceed 25s of
+# hashing, so the sandbox pins the budget at the upstream maximum.
+_LOOP_STALL_EXIT_AFTER_SECONDS: Final = 300
+_LOCAL_CONFIG_FILENAME: Final = "config.local.json"
+_OUTPUT_TAIL_LINES: Final = 20
 
 
 class GatewayError(RuntimeError):
@@ -255,6 +264,8 @@ class KiroCrewSupervisor:
         self._token: DashboardToken | None = None
         self._ready = False
         self._environment: dict[str, str] | None = None
+        self._output_tail: deque[str] = deque(maxlen=_OUTPUT_TAIL_LINES)
+        self._exit_reported = False
 
     @property
     def state_home(self) -> Path:
@@ -280,6 +291,11 @@ class KiroCrewSupervisor:
     def pid(self) -> int | None:
         return None if self._process is None else self._process.pid
 
+    @property
+    def output_tail(self) -> tuple[str, ...]:
+        """The most recent gateway output lines, kept for the whole process life."""
+        return tuple(self._output_tail)
+
     def start(self, *, timeout_seconds: float = 60.0) -> GatewayReady:
         if self._effective_uid() == 0:
             raise GatewayError("The KiroCrew gateway must run as a non-root user.")
@@ -294,6 +310,9 @@ class KiroCrewSupervisor:
         self._chdir(self._layout.root)
         self._state_home = self._resolve_state_home()
         self._scrub_runtime_residue(self._state_home)
+        self._pin_loop_stall_budget(self._state_home)
+        self._output_tail.clear()
+        self._exit_reported = False
         environment = self._build_environment()
         command = [
             self._executable,
@@ -327,6 +346,39 @@ class KiroCrewSupervisor:
         self._token = DashboardToken(token, self._monotonic() + _DEFAULT_TOKEN_TTL_SECONDS)
         self._ready = True
         return ready
+
+    @staticmethod
+    def _pin_loop_stall_budget(state_home: Path) -> None:
+        """Raise the gateway's loop-stall hard-exit budget through its local config overlay.
+
+        ``config.local.json`` is deep-merged over ``config.json`` by the upstream
+        loader and is never rewritten by its setup flow, so the pin survives
+        upgrades and checkpoints. Other keys the user placed there are preserved;
+        an unreadable overlay is left alone rather than clobbered.
+        """
+        path = state_home / _LOCAL_CONFIG_FILENAME
+        overlay: dict[str, object] = {}
+        if path.is_file():
+            try:
+                loaded = cast(object, json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                _LOGGER.warning("Gateway local config overlay is unreadable; leaving it as is.")
+                return
+            if not isinstance(loaded, dict):
+                _LOGGER.warning("Gateway local config overlay is not an object; leaving it as is.")
+                return
+            overlay = cast(dict[str, object], loaded)
+        dashboard = overlay.get("dashboard")
+        if not isinstance(dashboard, dict):
+            dashboard = {}
+        section = cast(dict[str, object], dashboard)
+        if section.get("loop_stall_exit_after_secs") == _LOOP_STALL_EXIT_AFTER_SECONDS:
+            return
+        section["loop_stall_exit_after_secs"] = _LOOP_STALL_EXIT_AFTER_SECONDS
+        overlay["dashboard"] = section
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(overlay, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        path.chmod(0o600)
 
     @staticmethod
     def _scrub_runtime_residue(state_home: Path) -> None:
@@ -384,6 +436,16 @@ class KiroCrewSupervisor:
         if process is None or process.poll() is not None:
             self._ready = False
             self._token = None
+            if process is not None and not self._exit_reported:
+                # Logged once per process: the exit code and the last output
+                # lines are the only forensic record of why the gateway died
+                # (its stdout is otherwise consumed silently after readiness).
+                self._exit_reported = True
+                _LOGGER.error(
+                    "KiroCrew gateway exited with code %s. Output tail: %s",
+                    process.poll(),
+                    " | ".join(self._output_tail) or "<none>",
+                )
             raise GatewayExitedError("The upstream KiroCrew gateway is not running.")
         return process
 
@@ -466,8 +528,11 @@ class KiroCrewSupervisor:
         exception_types: list[str] = []
         tail: deque[str] = deque(maxlen=5)
 
+        output_tail = self._output_tail
+
         def read_lines() -> None:
             for line in stdout:
+                output_tail.append(line.strip())
                 code = _classify_startup_line(line)
                 if code is not None:
                     diagnostic_codes.append(code)

@@ -5,13 +5,14 @@ import contextlib
 import logging
 import os
 import shutil
+import signal
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 import boto3  # type: ignore[import-untyped]
 from aiohttp import ClientSession, web
@@ -34,6 +35,7 @@ from kirocrew_agentcore_adapter.transport import (
     LeaseAuthorizationError,
     RuntimeReadiness,
     SessionInitializationError,
+    TransientBackendError,
 )
 from kirocrew_agentcore_persistence.checkpoint import (
     CheckpointEngine,
@@ -49,6 +51,7 @@ from kirocrew_agentcore_persistence.restore import RestoreEngine, RestoreError, 
 from kirocrew_agentcore_runtime.cloudwatch_logs import CloudWatchLogHandler
 from kirocrew_agentcore_runtime.image_runtime import ImageMetadata
 from kirocrew_agentcore_runtime.supervisor import (
+    GatewayError,
     GatewayExitedError,
     KiroCrewSupervisor,
     RuntimeMetadata,
@@ -460,6 +463,15 @@ def _organization_login(payload: Mapping[str, object]) -> OrganizationLogin | No
         ) from error
 
 
+class GatewayController(Protocol):
+    """The slice of the supervisor the backend needs to keep the gateway alive."""
+
+    @property
+    def ready(self) -> bool: ...
+
+    def start(self, *, timeout_seconds: float = 60.0) -> object: ...
+
+
 class ProductionRuntimeBackend:
     def __init__(
         self,
@@ -467,13 +479,29 @@ class ProductionRuntimeBackend:
         readiness: RuntimeReadiness,
         identity: KiroIdentityManager | None = None,
         *,
+        gateway: GatewayController | None = None,
+        gateway_start_timeout_seconds: float = 60.0,
+        gateway_restart_backoff_seconds: float = 30.0,
         busy_probe_ttl_seconds: float = 10.0,
         busy_max_seconds: float = 14400.0,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
+        if gateway_start_timeout_seconds <= 0 or gateway_restart_backoff_seconds < 0:
+            raise ValueError("Gateway restart timing must be positive.")
         self._loopback = loopback
         self._readiness = readiness
         self._identity = identity
+        # Gateway liveness: the upstream process can die between invocations
+        # (its loop-stall watchdog hard-exits after a long freeze). Without a
+        # restart path every call would fail while /ping and the lease keep
+        # reporting a healthy, READY sandbox.
+        self._gateway = gateway
+        self._gateway_start_timeout = gateway_start_timeout_seconds
+        self._gateway_restart_backoff = gateway_restart_backoff_seconds
+        self._gateway_lock = asyncio.Lock()
+        self._gateway_retry_at: float | None = None
+        self._gateway_restarts = 0
+        self._gateway_task: asyncio.Task[bool] | None = None
         self._checkpoint_engine: CheckpointEngine | None = None
         self._store: BrokeredCheckpointStore | None = None
         self._broker_client: LambdaBrokerClient | None = None
@@ -548,8 +576,17 @@ class ProductionRuntimeBackend:
                 self._schedule_durability_checkpoint("kiro.login")
             return
         if operation != "sandbox.prepare_stop":
-            async for event in self._loopback.execute(operation, request_id, payload):
-                yield event
+            if not await self.ensure_gateway():
+                raise TransientBackendError("The upstream KiroCrew gateway is restarting.")
+            try:
+                async for event in self._loopback.execute(operation, request_id, payload):
+                    yield event
+            except GatewayError as error:
+                # The gateway died under this request. Typed and retryable:
+                # the next attempt goes through ensure_gateway's restart.
+                raise TransientBackendError(
+                    "The upstream KiroCrew gateway is not running."
+                ) from error
             return
         del request_id, payload
         try:
@@ -610,6 +647,57 @@ class ProductionRuntimeBackend:
         )
         return True
 
+    @property
+    def gateway_restarts(self) -> int:
+        """How many times this process has restarted the upstream gateway."""
+        return self._gateway_restarts
+
+    async def ensure_gateway(self) -> bool:
+        """Restart a dead upstream gateway; ``True`` when it is serving.
+
+        Concurrent callers wait for the one restart in flight instead of
+        racing it. A failed restart is not retried before the backoff
+        elapses, and it flips ``loopback_ready`` off so the transport
+        answers a typed 503 instead of tunnelling into a corpse.
+        """
+        gateway = self._gateway
+        if gateway is None or self._checkpoint_engine is None or _gateway_ready(gateway):
+            # Until the session is initialized the initializer owns the gateway:
+            # starting it early would run it on top of the restore (its socket
+            # and databases then break the restore's backup step).
+            return True
+        async with self._gateway_lock:
+            if _gateway_ready(gateway):
+                return True
+            now = self._monotonic()
+            if self._gateway_retry_at is not None and now < self._gateway_retry_at:
+                return False
+            self._gateway_restarts += 1
+            _LOGGER.warning(
+                "Upstream KiroCrew gateway is not running; restarting it (attempt %d).",
+                self._gateway_restarts,
+            )
+            try:
+                await asyncio.to_thread(gateway.start, timeout_seconds=self._gateway_start_timeout)
+            except Exception:
+                self._gateway_retry_at = now + self._gateway_restart_backoff
+                self._readiness.loopback_ready = False
+                _LOGGER.error("Upstream KiroCrew gateway restart failed.", exc_info=True)
+                return False
+            self._gateway_retry_at = None
+            self._readiness.loopback_ready = True
+            _LOGGER.info("Upstream KiroCrew gateway restarted.")
+            return True
+
+    def _schedule_gateway_restart(self) -> None:
+        """Kick off a restart without blocking the caller (the /ping path)."""
+        gateway = self._gateway
+        if gateway is None or self._checkpoint_engine is None or _gateway_ready(gateway):
+            return
+        if self._gateway_task is not None and not self._gateway_task.done():
+            return
+        self._gateway_task = asyncio.get_running_loop().create_task(self.ensure_gateway())
+
     async def background_busy(self) -> bool:
         """Report whether unattended work is still running in the sandbox.
 
@@ -621,6 +709,9 @@ class ProductionRuntimeBackend:
         """
         if self._busy_probe_ttl <= 0:
             return False
+        # The platform polls /ping even when no browser is connected, which
+        # makes it the heartbeat that notices a dead gateway first.
+        self._schedule_gateway_restart()
         now = self._monotonic()
         if self._busy_cache is not None and now - self._busy_cache[0] < self._busy_probe_ttl:
             busy = self._busy_cache[1]
@@ -777,6 +868,12 @@ class AwsSessionInitializer:
         async with self._lock:
             if self._initialized_session is not None:
                 if self._initialized_session != identity or self._broker_client is None:
+                    _LOGGER.warning(
+                        "Rejecting invocation bound to %s; this process serves %s.",
+                        identity,
+                        self._initialized_session,
+                    )
+                    await self._exit_if_superseded(identity)
                     raise SessionInitializationError(
                         "Runtime process is already bound to another sandbox session."
                     )
@@ -873,6 +970,40 @@ class AwsSessionInitializer:
                 heartbeat.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await heartbeat
+
+    async def _exit_if_superseded(self, identity: tuple[str, str, str]) -> None:
+        """Exit gracefully when a newer session owns this sandbox.
+
+        AgentCore can route a rotated session's first invocations to the
+        still-warm container bound to the previous session, which turns
+        every request into a 503 until idle reclaim finally kills the
+        container. The sandbox record is the authority: if it names a
+        different session id than the one this process serves, this
+        process is superseded - commit what it can and exit so the
+        platform schedules a fresh container for the live session. If the
+        record still names this process's session, the caller is a stale
+        page and this process stays put.
+        """
+        bound = self._initialized_session
+        if bound is None or identity[0] != bound[0] or identity[1] != bound[1]:
+            # A different owner or sandbox is a binding violation, never a
+            # reason to exit: the single-tenant boundary stays closed.
+            return
+        try:
+            metadata = await asyncio.to_thread(self._state_store.read, bound[1])
+        except Exception:
+            _LOGGER.warning("Supersession check failed.", exc_info=True)
+            return
+        if metadata.runtime_session_id == bound[2]:
+            return
+        _LOGGER.warning(
+            "Session %s superseded by %s; exiting so the platform reschedules.",
+            bound[2],
+            metadata.runtime_session_id,
+        )
+        await self._backend.checkpoint_on_shutdown()
+        self._supervisor.terminate()
+        os.kill(os.getpid(), signal.SIGTERM)
 
     async def _lease_heartbeat(self, sandbox_id: str, runtime_session_id: str) -> None:
         """Extend the start lease every 30s until the process dies.
@@ -1004,6 +1135,11 @@ class AwsSessionInitializer:
         return client, report, store, checkpoint_engine
 
 
+def _gateway_ready(gateway: GatewayController) -> bool:
+    """Read the live readiness flag (a property that changes under our feet)."""
+    return gateway.ready
+
+
 def _required(environment: Mapping[str, str], name: str) -> str:
     value = environment.get(name, "")
     if not value:
@@ -1052,10 +1188,13 @@ async def build_runtime_application(
         ),
         LocalKiroCommandRunner(),
     )
+    startup_timeout = float(environment.get("KIROCREW_START_TIMEOUT", "60"))
     backend = ProductionRuntimeBackend(
         loopback,
         readiness,
         identity=identity_manager,
+        gateway=supervisor,
+        gateway_start_timeout_seconds=startup_timeout,
         # 0 disables the probe; the fuse bounds a stuck-busy task so it cannot
         # pin the microVM until MaxLifetime.
         busy_probe_ttl_seconds=float(environment.get("KIROCREW_BUSY_PROBE_TTL_SECONDS", "10")),
@@ -1070,7 +1209,7 @@ async def build_runtime_application(
         supervisor,
         backend,
         readiness,
-        startup_timeout_seconds=float(environment.get("KIROCREW_START_TIMEOUT", "60")),
+        startup_timeout_seconds=startup_timeout,
     )
     adapter = AgentCoreAdapter(
         AdapterConfig(

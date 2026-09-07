@@ -220,7 +220,11 @@ function installStyles(document: Document): void {
       background: var(--danger);
       box-shadow: 0 0 0 4px var(--danger-subtle);
     }
-    .kcac-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; flex-wrap: wrap; }
+    /* Shrinkable (flex 0 1 auto): a non-shrinking action row would crush
+       the title to zero width once it holds four buttons; wrapping onto a
+       second row keeps every control visible instead. */
+    .kcac-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 0 1 auto; flex-wrap: wrap; }
+    .kcac-state { flex: 1 1 auto; }
     .kcac-button, .kcac-link {
       min-height: 36px;
       padding: 7px 13px;
@@ -536,6 +540,16 @@ export function mountBrowserShell(
   const retry = createElement(document, "button", "kcac-button");
   retry.type = "button";
   retry.textContent = "Retry safely";
+  const reload = createElement(document, "button", "kcac-button");
+  reload.type = "button";
+  // An icon keeps the header row within its width budget: a fifth text
+  // button squeezes the title to zero height at the panel's fixed width.
+  reload.textContent = "\u21bb";
+  reload.title = "Reload and reconnect";
+  reload.setAttribute(
+    "aria-label",
+    "Reload the page and reconnect to the sandbox without stopping it",
+  );
   const logout = createElement(document, "button", "kcac-button");
   logout.type = "button";
   logout.textContent = "Sign out";
@@ -547,7 +561,7 @@ export function mountBrowserShell(
   minimize.type = "button";
   minimize.textContent = "Minimize";
   minimize.setAttribute("aria-label", "Minimize the status panel");
-  actionGroup.append(primary, retry, logout, minimize);
+  actionGroup.append(primary, retry, reload, logout, minimize);
   header.append(state, actionGroup);
 
   const device = createElement(document, "section", "kcac-device");
@@ -1145,6 +1159,11 @@ export function mountBrowserShell(
     }
   });
   retry.addEventListener("click", () => invoke(actions.retry));
+  reload.addEventListener("click", () => {
+    // A stale page (expired session, dead duplex) is fully cured by a
+    // reload: bootstrap re-reads the sandbox record and reconnects.
+    window.location.reload();
+  });
   logout.addEventListener("click", () => invoke(actions.logout));
   kiroCheck.addEventListener("click", () => invoke(actions.kiroCheck));
   kiroLogout.addEventListener("click", () => invoke(actions.kiroLogout));
@@ -1362,6 +1381,10 @@ export function mountBrowserShell(
       model.view === "reconnecting" ||
       (model.view === "terminal-error" && model.error?.retryable === true)
     );
+    // Reload never destroys anything, so offer it whenever the user is
+    // signed in: a stale page otherwise dead-ends in opaque 503s with
+    // only destructive-looking choices (Stop safely, Sign out) visible.
+    reload.hidden = model.view === "signed-out";
     logout.hidden = model.view === "signed-out";
 
     const flow = model.deviceFlow;

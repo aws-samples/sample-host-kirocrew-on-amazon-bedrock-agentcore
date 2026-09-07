@@ -921,3 +921,22 @@ test("sandbox details show observed history and persisted paths", async ({
   });
   await expect(page.getByLabel("MicroVM uptime")).toContainText("1m");
 });
+
+test("a reload control is offered in every signed-in view", async ({
+  page,
+}) => {
+  const reloadButton = page.getByRole("button", {
+    name: "Reload the page and reconnect to the sandbox without stopping it",
+  });
+  for (const view of ["ready", "stopped", "terminal-error"] as const) {
+    await render(page, { view, activeRequestAccepted: false });
+    await ensureExpanded(page);
+    await expect(reloadButton).toBeVisible();
+  }
+  await render(page, { view: "signed-out", activeRequestAccepted: false });
+  await expect(reloadButton).toBeHidden();
+  // Clicking it reloads the page rather than dispatching lifecycle actions.
+  await render(page, { view: "ready", activeRequestAccepted: false });
+  await ensureExpanded(page);
+  await Promise.all([page.waitForNavigation(), reloadButton.click()]);
+});

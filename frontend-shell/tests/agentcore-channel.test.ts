@@ -244,6 +244,32 @@ describe("AgentCore browser channel", () => {
     );
   });
 
+  it("reads the binding token from the live provider at hello time", async () => {
+    // Binding tokens expire after 30 minutes; the application renews them
+    // in the background and a reconnect must authorize with the CURRENT
+    // token, not the one captured when the channel was constructed.
+    FakeWebSocket.last = undefined;
+    let liveToken = `${BINDING}`;
+    const channel = new AgentCoreBrowserChannel(DESCRIPTOR, {
+      region: REGION,
+      accessToken: (): Promise<string> => Promise.resolve(TOKEN),
+      bindingToken: (): string => liveToken,
+      webSocket: FakeWebSocket as unknown as typeof WebSocket,
+      requestId: (): string => "01J00000000000000000000005",
+      now: (): Date => new Date("2026-01-01T00:00:00.000Z"),
+    });
+    liveToken = `${BINDING}-renewed`;
+
+    await channel.openWebSocket(INVOCATION);
+
+    const frame = latestSocket().sent[0];
+    if (typeof frame !== "string") {
+      throw new Error("Expected the connection hello text frame.");
+    }
+    const first = JSON.parse(frame) as { payload: { bindingToken: string } };
+    expect(first.payload.bindingToken).toBe(`${BINDING}-renewed`);
+  });
+
   it("uses Authorization only in the native HTTP/SSE fallback request", async () => {
     const fetchMock = vi.fn(
       (

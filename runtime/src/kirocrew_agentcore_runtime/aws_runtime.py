@@ -9,7 +9,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -241,6 +241,33 @@ class DynamoSandboxStateStore:
             ExpressionAttributeValues={
                 ":expires": {"N": str(now + ttl_seconds)},
                 ":owner": {"S": init_owner},
+                ":updated": {"S": _timestamp(datetime.now(UTC))},
+            },
+        )
+
+    def heartbeat_lease(
+        self,
+        sandbox_id: str,
+        runtime_session_id: str,
+        *,
+        ttl_seconds: int = 90,
+    ) -> None:
+        """Extend the start lease for as long as this session is alive.
+
+        A live lease is the signal that lets the control plane renew
+        binding tokens WITHOUT rotating the runtime session id: rotation
+        under a healthy session kills every open browser connection. The
+        lease owner is this session's own id, so the condition fails - and
+        the heartbeat stops mattering - the moment a newer start takes over.
+        """
+        self._client.update_item(
+            TableName=self._table_name,
+            Key=self._key(sandbox_id),
+            UpdateExpression="SET leaseExpiresAt = :expires, updatedAt = :updated",
+            ConditionExpression="leaseOwner = :owner",
+            ExpressionAttributeValues={
+                ":expires": {"S": _timestamp(datetime.now(UTC) + timedelta(seconds=ttl_seconds))},
+                ":owner": {"S": runtime_session_id},
                 ":updated": {"S": _timestamp(datetime.now(UTC))},
             },
         )
@@ -736,6 +763,7 @@ class AwsSessionInitializer:
         self._startup_timeout = startup_timeout_seconds
         self._lock = asyncio.Lock()
         self._initialized_session: tuple[str, str, str] | None = None
+        self._lease_heartbeat_task: asyncio.Task[None] | None = None
         self._init_owner = str(uuid.uuid4())
         self._broker_client: LambdaBrokerClient | None = None
 
@@ -790,6 +818,14 @@ class AwsSessionInitializer:
                 self._readiness.read_only = False
                 if not self._readiness.healthy or report.outcome == "failed":
                     raise SessionInitializationError("Sandbox did not become ready.")
+                # Keep the start lease alive for this session's whole life:
+                # a live lease lets the control plane renew binding tokens
+                # without rotating the session id (rotation kills every open
+                # browser connection), and its expiry 90s after this process
+                # dies is the authoritative liveness signal.
+                self._lease_heartbeat_task = asyncio.create_task(
+                    self._lease_heartbeat(claims.sandbox_id, claims.runtime_session_id)
+                )
             except InitOwnershipError as error:
                 # A live owner is initializing elsewhere; walk away without
                 # touching the record and let the client retry against it.
@@ -837,6 +873,32 @@ class AwsSessionInitializer:
                 heartbeat.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await heartbeat
+
+    async def _lease_heartbeat(self, sandbox_id: str, runtime_session_id: str) -> None:
+        """Extend the start lease every 30s until the process dies.
+
+        A ConditionalCheckFailedException means a newer start owns the
+        lease; this session is superseded and stops heartbeating so the
+        takeover completes cleanly.
+        """
+        while True:
+            await asyncio.sleep(30)
+            try:
+                await asyncio.to_thread(
+                    self._state_store.heartbeat_lease,
+                    sandbox_id,
+                    runtime_session_id,
+                )
+            except asyncio.CancelledError:
+                raise
+            except ClientError as error:
+                code = error.response.get("Error", {}).get("Code")
+                if code == "ConditionalCheckFailedException":
+                    _LOGGER.info("Lease superseded by a newer start; heartbeat stops.")
+                    return
+                _LOGGER.warning("Lease heartbeat failed.", exc_info=True)
+            except Exception:
+                _LOGGER.warning("Lease heartbeat failed.", exc_info=True)
 
     async def _init_heartbeat(self, sandbox_id: str) -> None:
         """Extend the initialization lease while restore and startup run."""
@@ -1043,6 +1105,11 @@ async def build_runtime_application(
             )
 
     async def shutdown(_application: web.Application) -> None:
+        lease_task = initializer._lease_heartbeat_task
+        if lease_task is not None:
+            lease_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await lease_task
         for task in periodic_checkpoints:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

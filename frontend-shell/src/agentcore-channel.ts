@@ -42,6 +42,12 @@ export interface RuntimeConnectionDescriptor {
 export interface AgentCoreBrowserChannelOptions {
   readonly region: string;
   readonly accessToken: () => Promise<string>;
+  /**
+   * Live binding-token source. Binding tokens expire after 30 minutes and
+   * the application renews them in the background; reads at send time keep
+   * a long-lived channel authorized past the first token's lifetime.
+   */
+  readonly bindingToken?: () => string;
   readonly fetch?: typeof fetch;
   readonly webSocket?: typeof WebSocket;
   readonly requestId?: () => string;
@@ -379,6 +385,7 @@ export class AgentCoreBrowserChannel implements AgentCoreChannel {
   readonly #descriptor: RuntimeConnectionDescriptor;
   readonly #region: string;
   readonly #accessToken: () => Promise<string>;
+  readonly #bindingToken: () => string;
   readonly #fetch: typeof fetch;
   readonly #webSocket: typeof WebSocket;
   readonly #requestId: () => string;
@@ -410,6 +417,8 @@ export class AgentCoreBrowserChannel implements AgentCoreChannel {
     this.#descriptor = descriptor;
     this.#region = options.region;
     this.#accessToken = options.accessToken;
+    this.#bindingToken =
+      options.bindingToken ?? ((): string => descriptor.bindingToken);
     this.#fetch = options.fetch ?? fetch;
     this.#webSocket = options.webSocket ?? WebSocket;
     this.#requestId = options.requestId ?? defaultUlid;
@@ -513,7 +522,9 @@ export class AgentCoreBrowserChannel implements AgentCoreChannel {
       sequence: 0,
       timestamp: this.#now().toISOString(),
       correlationId,
-      payload: { bindingToken: this.#descriptor.bindingToken },
+      payload: {
+        bindingToken: this.#bindingToken(),
+      },
     };
     return await new Promise<AgentCoreDuplex>((resolve, reject) => {
       const onAbort = (): void => socket.close(1000, "Connection cancelled");

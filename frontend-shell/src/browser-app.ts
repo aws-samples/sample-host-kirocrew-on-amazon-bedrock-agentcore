@@ -326,6 +326,8 @@ export class BrowserApplication {
   #reconnectAttempts = 0;
   #startInFlight = false;
   #lastDescriptor: RuntimeConnectionDescriptor | undefined;
+  #activeBindingToken: string | undefined;
+  #bindingRenewalTimer: ReturnType<typeof setTimeout> | undefined;
   #reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   #autoOpenTimer: ReturnType<typeof setTimeout> | undefined;
   #autoOpenedCode: string | undefined;
@@ -566,9 +568,12 @@ export class BrowserApplication {
   async #connect(descriptor: RuntimeConnectionDescriptor): Promise<void> {
     this.#disconnect();
     const connectionGeneration = ++this.#connectionGeneration;
+    this.#activeBindingToken = descriptor.bindingToken;
     const channel = new AgentCoreBrowserChannel(descriptor, {
       region: this.#config.region,
       accessToken: (): Promise<string> => this.#auth.accessToken(),
+      bindingToken: (): string =>
+        this.#activeBindingToken ?? descriptor.bindingToken,
       onEnvelope: (envelope): void => this.#onEnvelope(envelope),
       onClose: (): void => {
         if (
@@ -584,7 +589,8 @@ export class BrowserApplication {
     });
     const transport = new KiroCrewRemoteTransport(channel, {
       origin: this.#config.upstreamOrigin,
-      bindingToken: (): string => descriptor.bindingToken,
+      bindingToken: (): string =>
+        this.#activeBindingToken ?? descriptor.bindingToken,
     });
     this.#uninstallBootstrap = this.#installTransport(this.#target, transport);
     const invocation: AgentCoreInvocation = {
@@ -600,11 +606,66 @@ export class BrowserApplication {
     this.#kiroDescriptor = descriptor;
     this.#duplex = await channel.openWebSocket(invocation);
     this.#schedulePing();
+    this.#scheduleBindingRenewal();
     this.#flushQueuedStop();
     // The Kiro status probe waits for connection.ready: a second invocation
     // during cold-start session initialization races the initializer and
     // fails the sandbox (ConditionalCheckFailedException).
     void connectionGeneration;
+  }
+
+  #scheduleBindingRenewal(): void {
+    if (this.#bindingRenewalTimer !== undefined) {
+      this.#clearTimeout(this.#bindingRenewalTimer);
+      this.#bindingRenewalTimer = undefined;
+    }
+    const descriptor = this.#lastDescriptor;
+    if (descriptor === undefined || this.#destroyed) {
+      return;
+    }
+    // Renew five minutes before expiry: an expired binding turns every
+    // invocation into an opaque 503 while the panel still says ready.
+    const lead = Date.parse(descriptor.expiresAt) - this.#now() - 300_000;
+    this.#bindingRenewalTimer = this.#setTimeout(
+      () => {
+        this.#bindingRenewalTimer = undefined;
+        void this.#renewBinding();
+      },
+      Math.max(lead, 30_000),
+    );
+  }
+
+  async #renewBinding(): Promise<void> {
+    if (this.#destroyed || this.#duplex === undefined) {
+      return;
+    }
+    const current = this.#lastDescriptor;
+    try {
+      // With the runtime's lease heartbeat alive this start is a pure
+      // token renewal: same session id, fresh binding, no state change.
+      const fresh = await this.#control.start();
+      this.#lastDescriptor = fresh;
+      if (
+        current !== undefined &&
+        fresh.runtimeSessionId === current.runtimeSessionId
+      ) {
+        this.#activeBindingToken = fresh.bindingToken;
+        this.#kiroDescriptor = fresh;
+        this.#scheduleBindingRenewal();
+        return;
+      }
+      // The session rotated underneath us; reconnect onto the new one.
+      await this.#connect(fresh);
+    } catch {
+      // Transient control-plane trouble: try again shortly, well before
+      // the current token actually expires.
+      if (!this.#destroyed) {
+        this.#bindingRenewalTimer = this.#setTimeout(() => {
+          this.#bindingRenewalTimer = undefined;
+          void this.#renewBinding();
+        }, 60_000);
+      }
+    }
   }
 
   #scheduleKiroPoll(): void {
@@ -975,6 +1036,10 @@ export class BrowserApplication {
     if (this.#pingTimer !== undefined) {
       this.#clearTimeout(this.#pingTimer);
       this.#pingTimer = undefined;
+    }
+    if (this.#bindingRenewalTimer !== undefined) {
+      this.#clearTimeout(this.#bindingRenewalTimer);
+      this.#bindingRenewalTimer = undefined;
     }
     this.#duplex?.close(1000, "Browser shell disconnected");
     this.#duplex = undefined;

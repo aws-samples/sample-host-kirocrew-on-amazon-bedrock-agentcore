@@ -1160,8 +1160,15 @@ def test_build_runtime_application_cleanup_and_serve(monkeypatch: pytest.MonkeyP
         assert captured["kwargs"]
         for startup in application.on_startup:
             await startup(application)
+        # A live lifetime lease heartbeat is cancelled cleanly on shutdown.
+        kwargs = cast(dict[str, Any], captured["kwargs"])
+        initializer = cast(AwsSessionInitializer, kwargs["session_initializer"])
+        initializer._lease_heartbeat_task = asyncio.get_running_loop().create_task(
+            asyncio.sleep(3600)
+        )
         for shutdown in application.on_shutdown:
             await shutdown(application)
+        assert initializer._lease_heartbeat_task.cancelled()
         for cleanup in application.on_cleanup:
             await cleanup(application)
         assert loopback_sessions[0].closed
@@ -1467,3 +1474,76 @@ def test_cloudwatch_logging_attaches_only_when_configured(
         module._attach_cloudwatch_logging({"KIROCREW_LOG_GROUP": "g"})
     assert "unavailable" in caplog.text
     assert [h for h in root.handlers if h not in before] == []
+
+
+def test_lease_heartbeat_extends_the_start_lease_conditionally() -> None:
+    client = FakeDynamo({"runtimeSessionId": {"S": "session-1"}, "state": {"S": "READY"}})
+    store = DynamoSandboxStateStore(client, "sandboxes")
+    store.heartbeat_lease("sbx_0123456789ABCDEFGHJKMNPQ", "session-1")
+    update = client.updates[0]
+    assert update["ConditionExpression"] == "leaseOwner = :owner"
+    assert update["ExpressionAttributeValues"][":owner"] == {"S": "session-1"}
+    assert "leaseExpiresAt" in update["UpdateExpression"]
+
+
+def test_lifetime_lease_heartbeat_stops_when_superseded() -> None:
+    """A newer start owns the lease: the loop exits instead of fighting it."""
+
+    async def scenario() -> None:
+        initializer = StubAwsSessionInitializer()
+        beats: list[str] = []
+
+        def heartbeat(sandbox: str, session: str, *, ttl_seconds: int = 90) -> None:
+            beats.append(session)
+            if len(beats) == 2:
+                raise RuntimeError("dynamo hiccup")
+            if len(beats) == 3:
+                raise ClientError(
+                    {"Error": {"Code": "ConditionalCheckFailedException"}},
+                    "UpdateItem",
+                )
+
+        initializer.state_store.heartbeat_lease = heartbeat  # type: ignore[attr-defined]
+        original_sleep = asyncio.sleep
+
+        async def fast_sleep(delay: float) -> None:
+            del delay
+            await original_sleep(0)
+
+        asyncio.sleep = fast_sleep  # type: ignore[assignment]
+        try:
+            await initializer._lease_heartbeat("sandbox", "session-1")
+        finally:
+            asyncio.sleep = original_sleep
+        assert beats == ["session-1", "session-1", "session-1"]
+
+    asyncio.run(scenario())
+
+
+def test_lifetime_lease_heartbeat_propagates_cancellation_and_other_client_errors() -> None:
+    async def scenario() -> None:
+        initializer = StubAwsSessionInitializer()
+        beats: list[int] = []
+
+        def heartbeat(sandbox: str, session: str, *, ttl_seconds: int = 90) -> None:
+            beats.append(1)
+            if len(beats) == 1:
+                raise ClientError({"Error": {"Code": "Throttling"}}, "UpdateItem")
+            raise asyncio.CancelledError
+
+        initializer.state_store.heartbeat_lease = heartbeat  # type: ignore[attr-defined]
+        original_sleep = asyncio.sleep
+
+        async def fast_sleep(delay: float) -> None:
+            del delay
+            await original_sleep(0)
+
+        asyncio.sleep = fast_sleep  # type: ignore[assignment]
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await initializer._lease_heartbeat("sandbox", "session-1")
+        finally:
+            asyncio.sleep = original_sleep
+        assert len(beats) == 2
+
+    asyncio.run(scenario())

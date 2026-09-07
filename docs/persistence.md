@@ -1,6 +1,6 @@
 # Sandbox persistence contract
 
-`/mnt/workspace` is the mutable per-session filesystem on the microVM's container disk. It is ephemeral by design: committed encrypted checkpoints in S3 are the sole durability authority. (AgentCore managed session storage was dropped: its 1GB quota and 14-day retention caused repeated incidents, and the checkpoint/restore engine already provides the durability it promised.)
+`/mnt/workspace` is the mutable per-session filesystem. AgentCore managed session storage accelerates stop/resume, while committed encrypted checkpoints are the long-term durability authority.
 
 ## Included roots
 
@@ -29,7 +29,7 @@ Each sandbox receives a 256-bit data key outside the manifest. AES-256-GCM uses 
 
 ## Brokered long-term durability and restore
 
-S3 checkpoints are the authoritative state; the workspace disk is ephemeral scratch space. The persistence broker derives `snapshots/<sandboxId>/...` keys itself, issues operation-specific URLs for at most 15 minutes, and requires KMS encryption-context headers containing the validated sandbox ID. Runtime callers cannot submit a bucket prefix or list objects.
+S3 checkpoints are the authoritative state; AgentCore managed session storage is only a local acceleration layer. The persistence broker derives `snapshots/<sandboxId>/...` keys itself, issues operation-specific URLs for at most 15 minutes, and requires KMS encryption-context headers containing the validated sandbox ID. Runtime callers cannot submit a bucket prefix or list objects.
 
 Before KiroCrew starts, an existing sandbox restores from S3 whenever the mount is empty, its pointer differs from the latest commit, local integrity sampling fails, managed storage expired, or the runtime version changed. Restore decrypts and validates a manifest, reconstructs an isolated staging tree, enforces allowlisted paths/file-count/size/type limits, verifies every chunk and whole-file digest, then atomically swaps the tree into place. A corrupt latest generation falls back once to the preceding commit. A new logical sandbox may initialize empty; an existing sandbox with no valid retained generation returns `PERSISTENCE_RESTORE_FAILED`.
 

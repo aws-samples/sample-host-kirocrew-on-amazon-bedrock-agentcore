@@ -142,8 +142,6 @@ class ManifestDecoder:
         total_bytes = 0
         for item in entries_value:
             entry = self._entry(item)
-            if entry is None:
-                continue
             if entry.path in seen:
                 raise ManifestValidationError("Manifest paths must be unique.")
             seen.add(entry.path)
@@ -177,7 +175,7 @@ class ManifestDecoder:
             references.update(cast(list[str], chunks))
         return frozenset(references)
 
-    def _entry(self, value: object) -> ManifestEntry | None:
+    def _entry(self, value: object) -> ManifestEntry:
         if not isinstance(value, dict):
             raise ManifestValidationError("Manifest entry must be an object.")
         path = value.get("path")
@@ -198,15 +196,8 @@ class ManifestDecoder:
         ):
             raise ManifestValidationError("Manifest entry metadata is invalid.")
         relative = PurePosixPath(path)
-        if path != relative.as_posix() or not self._policy.covers(relative):
+        if path != relative.as_posix() or not self._policy.includes(relative):
             raise ManifestValidationError("Manifest path is outside durable roots.")
-        if not self._policy.includes(relative):
-            # Covered by a durable root but excluded by the current policy:
-            # an older checkpoint legitimately carries entries a newer policy
-            # no longer persists (the in-workspace embedding model). They are
-            # history to skip, not a poisoned manifest - failing here would
-            # brick every sandbox restored from a pre-exclusion checkpoint.
-            return None
         digest_value = value.get("digest")
         chunks_value = value.get("chunks", [])
         target_value = value.get("symlinkTarget")

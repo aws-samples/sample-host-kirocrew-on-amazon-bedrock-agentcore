@@ -117,20 +117,6 @@ class PersistencePolicy:
     )
     _excluded_suffixes: Final = (".log", ".pid", ".sock", ".tmp", "~")
 
-    def covers(self, relative_path: PurePosixPath) -> bool:
-        """Whether the path lies inside the durable roots at all.
-
-        Distinct from :meth:`includes`: a path can be covered by a root yet
-        excluded by policy (caches, the in-image embedding model). Restore
-        treats covered-but-excluded entries in an older manifest as
-        skippable history rather than a validation failure.
-        """
-        if relative_path.is_absolute() or ".." in relative_path.parts:
-            return False
-        return any(
-            relative_path == root or relative_path.is_relative_to(root) for root in self._roots
-        )
-
     def includes(self, relative_path: PurePosixPath) -> bool:
         if relative_path.is_absolute() or ".." in relative_path.parts:
             return False

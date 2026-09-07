@@ -831,34 +831,3 @@ def test_restore_constructor_and_materializer_defensive_checks(tmp_path: Path) -
     )
     with pytest.raises(RestoreError, match="PERSISTENCE_RESTORE_FAILED"):
         restorer.restore(existing_sandbox=True)
-
-
-def test_manifest_decoder_skips_covered_but_excluded_legacy_entries() -> None:
-    """A pre-exclusion checkpoint carrying the embedding model must restore.
-
-    The model entries are covered by the home root but excluded by the
-    current policy: they are skippable history, not a poisoned manifest.
-    Failing instead bricked every sandbox restored from an older checkpoint.
-    """
-    decoder = ManifestDecoder()
-    model_dir: dict[str, object] = {
-        "chunks": [],
-        "digest": None,
-        "mode": 0o755,
-        "mtimeNs": 1,
-        "path": "home/.kiro/crew/models",
-        "size": 0,
-        "type": "directory",
-    }
-    model_file = file_entry(path="home/.kiro/crew/models/qwen3-embedding-0.6b.gguf", size=4)
-    kept = file_entry(path="home/.kiro/kept")
-    manifest = decode(decoder, canonical_manifest([model_dir, model_file, kept, file_entry()]))
-    assert [entry.path for entry in manifest.entries] == ["home/.kiro/kept", "user/file"]
-
-
-def test_manifest_decoder_still_rejects_paths_outside_durable_roots() -> None:
-    """The skip is only for policy exclusions; escapes remain hard failures."""
-    decoder = ManifestDecoder()
-    for path in ("../escape", "etc/passwd", "/absolute"):
-        with pytest.raises(ManifestValidationError, match="outside durable roots"):
-            decode(decoder, canonical_manifest([file_entry(path=path)]))

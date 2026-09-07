@@ -66,17 +66,6 @@ Implemented in `infrastructure/functions/control/` and pinned by
   sign-in/out, every `KIROCREW_CHECKPOINT_INTERVAL_SECONDS` (300) when the
   workspace fingerprint changed, at the busy→idle transition, and on
   SIGTERM. Data loss from an unclean stop is bounded by the interval.
-- **Workspace disk**: `/mnt/workspace` lives on the microVM's container
-  disk and is ephemeral — encrypted S3 checkpoints are the only durability
-  layer. AgentCore managed session storage is deliberately **not**
-  configured: its 1GB quota (filled to two thirds by the embedding model
-  before r44) and 14-day retention caused repeated incidents, and the
-  checkpoint engine already covers stop/resume. The runtime logs the
-  actual disk capacity at startup (`Workspace disk at ...`); check that
-  line in the application log group when diagnosing space issues. The
-  embedding model ships inside the image (`KIROCREW_EMBED_MODEL_PATH`)
-  and is excluded from checkpoints; restore skips such excluded entries
-  when replaying manifests from before the exclusion.
 
 ## Known failure modes and what to do
 

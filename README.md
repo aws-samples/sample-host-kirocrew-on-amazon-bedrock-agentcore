@@ -98,10 +98,9 @@ lifecycle, **green** for persistence, and **purple** for user authentication.
 - **Binding tokens** authorize the in-VM persistence broker for 30 minutes.
 - **Checkpoints** use per-sandbox KMS data keys and are committed as generations in
   S3. The latest two generations are retained; an offline auditor verifies them.
-- **Restore** stages under `.agentcore/` inside the workspace on the microVM's
-  container disk, prefetches chunks in parallel, and swaps entries into place with
-  rollback support. The workspace disk is ephemeral: encrypted S3 checkpoints are
-  the only durability layer.
+- **Restore** stages under `.agentcore/` inside the workspace, the fleet's only
+  writable mount, prefetches chunks in parallel, and swaps entries into place with
+  rollback support.
 - **Kiro sign-in** runs as a device flow in a PTY inside the sandbox. The Kiro CLI
   stores it under `~/.local/share/kiro-cli`, which is a checkpointed root, so a
   restored sandbox comes back signed in.

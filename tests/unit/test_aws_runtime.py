@@ -1426,3 +1426,44 @@ def test_workspace_disk_report_logs_capacity_and_handles_errors(
     with caplog.at_level(logging.WARNING, logger=module.__name__):
         module._report_workspace_disk(tmp_path / "missing" / "nested")
     assert "unavailable" in caplog.text
+
+
+def test_cloudwatch_logging_attaches_only_when_configured(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """KIROCREW_LOG_GROUP opts in; broken clients degrade to a warning."""
+    import kirocrew_agentcore_runtime.aws_runtime as module
+
+    root = logging.getLogger()
+    before = list(root.handlers)
+    module._attach_cloudwatch_logging({})
+    assert root.handlers == before
+
+    class FakeClient:
+        class exceptions:  # noqa: N801
+            class ResourceAlreadyExistsException(Exception):  # noqa: N818 - AWS SDK name
+                pass
+
+        def create_log_stream(self, **kwargs: object) -> None:
+            pass
+
+        def put_log_events(self, **kwargs: object) -> None:
+            pass
+
+    monkeypatch.setattr(
+        module, "boto3", type("B", (), {"client": staticmethod(lambda *a, **k: FakeClient())})
+    )
+    module._attach_cloudwatch_logging({"KIROCREW_LOG_GROUP": "g", "AWS_REGION": "us-east-2"})
+    added = [h for h in root.handlers if h not in before]
+    assert len(added) == 1
+    root.removeHandler(added[0])
+    added[0].close()
+
+    def boom(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("no credentials")
+
+    monkeypatch.setattr(module, "boto3", type("B", (), {"client": staticmethod(boom)}))
+    with caplog.at_level(logging.WARNING, logger=module.__name__):
+        module._attach_cloudwatch_logging({"KIROCREW_LOG_GROUP": "g"})
+    assert "unavailable" in caplog.text
+    assert [h for h in root.handlers if h not in before] == []

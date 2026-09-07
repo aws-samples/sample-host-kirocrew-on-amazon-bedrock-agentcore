@@ -46,6 +46,7 @@ from kirocrew_agentcore_persistence.manifest import ManifestBuilder, workspace_f
 from kirocrew_agentcore_persistence.remote import LambdaBrokerClient, LambdaPersistenceBroker
 from kirocrew_agentcore_persistence.restore import RestoreEngine, RestoreError, RestoreReport
 
+from kirocrew_agentcore_runtime.cloudwatch_logs import CloudWatchLogHandler
 from kirocrew_agentcore_runtime.image_runtime import ImageMetadata
 from kirocrew_agentcore_runtime.supervisor import (
     GatewayExitedError,
@@ -1075,6 +1076,26 @@ def _report_workspace_disk(workspace: Path) -> None:
     )
 
 
+def _attach_cloudwatch_logging(environment: Mapping[str, str]) -> None:
+    """Ship the runtime's records straight to CloudWatch when configured.
+
+    The platform's stdout pipeline has gone silent twice in production;
+    this is the observability channel we control. Best-effort: a broken
+    logging setup must never prevent the sandbox from serving.
+    """
+    group = environment.get("KIROCREW_LOG_GROUP", "")
+    if not group:
+        return
+    try:
+        client = boto3.client("logs", region_name=environment.get("AWS_REGION"))
+        handler = CloudWatchLogHandler(client, group)
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        logging.getLogger().addHandler(handler)
+        _LOGGER.info("Shipping runtime logs to %s/%s", group, handler.stream_name)
+    except Exception:
+        _LOGGER.warning("CloudWatch log shipping unavailable.", exc_info=True)
+
+
 def serve_runtime(environment: Mapping[str, str] = os.environ) -> None:
     # Python logging drops INFO records without a configured handler; the
     # runtime's own log lines must reach stdout to appear in the AgentCore
@@ -1084,6 +1105,7 @@ def serve_runtime(environment: Mapping[str, str] = os.environ) -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         force=True,
     )
+    _attach_cloudwatch_logging(environment)
     _report_workspace_disk(Path(environment.get("WORKSPACE_ROOT", "/mnt/workspace")))
     web.run_app(
         build_runtime_application(environment),

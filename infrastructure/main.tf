@@ -69,11 +69,14 @@ module "runtime_microvm" {
   idle_session_timeout_seconds = var.runtime_idle_session_timeout_seconds
   max_lifetime_seconds         = var.runtime_max_lifetime_seconds
   environment_variables = {
-    AWS_REGION             = local.region
-    BINDING_AUDIENCE       = local.binding_audience
-    BINDING_KEY_ARN        = module.persistence.binding_key_arn
-    COGNITO_ISSUER         = module.identity.issuer
-    DEPLOYMENT_MODE        = "microvm"
+    AWS_REGION       = local.region
+    BINDING_AUDIENCE = local.binding_audience
+    BINDING_KEY_ARN  = module.persistence.binding_key_arn
+    COGNITO_ISSUER   = module.identity.issuer
+    DEPLOYMENT_MODE  = "microvm"
+    # The platform's stdout pipeline has proven unreliable; the runtime
+    # ships its own log records directly to this dedicated group.
+    KIROCREW_LOG_GROUP     = module.runtime_common.runtime_log_group
     PERSISTENCE_BROKER_ARN = module.persistence.broker_function_arn
     SANDBOX_TABLE          = module.persistence.sandbox_table_name
   }

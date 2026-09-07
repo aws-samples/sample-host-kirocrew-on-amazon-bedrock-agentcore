@@ -12,9 +12,10 @@
 >   以及 SIGTERM 时都会提交 checkpoint（见 `docs/persistence.md`）。
 > - **AgentCore managed session storage 已于 2026-09-06 彻底移除**（commit
 >   `16da25b`，守护测试 `tests/unit/test_terraform_security.py`）。
->   `/mnt/workspace` 现为临时容器盘，每次冷启动都从 S3 恢复；文中及配图
->   凡提到 "managed session storage / 加速层 / 挂载命中" 的地方请按
->   "无此层"理解。移除原因见 `docs/architecture-design.zh-CN.md` §3.1。
+>   `/mnt/workspace` 现为临时容器盘，每次冷启动都从 S3 恢复。图 1/2/4
+>   已按现状重绘；下文正文凡提到 "managed session storage / 加速层 /
+>   挂载命中" 的地方请按"无此层"理解。移除原因见
+>   `docs/architecture-design.zh-CN.md` §3.1。
 > - 2026-09-07 又修复了 checkpoint 冻结网关过久导致网关自杀的问题（见
 >   `docs/operations.md` 事故史）。
 >

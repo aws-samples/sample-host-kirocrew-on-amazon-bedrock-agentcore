@@ -1,73 +1,87 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1160 1000">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1160 940">
   <defs>
     <marker id="ar-b" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><path d="M0,0 L10,3.5 L0,7 Z" fill="#2563eb"/></marker>
     <marker id="ar-gy" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><path d="M0,0 L10,3.5 L0,7 Z" fill="#6b7280"/></marker>
     <marker id="ar-gr" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><path d="M0,0 L10,3.5 L0,7 Z" fill="#059669"/></marker>
-    <marker id="ar-rd" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><path d="M0,0 L10,3.5 L0,7 Z" fill="#dc2626"/></marker>
+    <marker id="ar-rd" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><path d="M0,0 L10,3.5 L0,7 Z" fill="#b91c1c"/></marker>
   </defs>
-  <style>text{font-family:"Noto Sans SC",sans-serif;}</style>
-  <rect width="1160" height="1000" fill="#ffffff"/>
-  <text x="580" y="34" font-size="19" font-weight="bold" text-anchor="middle" fill="#111827">Kiro CLI 登录态持久化时序：持久路径 vs 丢失路径</text>
-  <rect x="17" y="70" width="156" height="42" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5" rx="8"/>
-  <text x="95" y="96" font-size="13" font-weight="bold" text-anchor="middle" fill="#111827">用户</text>
-  <line x1="95" y1="112" x2="95" y2="950" stroke="#9ca3af" stroke-width="1" stroke-dasharray="4,4"/>
-  <rect x="202" y="70" width="156" height="42" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5" rx="8"/>
-  <text x="280" y="96" font-size="13" font-weight="bold" text-anchor="middle" fill="#111827">面板 / SPA</text>
-  <line x1="280" y1="112" x2="280" y2="950" stroke="#9ca3af" stroke-width="1" stroke-dasharray="4,4"/>
-  <rect x="397" y="70" width="156" height="42" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5" rx="8"/>
-  <text x="475" y="96" font-size="13" font-weight="bold" text-anchor="middle" fill="#111827">适配器 identity</text>
-  <line x1="475" y1="112" x2="475" y2="950" stroke="#9ca3af" stroke-width="1" stroke-dasharray="4,4"/>
-  <rect x="582" y="70" width="156" height="42" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5" rx="8"/>
-  <text x="660" y="96" font-size="13" font-weight="bold" text-anchor="middle" fill="#111827">kiro-cli（PTY）</text>
-  <line x1="660" y1="112" x2="660" y2="950" stroke="#9ca3af" stroke-width="1" stroke-dasharray="4,4"/>
-  <rect x="767" y="70" width="156" height="42" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5" rx="8"/>
-  <text x="845" y="92" font-size="13" font-weight="bold" text-anchor="middle" fill="#111827">workspace auth_kv</text>
-  <text x="845" y="106" font-size="8.5" text-anchor="middle" fill="#4b5563">home/.local/share/kiro-cli/data.sqlite3</text>
-  <line x1="845" y1="112" x2="845" y2="950" stroke="#9ca3af" stroke-width="1" stroke-dasharray="4,4"/>
-  <rect x="967" y="70" width="156" height="42" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5" rx="8"/>
-  <text x="1045" y="92" font-size="13" font-weight="bold" text-anchor="middle" fill="#111827">S3 checkpoint</text>
-  <text x="1045" y="106" font-size="8.5" text-anchor="middle" fill="#4b5563">加密 chunk · 保留两代</text>
-  <line x1="1045" y1="112" x2="1045" y2="950" stroke="#9ca3af" stroke-width="1" stroke-dasharray="4,4"/>
-  <rect x="40" y="132" width="700" height="330" fill="none" stroke="#2563eb" stroke-width="1.5" rx="4"/>
-  <rect x="40" y="132" width="150" height="24" fill="#2563eb" rx="4"/>
-  <text x="115" y="148" font-size="12" font-weight="bold" text-anchor="middle" fill="#ffffff">① 设备码登录</text>
-  <line x1="95" y1="176" x2="280" y2="176" stroke="#2563eb" stroke-width="1.8" marker-end="url(#ar-b)"/>
-  <text x="187" y="169" font-size="12" text-anchor="middle" fill="#2563eb">点击 Kiro 登录</text>
-  <line x1="280" y1="216" x2="475" y2="216" stroke="#2563eb" stroke-width="1.8" marker-end="url(#ar-b)"/>
-  <text x="377" y="209" font-size="12" text-anchor="middle" fill="#2563eb">kiro.login.start</text>
-  <line x1="475" y1="256" x2="660" y2="256" stroke="#2563eb" stroke-width="1.8" marker-end="url(#ar-b)"/>
-  <text x="567" y="249" font-size="12" text-anchor="middle" fill="#2563eb">spawn PTY：kiro-cli login --use-device-flow</text>
-  <line x1="660" y1="296" x2="280" y2="296" stroke="#6b7280" stroke-width="1.8" stroke-dasharray="4,3" marker-end="url(#ar-gy)"/>
-  <text x="470" y="289" font-size="12" text-anchor="middle" fill="#6b7280">设备码 + 验证链接（SSE 事件）</text>
-  <path d="M 95 330 L 135 330 L 135 352 L 103 352" fill="none" stroke="#2563eb" stroke-width="1.8" marker-end="url(#ar-b)"/>
-  <text x="145" y="346" font-size="12" text-anchor="start" fill="#2563eb">在自己浏览器完成设备授权（Builder ID / SSO）</text>
-  <line x1="660" y1="396" x2="845" y2="396" stroke="#059669" stroke-width="1.8" marker-end="url(#ar-gr)"/>
-  <text x="752" y="389" font-size="12" text-anchor="middle" fill="#059669">登录成功：写 auth_kv（registration + token）</text>
-  <line x1="475" y1="436" x2="280" y2="436" stroke="#6b7280" stroke-width="1.8" stroke-dasharray="4,3" marker-end="url(#ar-gy)"/>
-  <text x="377" y="429" font-size="12" text-anchor="middle" fill="#6b7280">kiro.authenticated</text>
-  <rect x="40" y="486" width="1080" height="220" fill="none" stroke="#059669" stroke-width="1.5" rx="4"/>
-  <rect x="40" y="486" width="150" height="24" fill="#059669" rx="4"/>
-  <text x="115" y="502" font-size="12" font-weight="bold" text-anchor="middle" fill="#ffffff">② 路径 A：Stop safely</text>
-  <line x1="95" y1="530" x2="280" y2="530" stroke="#2563eb" stroke-width="1.8" marker-end="url(#ar-b)"/>
-  <text x="187" y="523" font-size="12" text-anchor="middle" fill="#2563eb">Stop safely</text>
-  <line x1="280" y1="570" x2="475" y2="570" stroke="#2563eb" stroke-width="1.8" marker-end="url(#ar-b)"/>
-  <text x="377" y="563" font-size="12" text-anchor="middle" fill="#2563eb">sandbox.prepare_stop</text>
-  <line x1="475" y1="610" x2="1045" y2="610" stroke="#059669" stroke-width="1.8" marker-end="url(#ar-gr)"/>
-  <text x="760" y="603" font-size="12" text-anchor="middle" fill="#059669">checkpoint gen N+1（登录库 data.sqlite3 已入 manifest）</text>
-  <line x1="1045" y1="650" x2="845" y2="650" stroke="#059669" stroke-width="1.8" marker-end="url(#ar-gr)"/>
-  <text x="945" y="643" font-size="12" text-anchor="middle" fill="#059669">（重启后）restore gen N+1 → auth_kv 完整</text>
-  <line x1="660" y1="686" x2="280" y2="686" stroke="#059669" stroke-width="1.8" stroke-dasharray="4,3" marker-end="url(#ar-gr)"/>
-  <text x="470" y="679" font-size="12" text-anchor="middle" fill="#059669">whoami → 已登录 ✓</text>
-  <rect x="40" y="730" width="1080" height="236" fill="none" stroke="#dc2626" stroke-width="1.5" rx="4"/>
-  <rect x="40" y="730" width="150" height="24" fill="#dc2626" rx="4"/>
-  <text x="115" y="746" font-size="12" font-weight="bold" text-anchor="middle" fill="#ffffff">③ 路径 B：闲置回收（缺陷）</text>
-  <rect x="320" y="748" width="520" height="58" fill="#fef9c3" stroke="#ca8a04" rx="4"/>
-  <text x="332" y="768" font-size="11.5" fill="#713f12">登录后 15 分钟无请求，AgentCore 缩容回收 microVM —— 没有任何 checkpoint。</text>
-  <text x="332" y="786" font-size="11.5" fill="#713f12">managed session storage 随后过期；期间发生的登录写入只存在于该挂载上。</text>
-  <line x1="1045" y1="848" x2="845" y2="848" stroke="#dc2626" stroke-width="1.8" marker-end="url(#ar-rd)"/>
-  <text x="945" y="841" font-size="12" text-anchor="middle" fill="#dc2626">restore gen N（登录之前的最后一次 Stop safely）</text>
-  <line x1="845" y1="888" x2="660" y2="888" stroke="#dc2626" stroke-width="1.8" marker-end="url(#ar-rd)"/>
-  <text x="752" y="881" font-size="12" text-anchor="middle" fill="#dc2626">auth_kv 被整树替换回滚，登录态消失</text>
-  <line x1="660" y1="926" x2="280" y2="926" stroke="#dc2626" stroke-width="1.8" stroke-dasharray="4,3" marker-end="url(#ar-rd)"/>
-  <text x="470" y="919" font-size="12" text-anchor="middle" fill="#dc2626">whoami → 未登录 ×，必须重新登录</text>
+  <style>text{font-family:"Noto Sans SC","Droid Sans Fallback",sans-serif;}</style>
+  <rect width="1160" height="940" fill="#ffffff"/>
+  <text x="580" y="36" font-size="21" font-weight="bold" text-anchor="middle" fill="#111827">Kiro CLI 登录态如何跨沙盒重启保留</text>
+  <text x="580" y="60" font-size="13" text-anchor="middle" fill="#6b7280">登录成功即触发一次后台 checkpoint，之后无论怎样停止，重启后都从 S3 恢复到已登录状态</text>
+
+  <!-- lifelines -->
+  <g font-size="13.5" font-weight="bold" text-anchor="middle" fill="#111827">
+    <rect x="22" y="84" width="150" height="44" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5" rx="8"/><text x="97" y="112">用户</text>
+    <rect x="212" y="84" width="150" height="44" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5" rx="8"/><text x="287" y="112">面板 / SPA</text>
+    <rect x="402" y="84" width="150" height="44" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5" rx="8"/><text x="477" y="112">运行时 + 适配器</text>
+    <rect x="592" y="84" width="150" height="44" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5" rx="8"/><text x="667" y="112">kiro-cli（PTY）</text>
+    <rect x="782" y="84" width="150" height="44" fill="#dcfce7" stroke="#059669" stroke-width="1.5" rx="8"/><text x="857" y="103">workspace 登录库</text>
+    <rect x="972" y="84" width="170" height="44" fill="#dcfce7" stroke="#059669" stroke-width="1.5" rx="8"/><text x="1057" y="103">S3 checkpoint</text>
+  </g>
+  <text x="857" y="120" font-size="10" text-anchor="middle" fill="#4b5563">auth_kv · data.sqlite3 · 容器盘</text>
+  <text x="1057" y="120" font-size="10" text-anchor="middle" fill="#4b5563">加密 chunk · 唯一持久层</text>
+  <g stroke="#9ca3af" stroke-width="1" stroke-dasharray="4,4">
+    <line x1="97" y1="128" x2="97" y2="880"/><line x1="287" y1="128" x2="287" y2="880"/><line x1="477" y1="128" x2="477" y2="880"/>
+    <line x1="667" y1="128" x2="667" y2="880"/><line x1="857" y1="128" x2="857" y2="880"/><line x1="1057" y1="128" x2="1057" y2="880"/>
+  </g>
+
+  <!-- Phase 1: device login -->
+  <rect x="40" y="150" width="1100" height="250" fill="none" stroke="#2563eb" stroke-width="1.5" rx="4"/>
+  <rect x="40" y="150" width="180" height="26" fill="#2563eb" rx="4"/>
+  <text x="130" y="168" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#ffffff">① 设备码登录</text>
+  <line x1="97" y1="200" x2="287" y2="200" stroke="#2563eb" stroke-width="1.8" marker-end="url(#ar-b)"/>
+  <text x="192" y="193" font-size="12" text-anchor="middle" fill="#2563eb">点击 Kiro 登录</text>
+  <line x1="287" y1="236" x2="477" y2="236" stroke="#2563eb" stroke-width="1.8" marker-end="url(#ar-b)"/>
+  <text x="382" y="229" font-size="12" text-anchor="middle" fill="#2563eb">kiro.login.start</text>
+  <line x1="477" y1="272" x2="667" y2="272" stroke="#2563eb" stroke-width="1.8" marker-end="url(#ar-b)"/>
+  <text x="572" y="265" font-size="12" text-anchor="middle" fill="#2563eb">在 PTY 里运行 kiro-cli login</text>
+  <line x1="667" y1="306" x2="287" y2="306" stroke="#6b7280" stroke-width="1.8" stroke-dasharray="4,3" marker-end="url(#ar-gy)"/>
+  <text x="477" y="299" font-size="12" text-anchor="middle" fill="#6b7280">设备码 + 验证链接（流式事件）</text>
+  <path d="M 97 336 L 140 336 L 140 356 L 105 356" fill="none" stroke="#2563eb" stroke-width="1.8" marker-end="url(#ar-b)"/>
+  <text x="150" y="350" font-size="12" fill="#2563eb">用自己的浏览器完成授权（Builder ID / 组织 SSO）</text>
+  <line x1="667" y1="382" x2="857" y2="382" stroke="#059669" stroke-width="1.8" marker-end="url(#ar-gr)"/>
+  <text x="762" y="375" font-size="12" text-anchor="middle" fill="#047857">登录成功：写 auth_kv</text>
+
+  <!-- Phase 2: immediate checkpoint -->
+  <rect x="40" y="418" width="1100" height="150" fill="none" stroke="#059669" stroke-width="1.5" rx="4"/>
+  <rect x="40" y="418" width="260" height="26" fill="#059669" rx="4"/>
+  <text x="170" y="436" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#ffffff">② 登录成功即后台 checkpoint（关键）</text>
+  <line x1="667" y1="470" x2="477" y2="470" stroke="#6b7280" stroke-width="1.8" stroke-dasharray="4,3" marker-end="url(#ar-gy)"/>
+  <text x="572" y="463" font-size="12" text-anchor="middle" fill="#6b7280">kiro.authenticated</text>
+  <line x1="477" y1="506" x2="1057" y2="506" stroke="#059669" stroke-width="2" marker-end="url(#ar-gr)"/>
+  <text x="767" y="499" font-size="12" text-anchor="middle" fill="#047857">checkpoint 代 N+1：登录库随 workspace 一起加密上传</text>
+  <line x1="477" y1="542" x2="287" y2="542" stroke="#6b7280" stroke-width="1.8" stroke-dasharray="4,3" marker-end="url(#ar-gy)"/>
+  <text x="382" y="535" font-size="12" text-anchor="middle" fill="#6b7280">面板显示已登录</text>
+  <text x="1000" y="556" font-size="11.5" text-anchor="middle" fill="#047857">从这一刻起登录态已持久</text>
+
+  <!-- Phase 3: any stop path -->
+  <rect x="40" y="586" width="1100" height="160" fill="none" stroke="#6b7280" stroke-width="1.5" rx="4"/>
+  <rect x="40" y="586" width="260" height="26" fill="#6b7280" rx="4"/>
+  <text x="170" y="604" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#ffffff">③ 之后的任意停止路径</text>
+  <rect x="330" y="600" width="800" height="132" fill="#f9fafb" stroke="#d1d5db" rx="6"/>
+  <text x="346" y="624" font-size="12.5" font-weight="bold" fill="#111827">Stop safely</text>
+  <text x="460" y="624" font-size="12" fill="#4b5563">最终 checkpoint 代 N+2，零丢失</text>
+  <text x="346" y="650" font-size="12.5" font-weight="bold" fill="#111827">闲置回收 / 崩溃</text>
+  <text x="460" y="650" font-size="12" fill="#4b5563">没有新 checkpoint，也没关系：登录态已在代 N+1 里</text>
+  <text x="346" y="676" font-size="12.5" font-weight="bold" fill="#111827">继续使用</text>
+  <text x="460" y="676" font-size="12" fill="#4b5563">周期 300s 有变化即提交；后台任务转闲即提交；SIGTERM 尽力提交</text>
+  <text x="346" y="704" font-size="12.5" font-weight="bold" fill="#111827">令牌刷新</text>
+  <text x="460" y="704" font-size="12" fill="#4b5563">kiro-cli 刷新的 access token 落在 auth_kv，随下一次 checkpoint 持久；</text>
+  <text x="460" y="722" font-size="12" fill="#4b5563">最坏丢一个周期的刷新，重启后 kiro-cli 用 refresh token 自行续期</text>
+
+  <!-- Phase 4: restart -->
+  <rect x="40" y="764" width="1100" height="110" fill="none" stroke="#059669" stroke-width="1.5" rx="4"/>
+  <rect x="40" y="764" width="180" height="26" fill="#059669" rx="4"/>
+  <text x="130" y="782" font-size="12.5" font-weight="bold" text-anchor="middle" fill="#ffffff">④ 重启后</text>
+  <line x1="1057" y1="816" x2="857" y2="816" stroke="#059669" stroke-width="2" marker-end="url(#ar-gr)"/>
+  <text x="957" y="809" font-size="12" text-anchor="middle" fill="#047857">restore 最新代 → auth_kv 完整</text>
+  <line x1="667" y1="852" x2="287" y2="852" stroke="#059669" stroke-width="1.8" stroke-dasharray="4,3" marker-end="url(#ar-gr)"/>
+  <text x="477" y="845" font-size="12" text-anchor="middle" fill="#047857">whoami → 已登录 ✓，无需重新登录</text>
+
+  <!-- footnote: historical defect -->
+  <rect x="40" y="890" width="1100" height="38" fill="#fef2f2" stroke="#fecaca" rx="4"/>
+  <text x="56" y="908" font-size="11.5" font-weight="bold" fill="#b91c1c">历史缺陷（已修复）：</text>
+  <text x="200" y="908" font-size="11.5" fill="#7f1d1d">早期只有 Stop safely 会 checkpoint，且登录库目录不在持久化根内；闲置回收后重启会整树回滚到登录之前，必须重新登录。</text>
+  <text x="200" y="924" font-size="11.5" fill="#7f1d1d">修复：登录库目录纳入持久化根 + 登录成功即 checkpoint + 多触发点后台 checkpoint。managed session storage 已移除，不再有"挂载过期"这一丢失路径。</text>
 </svg>

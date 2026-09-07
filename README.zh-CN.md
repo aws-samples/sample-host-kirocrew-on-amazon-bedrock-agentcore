@@ -64,8 +64,9 @@ KiroCrew 原本面向本地运行：浏览器中的 SPA 通过 HTTP、服务器�
    的 Adapter 按 JSON Schema 契约校验信封，并应用路由策略。
 4. **在 VM 内重放。** Adapter 把请求重放到 `127.0.0.1` 上真正的 `kirocrew gateway`，再把
    响应、SSE 事件或 WebSocket 帧实时传回浏览器。
-5. **创建检查点与恢复。** 停止沙箱时，持久化引擎切分并加密工作区，然后提交到 S3；再次启动
-   时先恢复最新数据版本，再启动 Gateway。
+5. **创建检查点与恢复。** 持久化引擎切分并加密工作区，以版本（generation）形式提交到 S3：
+   在 **Stop safely** 时、Kiro 登录/登出后、工作区有变化的周期性间隔、后台任务由忙转闲时，
+   以及收到 SIGTERM 时都会提交。再次启动时先恢复最新版本，再启动 Gateway。
 
 图中 **蓝色** 表示协议与聊天流，**红色** 表示沙箱生命周期控制，**绿色** 表示持久化，
 **紫色** 表示用户认证。
@@ -76,17 +77,19 @@ KiroCrew 原本面向本地运行：浏览器中的 SPA 通过 HTTP、服务器�
   Adapter 再把绑定令牌与 Cognito subject 比对。沙箱是单租户 microVM。
 - **路由策略。** 上游全部路由默认隧穿。只有会签发 Gateway 自身凭证（`/api/token`）或抢夺
   Gateway 生命周期（`/api/shutdown`）的路由被拒绝；microVM 中不可能存在的宿主机原生功能返回
-  `501`。策略固化在 `contracts/kirocrew/0.2.0-route-allowlist.json`，由契约测试同时约束
+  `501`。策略固化在 `contracts/kirocrew/0.3.0-route-allowlist.json`，由契约测试同时约束
   Python Adapter 和 TypeScript Shell。
-- **绑定令牌** 授权 VM 内的持久化 Broker，有效期 30 分钟。
+- **绑定令牌** 授权 VM 内的持久化 Broker，有效期 30 分钟；沙箱租约存活期间会透明续签，
+  长时间打开的页面不会因此失效，也不会轮换会话。
 - **检查点** 使用每个沙箱独立的 KMS 数据密钥，以版本（generation）形式提交到 S3。保留最近
   两个版本，并由离线审计任务校验完整性。
-- **恢复** 在工作区内部的 `.agentcore/` 下暂存（这是 fleet 中唯一可写的挂载点），并行预取
-  数据块，逐项换入目标位置，支持失败回滚。
+- **恢复** 在 microVM 容器盘上工作区内部的 `.agentcore/` 下暂存，并行预取数据块，逐项换入
+  目标位置，支持失败回滚。工作区所在的容器盘是临时的：加密的 S3 检查点是唯一的持久层。
 - **Kiro 登录** 以设备码流程在沙箱 PTY 中完成。Kiro CLI 把登录态保存在
   `~/.local/share/kiro-cli`，该目录属于检查点范围，因此恢复后的沙箱仍处于已登录状态。
 - **Gateway 就绪探测** 以 Gateway 自身的就绪输出为主，并以健康检查端点作为回退，即使 Gateway
-  在加载模型期间吞掉了自己的标准输出，恢复后的沙箱也能正常就绪。
+  在加载模型期间吞掉了自己的标准输出，恢复后的沙箱也能正常就绪。运行期间 Gateway 若意外退出，
+  Runtime 会自动重启它；检查点只在内存快照阶段冻结 Gateway，不会触发其事件循环卡死看门狗。
 
 完整的持久化契约见 [docs/persistence.md](docs/persistence.md)。
 
@@ -142,7 +145,7 @@ terraform -chdir=infrastructure apply -state="$TF_STATE" \
 
 ```bash
 make image-publish \
-  IMAGE_RELEASE_TAG=0.2.0-microvm-r1 \
+  IMAGE_RELEASE_TAG=0.3.0-microvm-r1 \
   EXPECTED_AWS_ACCOUNT_ID=<AWS_ACCOUNT_ID> \
   AWS_REGION=$AWS_REGION \
   ECR_REPOSITORY_URI=<AWS_ACCOUNT_ID>.dkr.ecr.$AWS_REGION.amazonaws.com/kirocrew-agentcore-dev-runtime
@@ -158,24 +161,33 @@ make infra-deploy EXPECTED_AWS_ACCOUNT_ID=<AWS_ACCOUNT_ID> AWS_REGION=$AWS_REGIO
 terraform -chdir=infrastructure output -state="$TF_STATE" deployment
 ```
 
-`deployment` 输出中包含 CloudFront 地址。在 Cognito 用户池（见 `browser_oauth` 输出）中
-创建一个用户，打开该地址登录并点击 **Start**。新沙箱首次启动约需一分钟，之后每次启动都会
-在数秒内恢复检查点。
+`deployment` 输出中包含 CloudFront 地址。打开它，直接在悬浮面板里注册账号：注册与登录都经
+过一个受限的 Lambda 网关，只接受 `allowed_email_domains` 变量所列域名（默认 `amazon.com`）
+的邮箱；域名之外的个别地址可通过 `allowed_email_patterns`（对完整地址匹配的正则列表）放行。
+新账号需要输入发送到邮箱的验证码完成确认，表单支持重新发送。任何人都无法绕过该网关直接对
+Cognito 注册或登录。登录后点击 **Start**。新沙箱首次启动约需一分钟，之后每次启动都会在数秒
+内恢复检查点。
 
 ## 日常运维
 
 - **更新 Runtime。** 发布新镜像（第 3 步），然后带上新的 `TF_VAR_runtime_image_digest`
   运行 `make infra-deploy`。Terraform 会创建新的 AgentCore Runtime 版本并把线上 Endpoint 切
   过去。旧版本上的温热会话会被回收；切换期间重连的用户可能短暂看到
-  **Sandbox needs attention**，点击 **Retry** 即可。
+  **Sandbox needs attention**，点击 **Start sandbox**（或用 ↻ 控件重新加载页面）即可重连。
 - **更新前端。** 重新构建 Bundle（`npm run build:bootstrap`）并运行 `make infra-deploy`。
   Terraform 会重新上传 `bootstrap.js`；随后在 `deployment` 输出所指的 CloudFront 分发上失效
   `/bootstrap.js`。
 - **停止与启动。** **Stop safely** 会创建检查点并释放计算资源；**Start** 恢复最近一次提交
   的版本。空闲超过 `runtime_idle_session_timeout_seconds`（默认 15 分钟）的沙箱会被
-  AgentCore 缩容到零。
-- **观测。** Runtime 日志在 AgentCore Runtime 日志组；控制面和持久化日志在两个 Lambda 的
-  日志组。CloudWatch 告警可通过 `alarm_actions` 变量接入通知。
+  AgentCore 缩容到零。任务运行器、子代理或工作流仍在工作的沙箱会上报"忙碌"，即使浏览器已
+  断开也会越过该超时继续存活；工作结束时提交一次检查点并恢复正常的空闲回收。卡在忙碌状态的
+  任务会在 `KIROCREW_BUSY_MAX_SECONDS`（默认 4 小时）后被切断，避免把 microVM 一直占到
+  8 小时的会话上限。
+- **观测。** Runtime 自己的日志（Adapter、Supervisor、检查点引擎）直接写入 Terraform 创建的
+  `/aws/bedrock-agentcore/<prefix>` CloudWatch 日志组；平台托管的 vended 日志组只有访问日志。
+  控制面、持久化和认证日志在三个 Lambda 的日志组。CloudWatch 告警可通过 `alarm_actions` 变量
+  接入通知。完整运维手册（日志位置、生命周期不变量、已知故障模式）见
+  [docs/operations.md](docs/operations.md)。
 
 ## 成本与清理
 
@@ -239,7 +251,7 @@ TypeScript Shell（`frontend-shell/src/remote-transport.ts`）以及 `contracts/
 |---|---|
 | `frontend-shell/` | Cognito PKCE、生命周期界面、Gateway 调用拦截、远程传输及上游 SPA 契约固定 |
 | `adapter/` | 协议校验、回环路由策略、HTTP/SSE/WebSocket 隧道及 Kiro 身份操作 |
-| `runtime/` | AgentCore 入口、会话初始化、Gateway 监管、请求处理及停止时创建检查点 |
+| `runtime/` | AgentCore 入口、会话初始化、Gateway 监管与自动重启、请求处理及检查点调度 |
 | `infrastructure/` | CloudFront、S3、Cognito、Lambda、DynamoDB、KMS、ECR 和 AgentCore 的 Terraform 配置 |
 | `infrastructure/functions/control/` | 沙箱生命周期、租约、状态流转和绑定令牌 |
 | `infrastructure/functions/persistence/` | 分块加密的检查点/恢复引擎及 Lambda Broker |
@@ -247,6 +259,7 @@ TypeScript Shell（`frontend-shell/src/remote-transport.ts`）以及 `contracts/
 | `tests/` | 单元测试、跨语言契约测试、已部署环境端到端测试和浏览器 UI 测试 |
 | `tools/` | 协议代码生成、上游 SPA 提取、Terraform 包装脚本和镜像工具 |
 | `docs/` | 架构图源文件、截图和持久化契约 |
+| `CLAUDE.md`（`AGENTS.md`） | 编码 Agent 上手指南：构建/验证/部署命令与承重不变量 |
 
 ## 安全
 

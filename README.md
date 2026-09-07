@@ -77,9 +77,11 @@ A request makes the following journey:
 4. **Loopback replay.** The adapter replays the request against the real
    `kirocrew gateway` on `127.0.0.1` and streams the response, SSE events, or
    WebSocket frames back to the browser.
-5. **Checkpoint and restore.** On stop, the persistence engine chunks and encrypts
-   the workspace and commits it to S3. On start, it restores the latest generation
-   before launching the gateway.
+5. **Checkpoint and restore.** The persistence engine chunks and encrypts the
+   workspace and commits it to S3 as a generation: on **Stop safely**, after a Kiro
+   sign-in or sign-out, on a periodic interval when the workspace changed, when
+   background work goes idle, and on SIGTERM. On start, it restores the latest
+   generation before launching the gateway.
 
 The diagram uses **blue** for protocol and chat streaming, **red** for sandbox
 lifecycle, **green** for persistence, and **purple** for user authentication.
@@ -93,9 +95,11 @@ lifecycle, **green** for persistence, and **purple** for user authentication.
   mint the gateway's own credential (`/api/token`) or seize gateway lifecycle from
   the supervisor (`/api/shutdown`) are denied. Host-native features that cannot
   exist in a microVM answer `501`. The policy is pinned in
-  `contracts/kirocrew/0.2.0-route-allowlist.json` and enforced by contract tests on
+  `contracts/kirocrew/0.3.0-route-allowlist.json` and enforced by contract tests on
   both the Python adapter and the TypeScript shell.
-- **Binding tokens** authorize the in-VM persistence broker for 30 minutes.
+- **Binding tokens** authorize the in-VM persistence broker for 30 minutes and are
+  renewed transparently while the sandbox's lease is alive, so a long-open page
+  keeps working without rotating the session.
 - **Checkpoints** use per-sandbox KMS data keys and are committed as generations in
   S3. The latest two generations are retained; an offline auditor verifies them.
 - **Restore** stages under `.agentcore/` inside the workspace on the microVM's
@@ -107,7 +111,9 @@ lifecycle, **green** for persistence, and **purple** for user authentication.
   restored sandbox comes back signed in.
 - **Gateway readiness** is detected from the gateway's readiness line and, as a
   fallback, from its health endpoint, so a restored sandbox becomes ready even when
-  the gateway's own stdout is swallowed during model loading.
+  the gateway's own stdout is swallowed during model loading. A gateway that dies
+  while the sandbox is running is restarted by the runtime; checkpoints freeze it
+  only for the in-memory snapshot so they cannot trip its loop-stall watchdog.
 
 See [docs/persistence.md](docs/persistence.md) for the full persistence contract.
 
@@ -166,7 +172,7 @@ bounded.
 
 ```bash
 make image-publish \
-  IMAGE_RELEASE_TAG=0.2.0-microvm-r1 \
+  IMAGE_RELEASE_TAG=0.3.0-microvm-r1 \
   EXPECTED_AWS_ACCOUNT_ID=<AWS_ACCOUNT_ID> \
   AWS_REGION=$AWS_REGION \
   ECR_REPOSITORY_URI=<AWS_ACCOUNT_ID>.dkr.ecr.$AWS_REGION.amazonaws.com/kirocrew-agentcore-dev-runtime
@@ -200,7 +206,8 @@ checkpoint in seconds.
   with the new `TF_VAR_runtime_image_digest`. Terraform creates a new AgentCore
   runtime version and moves the live endpoint to it. Warm sessions on the previous
   version are recycled; a user reconnecting during the switch may briefly see
-  **Sandbox needs attention** and can press **Retry**.
+  **Sandbox needs attention** and can press **Start sandbox** (or reload the page
+  with the ↻ control) to reconnect.
 - **Update the frontend.** Rebuild the bundle (`npm run build:bootstrap`) and run
   `make infra-deploy`. Terraform re-uploads `bootstrap.js`; then invalidate
   `/bootstrap.js` on the CloudFront distribution named in the `deployment` output.
@@ -213,8 +220,10 @@ checkpoint in seconds.
   returns to normal idle reclaim. A task stuck busy is cut off after
   `KIROCREW_BUSY_MAX_SECONDS` (default 4 hours) so it cannot pin the microVM
   until the 8-hour session lifetime.
-- **Observe.** Runtime logs are in the AgentCore runtime log group; control-plane
-  and persistence logs are in the two Lambda log groups. CloudWatch alarms can be
+- **Observe.** The runtime ships its own logs (adapter, supervisor, checkpoint
+  engine) to the `/aws/bedrock-agentcore/<prefix>` CloudWatch log group that
+  Terraform creates; the platform's vended log group carries only its access log.
+  Control-plane, persistence, and auth logs are in the three Lambda log groups. CloudWatch alarms can be
   routed with the `alarm_actions` variable. The full operations runbook, including
   log locations, lifecycle invariants, and known failure modes, is in
   [docs/operations.md](docs/operations.md).
@@ -288,7 +297,7 @@ classified.
 |---|---|
 | `frontend-shell/` | Cognito PKCE, lifecycle UI, gateway interception, remote transport, and upstream SPA contract pins |
 | `adapter/` | Protocol validation, loopback route policy, HTTP/SSE/WebSocket tunneling, and Kiro identity operations |
-| `runtime/` | AgentCore entrypoint, session initialization, gateway supervision, invocation handling, and checkpoint-on-stop |
+| `runtime/` | AgentCore entrypoint, session initialization, gateway supervision and restart, invocation handling, and checkpoint scheduling |
 | `infrastructure/` | Terraform for CloudFront, S3, Cognito, Lambdas, DynamoDB, KMS, ECR, and AgentCore wiring |
 | `infrastructure/functions/control/` | Sandbox lifecycle, leases, state transitions, and binding tokens |
 | `infrastructure/functions/persistence/` | Chunked encrypted checkpoint/restore engine and Lambda broker |

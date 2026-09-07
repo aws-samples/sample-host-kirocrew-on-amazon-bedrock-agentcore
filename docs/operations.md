@@ -28,15 +28,15 @@ failure noted next to it.
 
 | What | Where |
 |---|---|
-| Runtime stdout (adapter, supervisor, checkpoint engine) | `/aws/vendedlogs/bedrock-agentcore/runtime/APPLICATION_LOGS/<runtime-id>` — delivered through CloudWatch vended-log deliveries, **not** the role-writable group |
-| Platform access log (every InvokeAgentRuntime with payload) | same group, `BedrockAgentCoreRuntime_ApplicationLogs` stream |
+| Runtime application log (adapter, supervisor, checkpoint engine) | `/aws/bedrock-agentcore/<prefix>` — the role-writable group Terraform creates; the runtime ships its own records there (`cloudwatch_logs.py`, `KIROCREW_LOG_GROUP`), one stream per container. The platform's vended `APPLICATION_LOGS` delivery has proven unreliable and is not relied on. |
+| Platform access log (every InvokeAgentRuntime with payload) | `/aws/vendedlogs/bedrock-agentcore/runtime/APPLICATION_LOGS/<runtime-id>`, `BedrockAgentCoreRuntime_ApplicationLogs` stream |
 | Control plane (start/stop/leases/history) | `/aws/lambda/<prefix>-control` |
 | Persistence broker (checkpoint commits, restores) | `/aws/lambda/<prefix>-persistence` |
 | Gated auth (register/login/reset) | `/aws/lambda/<prefix>-auth` |
 
 The `/aws/bedrock-agentcore/runtimes/...-DEFAULT` groups only receive logs
-for sessions on the DEFAULT endpoint; live traffic uses the named endpoint
-and lands in the vended group above.
+for sessions on the DEFAULT endpoint; live traffic uses the named endpoint.
+When diagnosing, start with the runtime application log group above.
 
 ## Sandbox lifecycle invariants
 

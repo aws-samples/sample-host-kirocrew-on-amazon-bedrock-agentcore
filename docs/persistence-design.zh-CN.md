@@ -3,7 +3,22 @@
 本文回答两个问题：
 
 1. **为什么沙盒重启后 Kiro CLI 需要重新登录**（根因分析）。
-2. **沙盒环境如何与 AgentCore managed session storage、S3 等各层状态同步、更新与恢复**（现状梳理 + 改进方案设计）。
+2. **沙盒环境如何与各层状态同步、更新与恢复**（现状梳理 + 改进方案设计）。
+
+> **状态更新（2026-09-07）**：本文写于 2026-09 初，是一份**根因分析与
+> 改进方案**文档，其中描述的"现状"与"缺口"多数已经落地修复：
+> - §1.2/§1.4 的缺口已修：现在除 Stop safely 外，登录/登出后、周期
+>   （`KIROCREW_CHECKPOINT_INTERVAL_SECONDS`，默认 300s）、后台任务由忙转闲、
+>   以及 SIGTERM 时都会提交 checkpoint（见 `docs/persistence.md`）。
+> - **AgentCore managed session storage 已于 2026-09-06 彻底移除**（commit
+>   `16da25b`，守护测试 `tests/unit/test_terraform_security.py`）。
+>   `/mnt/workspace` 现为临时容器盘，每次冷启动都从 S3 恢复；文中及配图
+>   凡提到 "managed session storage / 加速层 / 挂载命中" 的地方请按
+>   "无此层"理解。移除原因见 `docs/architecture-design.zh-CN.md` §3.1。
+> - 2026-09-07 又修复了 checkpoint 冻结网关过久导致网关自杀的问题（见
+>   `docs/operations.md` 事故史）。
+>
+> 下文保留原始分析以作历史记录，未逐句改写。
 
 配图（SVG 源文件与 PNG 均在 `docs/` 下）：
 
@@ -87,7 +102,7 @@ Stop safely 的全部时长"。
 |---|---|---|---|
 | microVM 内存 | 沙盒进程 | gateway/adapter 运行态、dashboard token | 会话内，回收即失 |
 | 本地暂存 | `/tmp/kirocrew-state/crew` | gateway SQLite 工作集（WAL 需要，仅当 workspace 不支持 WAL 时启用） | 会话内；checkpoint 前由 `StagedStateFlusher` 镜像回 workspace |
-| workspace 挂载 | `/mnt/workspace` | `home/.kiro`、`home/.config`、`home/.local/share/kiro-cli`、`projects`、`user` + `.agentcore/`（运行时元数据，不入 checkpoint） | AgentCore managed session storage：**加速层**，跨热启动保留，会过期，无持久承诺 |
+| workspace（容器盘） | `/mnt/workspace` | `home/.kiro`、`home/.config`、`home/.local/share/kiro-cli`、`projects`、`user` + `.agentcore/`（运行时元数据，不入 checkpoint） | **临时容器盘**（2026-09-06 起不再使用 managed session storage）：会话内保留，冷启动为空，靠 S3 checkpoint 恢复 |
 | S3 checkpoint | `snapshots/<sandboxId>/…` | 内容寻址加密 chunk + 加密 manifest，保留最近两代 | **持久权威**；KMS 每沙盒数据密钥，AES-256-GCM |
 | DynamoDB | sandbox 表 | 沙盒状态机、租约、`lastCheckpointGeneration` 指针、init 属主 | 持久（控制面元数据） |
 | KMS | 每部署一把 key | 每沙盒 256-bit 数据密钥（不入 manifest） | 持久 |

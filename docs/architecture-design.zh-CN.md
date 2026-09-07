@@ -1,5 +1,11 @@
 # KiroCrew on AgentCore 架构设计
 
+> **状态更新（2026-09-07）**：本文最初按"managed session storage 作为加速层"
+> 的设计撰写。该层已于 2026-09-06 彻底移除（见 §3.1），`/mnt/workspace`
+> 现为临时容器盘，S3 checkpoint 是唯一持久层。正文已同步修订；`docs/`
+> 下的 SVG/PNG 配图仍是移除前绘制的，图中的 "session storage / 托管
+> 同步盘 / 热恢复命中" 请按"无此层"理解，图待重绘。
+
 本文面向懂技术但不熟悉本项目的读者，客观描述整个系统的架构：组件分工、身份与
 信任链、存储分层、备份与恢复的执行模型、以及多租户隔离。读完应能回答这几个
 问题：请求怎么走？登录状态和文件存在哪里、由谁备份到哪里？一个用户为什么看
@@ -67,35 +73,35 @@ shell 拦截、封装成协议信封，经 AgentCore 数据面送进沙盒内回
 |---|---|---|---|
 | 进程内存 | microVM | gateway/adapter 运行态 | 会话内 |
 | 本地暂存 | microVM `/tmp/kirocrew-state` | gateway 的 SQLite WAL 工作集 | 会话内；checkpoint 时回写 workspace |
-| **Session storage** | `/mnt/workspace` 挂载 | 用户全部文件（HOME、项目、登录库） | 托管同步盘（见下） |
+| **Workspace（容器盘）** | `/mnt/workspace` | 用户全部文件（HOME、项目、登录库） | **临时**：会话结束即消失，只靠下一行的 checkpoint 持久（见下） |
 | **S3 checkpoint** | 我们账户的 S3 桶 | 加密 chunk + manifest，保留最近两代 | **持久权威** |
 | DynamoDB / KMS | 托管服务 | 状态机、代数指针 / 数据密钥 | 持久 |
 
-### 3.1 Session storage：托管同步盘
+### 3.1 Workspace：临时容器盘（不再使用 managed session storage）
 
-`/mnt/workspace` 通过 AgentCore 的 `filesystemConfigurations.sessionStorage`
-声明。它不是普通临时盘：写入会被平台异步复制到 AgentCore 服务侧的 S3，
-会话 Stop/Resume、闲置回收后**自动原样恢复**，应用零操作。它的边界：
+`/mnt/workspace` 现在就是 microVM 容器盘上的一个普通目录，**没有**声明
+AgentCore 的 `filesystemConfigurations.sessionStorage`。这是 2026-09-06 的
+明确决定（commit `16da25b`），并由 `tests/unit/test_terraform_security.py`
+的守护测试锁死（runtime 模板中不得出现 `FilesystemConfigurations` /
+`SessionStorage`）。原因是托管 session storage 在实际运行中反复引发事故：
 
-- **发布新 runtime 版本即清空**（每次发新镜像，所有会话的盘归零）；
-- **14 天未调用即清空**；
-- 每会话 **1 GB 上限**，不可调；
-- 不支持跨会话文件锁（这正是 gateway SQLite 工作集要暂存到 `/tmp` 的原因）；
-- Preview 功能，无持久化承诺。
+- 每会话 **1 GB 硬上限**且不可调，嵌入模型一度占掉三分之二，导致 kiro-cli
+  登录因 ENOSPC 失败；
+- **14 天未调用即清空**、发布新 runtime 版本即清空，恢复路径反而多出一条
+  "挂载存在但内容过期/不完整"的分支，restore 校验因此出过回归；
+- Preview 功能，无持久化承诺，却在设计上诱使人把它当持久层。
 
-### 3.2 两条 S3 链路，不要混淆
+去掉它之后模型是单一的：**容器盘是唯一的工作副本，S3 checkpoint 是唯一的
+持久层**。每次冷启动都从 S3 最新一代恢复（小工作区秒级），运行期间由
+§4.2 的多触发点 checkpoint 把丢失窗口压到一个周期以内。runtime 启动时会
+打印容器盘实际容量（日志行 `Workspace disk at ...`），排查空间问题看它。
 
-| | 托管复制（session storage 底层） | 我们的 checkpoint |
-|---|---|---|
-| 桶 | AgentCore 服务侧（`acr-storage-*`），不在我们账户 | 我们账户的 checkpoint 桶 |
-| 谁执行 | 平台自动，应用无感 | 沙盒内 runtime 主动执行 |
-| 加密 | 平台管理 | 每沙盒独立数据密钥，VM 内加密后才上传 |
-| 存活 | 发版/14 天清空 | 直到用户删除（保留两代 + GC + 离线审计） |
+### 3.2 只有一条 S3 链路
 
-**没有"从 session storage 复制到 S3"这个动作**：两条链路的源都是
-`/mnt/workspace` 这同一份本地文件。托管复制换来免操作的秒级热恢复；
-自有 checkpoint 才是真正属于部署者的持久副本，兜住发版清空、过期、
-容量超限与平台规格变动。
+历史版本里这里区分"托管复制"与"自有 checkpoint"两条链路；现在只剩后者：
+沙盒内 runtime 主动执行、每沙盒独立数据密钥、VM 内加密后直连上传我们账户
+的 checkpoint 桶，保留两代 + GC。文中及配图凡出现 "managed session
+storage / 托管同步盘 / 热恢复命中" 的位置，一律按"无此层"理解。
 
 ## 4. 备份与恢复
 
@@ -124,10 +130,11 @@ DynamoDB 回执未落（进程恰好被回收）——恢复逻辑容忍 S3 超�
 
 ### 4.3 启动时的恢复决策（图 4）
 
-冷启动先看本地挂载：session storage 命中（指针与 S3 最新提交一致、版本
-未变）则零拷贝直接用，秒级；否则从 S3 拉最新代——在隔离暂存树里逐 chunk
-校验摘要后**原子换入**，最新代损坏自动回退一代，两代皆不可用才报
-`PERSISTENCE_RESTORE_FAILED`。
+冷启动时容器盘总是空的，因此**每次都从 S3 拉最新代**——在隔离暂存树里
+逐 chunk 校验摘要后**原子换入**，最新代损坏自动回退一代，两代皆不可用
+才报 `PERSISTENCE_RESTORE_FAILED`。同一会话内的热恢复（Stop/Resume）
+沿用本地盘，不重复拉取。restore 会跳过被现行策略排除、但出现在旧
+manifest 里的条目（例如曾被纳入的嵌入模型目录），不会因此整体失败。
 
 ### 4.4 都备份了什么
 
@@ -142,8 +149,8 @@ skills、嵌入模型）、`home/.config`、`home/.local/share/kiro-cli`（**Kir
 一个用户在自己的沙盒终端里可以跑任意代码，因此隔离不能依赖"约定"。
 系统有四层防线：
 
-1. **算力与磁盘**：每用户一台 Firecracker microVM；session storage
-   官方语义 per-session isolated，文件系统层面互不可见。
+1. **算力与磁盘**：每用户一台 Firecracker microVM，容器盘随 microVM
+   隔离，文件系统层面互不可见。
 2. **零凭证 + 门卫**：沙盒内没有 S3 凭证；一切存储操作凭 KMS 签名的
    binding token 找 broker 换一次性 URL，key 由 broker 派生、锁死本沙盒
    前缀。执行角色虽为整个 runtime 共享，但数据授权在 token 不在角色——

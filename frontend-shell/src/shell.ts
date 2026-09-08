@@ -665,7 +665,7 @@ export function mountBrowserShell(
   const passwordNote = (): HTMLParagraphElement => {
     const note = createElement(document, "p", "kcac-auth-note");
     note.textContent =
-      "Passwords need at least 14 characters, with upper and lower case, a number, and a symbol.";
+      "Passwords need at least 8 characters, including a lowercase letter and a number.";
     return note;
   };
 

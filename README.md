@@ -133,8 +133,7 @@ See [docs/persistence.md](docs/persistence.md) for the full persistence contract
 ### 1. Install dependencies and build the frontend
 
 ```bash
-make setup                 # locked Python and Node dependencies
-make frontend-assets       # extract the pinned upstream KiroCrew SPA
+make setup                 # locked dependencies plus the pinned upstream KiroCrew SPA
 npm run build:bootstrap    # build frontend-shell/dist/bootstrap.bundle.js
 ```
 

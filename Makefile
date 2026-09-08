@@ -22,6 +22,7 @@ help:
 setup:
 	$(UV) sync --all-packages --all-groups --frozen
 	$(NPM) ci --ignore-scripts
+	$(MAKE) --no-print-directory frontend-assets
 
 lock-check:
 	$(UV) lock --check

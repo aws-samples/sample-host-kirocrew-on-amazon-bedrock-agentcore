@@ -109,8 +109,7 @@ KiroCrew 原本面向本地运行：浏览器中的 SPA 通过 HTTP、服务器�
 ### 1. 安装依赖并构建前端
 
 ```bash
-make setup                 # 锁定版本的 Python 与 Node 依赖
-make frontend-assets       # 提取固定版本的上游 KiroCrew SPA
+make setup                 # 锁定版本的依赖，并提取固定版本的上游 KiroCrew SPA
 npm run build:bootstrap    # 构建 frontend-shell/dist/bootstrap.bundle.js
 ```
 

@@ -60,6 +60,22 @@ def test_real_upstream_spa_assets_are_pinned_complete_and_bootstrap_first() -> N
 
 
 @pytest.mark.contract
+def test_setup_extracts_the_upstream_assets_this_suite_reads() -> None:
+    # Every test in this file reads ASSET_ROOT, which is gitignored and produced by
+    # `make frontend-assets`. The documented bootstrap is `make setup`, so setup must
+    # wire that extraction in; otherwise a clean checkout fails `make verify` at
+    # frontend-assets-check and this whole suite never executes.
+    lines = (ROOT / "Makefile").read_text(encoding="utf-8").splitlines()
+    start = next(index for index, line in enumerate(lines) if line.startswith("setup:"))
+    recipe = [lines[start]]
+    for line in lines[start + 1 :]:
+        if not line.startswith("\t"):
+            break
+        recipe.append(line.strip())
+    assert any("frontend-assets" in line for line in recipe), recipe
+
+
+@pytest.mark.contract
 def test_upstream_network_assumptions_are_recorded_and_adapter_closed() -> None:
     contract = load_json(CONTRACT_PATH)
     blocked = blocked_prefixes(contract)

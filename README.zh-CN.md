@@ -173,7 +173,7 @@ Cognito 注册或登录。登录后点击 **Start**。新沙箱首次启动约�
 - **更新 Runtime。** 发布新镜像（第 3 步），然后带上新的 `TF_VAR_runtime_image_digest`
   运行 `make infra-deploy`。Terraform 会创建新的 AgentCore Runtime 版本并把线上 Endpoint 切
   过去。旧版本上的温热会话会被回收；切换期间重连的用户可能短暂看到
-  **Sandbox needs attention**，点击 **Start sandbox**（或用 ↻ 控件重新加载页面）即可重连。
+  **Sandbox needs attention**，点击 **Start sandbox**（或用 **Reload** 控件重新加载页面）即可重连。
 - **更新前端。** 重新构建 Bundle（`npm run build:bootstrap`）并运行 `make infra-deploy`。
   Terraform 会重新上传 `bootstrap.js`；随后在 `deployment` 输出所指的 CloudFront 分发上失效
   `/bootstrap.js`。

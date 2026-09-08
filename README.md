@@ -207,7 +207,7 @@ checkpoint in seconds.
   runtime version and moves the live endpoint to it. Warm sessions on the previous
   version are recycled; a user reconnecting during the switch may briefly see
   **Sandbox needs attention** and can press **Start sandbox** (or reload the page
-  with the ↻ control) to reconnect.
+  with the **Reload** control) to reconnect.
 - **Update the frontend.** Rebuild the bundle (`npm run build:bootstrap`) and run
   `make infra-deploy`. Terraform re-uploads `bootstrap.js`; then invalidate
   `/bootstrap.js` on the CloudFront distribution named in the `deployment` output.

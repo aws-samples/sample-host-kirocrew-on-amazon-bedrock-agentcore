@@ -941,6 +941,26 @@ test("a reload control is offered in every signed-in view", async ({
   await Promise.all([page.waitForNavigation(), reloadButton.click()]);
 });
 
+test("every sandbox action reads as a word, not a glyph", async ({ page }) => {
+  // The panel's five header controls share one control language: each carries a
+  // visible text label. An icon-only control among text buttons is the
+  // inconsistency this locks out, so assert on the rendered text of the whole
+  // group rather than on the reload button alone.
+  await render(page, { view: "ready", activeRequestAccepted: false });
+  await ensureExpanded(page);
+  const labels = await page
+    .locator(".kcac-actions .kcac-button")
+    .evaluateAll((buttons) =>
+      buttons.map((button) => (button.textContent ?? "").trim()),
+    );
+  expect(labels.length).toBeGreaterThan(1);
+  expect(labels).toContain("Reload");
+  for (const label of labels) {
+    // A word, not a symbol: letters and spaces only, at least two characters.
+    expect(label).toMatch(/^[A-Za-z][A-Za-z ]*[A-Za-z]$/);
+  }
+});
+
 test("a parked ERROR sandbox offers Start sandbox instead of a dead end", async ({
   page,
 }) => {

@@ -542,10 +542,7 @@ export function mountBrowserShell(
   retry.textContent = "Retry safely";
   const reload = createElement(document, "button", "kcac-button");
   reload.type = "button";
-  // An icon keeps the header row within its width budget: a fifth text
-  // button squeezes the title to zero height at the panel's fixed width.
-  reload.textContent = "\u21bb";
-  reload.title = "Reload and reconnect";
+  reload.textContent = "Reload";
   reload.setAttribute(
     "aria-label",
     "Reload the page and reconnect to the sandbox without stopping it",

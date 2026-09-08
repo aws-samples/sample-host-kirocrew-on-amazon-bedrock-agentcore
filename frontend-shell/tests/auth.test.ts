@@ -116,6 +116,41 @@ describe("PasswordAuthClient", () => {
     await expect(subject.auth.accessToken()).resolves.toBe("access-token");
   });
 
+  it("persists the session where it outlives the tab by default", async () => {
+    // No `storage` passed: this is the wiring the browser actually gets. The
+    // session has to land in localStorage, because sessionStorage is discarded
+    // when the tab closes and the user would be asked to sign in again.
+    const durable = new MemoryStorage();
+    const perTab = new MemoryStorage();
+    for (const [name, store] of [
+      ["localStorage", durable],
+      ["sessionStorage", perTab],
+    ] as const) {
+      Object.defineProperty(globalThis, name, {
+        configurable: true,
+        get: (): Storage => store,
+      });
+    }
+    try {
+      const auth = new PasswordAuthClient(
+        { basePath: "/auth/v1" },
+        {
+          fetch: (() =>
+            Promise.resolve(
+              jsonResponse(200, TOKENS),
+            )) as unknown as typeof fetch,
+          now: (): number => 1_000,
+        },
+      );
+      await auth.signIn("dev@amazon.com", "secret");
+      expect(durable.getItem(AUTH_STORAGE_KEYS.session)).not.toBeNull();
+      expect(perTab.getItem(AUTH_STORAGE_KEYS.session)).toBeNull();
+    } finally {
+      Reflect.deleteProperty(globalThis, "localStorage");
+      Reflect.deleteProperty(globalThis, "sessionStorage");
+    }
+  });
+
   it("maps server error codes onto stable client codes", async () => {
     subject = client([
       jsonResponse(403, { code: "DOMAIN_NOT_ALLOWED", message: "No." }),

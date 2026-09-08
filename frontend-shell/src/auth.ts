@@ -1,3 +1,5 @@
+import { durableStorage } from "./storage.js";
+
 const SESSION_KEY = "kirocrew.agentcore.auth.session";
 const REFRESH_SKEW_MS = 60 * 1000;
 
@@ -125,7 +127,7 @@ export class PasswordAuthClient {
       );
     }
     this.#basePath = config.basePath.replace(/\/$/u, "");
-    this.#storage = options.storage ?? sessionStorage;
+    this.#storage = options.storage ?? durableStorage();
     this.#fetch = options.fetch ?? fetch;
     this.#now = options.now ?? Date.now;
   }

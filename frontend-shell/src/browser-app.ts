@@ -26,6 +26,7 @@ import {
   type AgentCoreInvocation,
 } from "./remote-transport.js";
 import { mountBrowserShell, type BrowserShellHandle } from "./shell.js";
+import { durableStorage } from "./storage.js";
 
 const CONTROL_PATH = "/control/v1";
 const POLL_INTERVAL_MS = 2_000;
@@ -348,7 +349,7 @@ export class BrowserApplication {
   ) {
     this.#config = config;
     this.#target = options.target ?? (window as unknown as BootstrapTarget);
-    const storage = options.storage ?? sessionStorage;
+    const storage = options.storage ?? durableStorage();
     const fetchValue = options.fetch ?? fetch;
     this.#crypto = options.crypto ?? crypto;
     this.#now = options.now ?? Date.now;

@@ -81,6 +81,20 @@ def test_cognito_is_admin_created_public_pkce_client() -> None:
     assert 'prevent_user_existence_errors        = "ENABLED"' in identity
 
 
+def test_cognito_password_policy_is_length_plus_a_letter_and_a_number() -> None:
+    identity = terraform("modules/identity/main.tf")
+    # The rule a person can hold in their head, and the one every rejection
+    # message states. Pinned so the policy and those messages cannot drift
+    # apart: infrastructure/functions/auth ... lambda_handler._STRENGTH_REQUIREMENT
+    # and the sign-in note in frontend-shell/src/shell.ts both spell out this
+    # exact requirement.
+    assert "minimum_length                   = 8" in identity
+    assert "require_lowercase                = true" in identity
+    assert "require_numbers                  = true" in identity
+    assert "require_symbols                  = false" in identity
+    assert "require_uppercase                = false" in identity
+
+
 def test_gated_auth_lambda_is_least_privilege_and_domain_limited() -> None:
     control_api = terraform("modules/control-api/main.tf")
     # Registration and sign-in routes are unauthenticated by design; the

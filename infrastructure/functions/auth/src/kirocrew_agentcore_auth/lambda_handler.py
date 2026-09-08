@@ -89,6 +89,14 @@ class EmailPolicy:
         )
 
 
+# The one sentence every password rejection from the pool answers with. It
+# states the requirement instead of naming "complexity requirements", and it
+# mirrors the pool's password_policy in infrastructure/modules/identity.
+_STRENGTH_REQUIREMENT = (
+    "Passwords need at least 8 characters, including a lowercase letter and a number."
+)
+
+
 def _password(value: object) -> str:
     if not isinstance(value, str) or not (8 <= len(value) <= 256):
         raise AuthRequestError(
@@ -294,11 +302,7 @@ class AuthService:
                     400, "INVALID_CODE", "The code is incorrect or has expired."
                 ) from error
             if name == "InvalidPasswordException":
-                raise AuthRequestError(
-                    400,
-                    "INVALID_PASSWORD",
-                    "The password does not meet the pool's complexity requirements.",
-                ) from error
+                raise AuthRequestError(400, "INVALID_PASSWORD", _STRENGTH_REQUIREMENT) from error
             raise self._reset_failed(name) from error
 
     @staticmethod
@@ -316,11 +320,7 @@ class AuthService:
     def _invalid_password(error: ClientError) -> AuthRequestError:
         code = error.response.get("Error", {}).get("Code")
         if code == "InvalidPasswordException":
-            return AuthRequestError(
-                400,
-                "INVALID_PASSWORD",
-                "The password does not meet the pool's complexity requirements.",
-            )
+            return AuthRequestError(400, "INVALID_PASSWORD", _STRENGTH_REQUIREMENT)
         _LOGGER.error("Cognito registration failed with %s.", code)
         return AuthRequestError(502, "REGISTRATION_FAILED", "Registration is unavailable.")
 

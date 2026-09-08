@@ -729,6 +729,22 @@ test("signed-out view offers the credential form and submits sign-in", async ({
   await expect(email).toBeHidden();
 });
 
+test("the password note states the policy the pool actually enforces", async ({
+  page,
+}) => {
+  await render(page, { view: "signed-out", activeRequestAccepted: false });
+  await ensureExpanded(page);
+  // Same sentence as the pool's password_policy (infrastructure/modules/
+  // identity) and the auth Lambda's _STRENGTH_REQUIREMENT: length, a lowercase
+  // letter, a number. A note that promises less than the pool enforces sends
+  // people into a rejection they were told would pass.
+  await expect(
+    page.locator("[data-authpart='sign-in'] .kcac-auth-note"),
+  ).toHaveText(
+    "Passwords need at least 8 characters, including a lowercase letter and a number.",
+  );
+});
+
 test("registration asks for the emailed code and can resend it", async ({
   page,
 }) => {

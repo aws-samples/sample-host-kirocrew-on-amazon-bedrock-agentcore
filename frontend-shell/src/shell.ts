@@ -75,14 +75,22 @@ function installStyles(document: Document): void {
       color: var(--text);
     }
     .kcac-float {
+      --kcac-gutter: 16px;
       position: fixed;
-      top: 16px;
-      right: 16px;
+      top: var(--kcac-gutter);
+      right: var(--kcac-gutter);
       /* Above every upstream layer (modals, toasts, tour tooltips). */
       z-index: 2147483000;
       display: flex;
       flex-direction: column;
       max-width: min(460px, calc(100vw - 24px));
+      /* Expanding the details section must not push the panel past the
+         bottom of the screen, where its own overflow:hidden would clip the
+         content out of reach. Dragging rewrites --kcac-top so the cap
+         follows the panel's current offset. */
+      max-height: calc(
+        100vh - var(--kcac-top, var(--kcac-gutter)) - var(--kcac-gutter)
+      );
       border: 1px solid var(--border);
       border-radius: 12px;
       background: var(--card);
@@ -411,6 +419,16 @@ function installStyles(document: Document): void {
     }
     .kcac-info-list .kcac-info-state { color: var(--text-strong, var(--text)); font-weight: 500; }
     .kcac-info-paths { margin: 0; padding: 0; list-style: none; font-family: ui-monospace, monospace; font-size: 11px; }
+    /* Under the panel's height cap the details body is the only section that
+       gives up space, so the rail and the sign-in blocks keep their natural
+       height and the history and paths lists scroll instead of being cut off. */
+    .kcac-rail, .kcac-auth, .kcac-device, .kcac-kiro, .kcac-pill { flex: none; }
+    .kcac-info { flex: 0 1 auto; min-height: 0; }
+    .kcac-info-body {
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
     .kcac-kiro-header { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
     .kcac-kiro-name { font-weight: 700; color: var(--text-strong, var(--text)); }
     .kcac-kiro-state { color: var(--muted); }
@@ -452,7 +470,7 @@ function installStyles(document: Document): void {
       .kcac-float[data-tone="progress"] .kcac-dot { animation: none; }
     }
     @media (max-width: 720px) {
-      .kcac-float { top: 8px; right: 8px; }
+      .kcac-float { --kcac-gutter: 8px; }
       .kcac-rail { align-items: flex-start; flex-direction: column; padding: 10px 12px; }
       .kcac-actions { width: 100%; }
       .kcac-button, .kcac-link { flex: 1 1 auto; text-align: center; }
@@ -929,8 +947,12 @@ export function mountBrowserShell(
     const rect = float.getBoundingClientRect();
     const maxLeft = (view?.innerWidth ?? rect.right + 8) - rect.width - 8;
     const maxTop = (view?.innerHeight ?? rect.bottom + 8) - rect.height - 8;
+    const top = clamp(originTop + deltaY, 8, maxTop);
     float.style.left = `${clamp(originLeft + deltaX, 8, maxLeft)}px`;
-    float.style.top = `${clamp(originTop + deltaY, 8, maxTop)}px`;
+    float.style.top = `${top}px`;
+    // The height cap is measured from wherever the panel now sits, so a
+    // panel dragged downwards still cannot grow past the screen.
+    float.style.setProperty("--kcac-top", `${top}px`);
     float.style.right = "auto";
   });
   const endDrag = (event: PointerEvent): void => {

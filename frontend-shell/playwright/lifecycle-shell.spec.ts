@@ -995,3 +995,43 @@ test("a parked ERROR sandbox offers Start sandbox instead of a dead end", async 
     page.getByRole("button", { name: "Retry safely" }),
   ).toBeVisible();
 });
+
+test("keeps the expanded sandbox details inside a short viewport", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 420, height: 520 });
+  await render(page, {
+    view: "stopped",
+    activeRequestAccepted: false,
+    kiroAuth: { state: "required" },
+    details: {
+      events: Array.from({ length: 12 }, (_, index) => ({
+        at: new Date(Date.UTC(2026, 8, 5, 10, index)).toISOString(),
+        state: index % 2 === 0 ? "READY" : "STOPPED",
+        stateVersion: 12 - index,
+      })),
+      persistedPaths: Array.from(
+        { length: 10 },
+        (_, index) => `/mnt/workspace/project-${index}`,
+      ),
+    },
+  });
+  await ensureExpanded(page);
+  const toggle = page.getByRole("button", { name: "Sandbox details" });
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+
+  const viewport = page.viewportSize();
+  const box = await page.locator(".kcac-float").boundingBox();
+  if (viewport === null || box === null) {
+    throw new Error("Missing panel bounding box");
+  }
+  // The panel clips its own overflow, so anything past the bottom edge is
+  // unreachable rather than scrollable: it has to stay on screen.
+  expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
+  // What did not fit stays reachable by scrolling the details body.
+  const scrollable = await page
+    .locator(".kcac-info-body")
+    .evaluate((element) => element.scrollHeight > element.clientHeight);
+  expect(scrollable).toBe(true);
+});

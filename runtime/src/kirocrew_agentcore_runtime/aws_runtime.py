@@ -191,6 +191,17 @@ class DynamoSandboxStateStore:
         startup). The claim is a heartbeat-extended lease so a replacement
         container can take over only once the previous owner is provably
         dead, and nothing else may reset the record underneath a live owner.
+
+        READY is claimable for the same reason `heal_ready` exists. Only a
+        container that has no warm state for this session ever calls this, so
+        a record left READY by a container that is gone -- or by a parallel
+        container that served the previous invocation -- must be reclaimable;
+        otherwise the record is READY forever, every later invocation fails
+        the state clause, and the sandbox self-locks with no way out (Stop
+        travels the same blocked path, so the user cannot even stop it). A
+        warm owner that is still alive republishes READY through
+        `heal_ready`, which is the reconciliation half of this pair. The
+        initOwner lease below is what keeps two *live* initializers apart.
         """
         now = int(datetime.now(UTC).timestamp())
         try:
@@ -204,7 +215,7 @@ class DynamoSandboxStateStore:
                 ),
                 ConditionExpression=(
                     "runtimeSessionId = :session "
-                    "AND #state IN (:starting, :restoring) "
+                    "AND #state IN (:starting, :restoring, :ready) "
                     "AND (attribute_not_exists(initOwner) "
                     "OR initOwner = :owner OR initExpiresAt < :now)"
                 ),
@@ -214,19 +225,58 @@ class DynamoSandboxStateStore:
                     ":now": {"N": str(now)},
                     ":one": {"N": "1"},
                     ":owner": {"S": init_owner},
+                    ":ready": {"S": "READY"},
                     ":restoring": {"S": "RESTORING"},
                     ":session": {"S": runtime_session_id},
                     ":starting": {"S": "STARTING"},
                     ":updated": {"S": _timestamp(datetime.now(UTC))},
                 },
+                ReturnValuesOnConditionCheckFailure="ALL_OLD",
             )
         except ClientError as error:
             code = error.response.get("Error", {}).get("Code")
             if code == "ConditionalCheckFailedException":
                 raise InitOwnershipError(
-                    "Another container owns this sandbox initialization."
+                    self._claim_failure_reason(error, runtime_session_id, init_owner, now)
                 ) from error
             raise
+
+    @staticmethod
+    def _claim_failure_reason(
+        error: ClientError,
+        runtime_session_id: str,
+        init_owner: str,
+        now: int,
+    ) -> str:
+        """Name the clause that rejected the claim.
+
+        One message for every rejection sends whoever debugs this to the
+        wrong place: "initialization is in progress elsewhere" reads as a
+        live competing owner even when the real cause is a record bound to a
+        newer session id, which no amount of waiting or retrying resolves.
+        """
+        item = cast(Mapping[str, Mapping[str, str]], error.response.get("Item", {}))
+        if not item:
+            return "Sandbox initialization could not be claimed."
+        bound_session = item.get("runtimeSessionId", {}).get("S")
+        if bound_session and bound_session != runtime_session_id:
+            return (
+                "This sandbox is bound to a newer runtime session; "
+                "reconnect to pick it up."
+            )
+        owner = item.get("initOwner", {}).get("S")
+        raw_expiry = item.get("initExpiresAt", {}).get("N")
+        if owner and owner != init_owner and raw_expiry is not None:
+            try:
+                expiry = int(raw_expiry)
+            except ValueError:
+                expiry = 0
+            if expiry >= now:
+                return "Another container owns this sandbox initialization."
+        state = item.get("state", {}).get("S")
+        if state:
+            return f"Sandbox is not claimable from state {state}."
+        return "Sandbox initialization could not be claimed."
 
     def heartbeat_init(
         self,
@@ -924,12 +974,12 @@ class AwsSessionInitializer:
                     self._lease_heartbeat(claims.sandbox_id, claims.runtime_session_id)
                 )
             except InitOwnershipError as error:
-                # A live owner is initializing elsewhere; walk away without
-                # touching the record and let the client retry against it.
+                # A live owner is initializing elsewhere, or the record moved
+                # to a newer session. Walk away without touching the record
+                # and pass the specific reason through: a flattened message
+                # sends the reader after the wrong cause.
                 self._readiness.read_only = True
-                raise SessionInitializationError(
-                    "Sandbox initialization is in progress elsewhere."
-                ) from error
+                raise SessionInitializationError(str(error)) from error
             except Exception as error:
                 _LOGGER.error(
                     "Sandbox initialization failed (%s): %s",

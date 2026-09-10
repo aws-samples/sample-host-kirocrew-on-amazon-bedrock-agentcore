@@ -445,6 +445,65 @@ def test_acquire_init_translates_conditional_failure_to_ownership_error() -> Non
         store.acquire_init("sbx_0123456789ABCDEFGHJKMNPQ", "session-1", "owner-2")
 
 
+def test_acquire_init_reclaims_a_record_left_ready() -> None:
+    """A READY record must stay claimable or the sandbox self-locks.
+
+    Only a container without warm state for this session calls acquire_init.
+    If READY were unclaimable, a record left READY by a container that is
+    gone would reject every later invocation forever -- including the Stop
+    that travels the same path -- and the user would have no way out.
+    """
+    client = FakeDynamo(
+        {
+            "runtimeSessionId": {"S": "session-1"},
+            "state": {"S": "READY"},
+        }
+    )
+    store = DynamoSandboxStateStore(client, "sandboxes")
+    store.acquire_init("sbx_0123456789ABCDEFGHJKMNPQ", "session-1", "owner-1")
+    condition = cast(str, client.updates[-1]["ConditionExpression"])
+    values = cast(dict[str, dict[str, str]], client.updates[-1]["ExpressionAttributeValues"])
+    assert ":ready" in condition
+    assert values[":ready"] == {"S": "READY"}
+
+
+def test_acquire_init_names_the_clause_that_rejected_the_claim() -> None:
+    """A record bound to a newer session is not a competing owner.
+
+    Reporting both as "in progress elsewhere" sends the reader after a
+    concurrency problem that is not there; the newer-session case needs a
+    reconnect, and no amount of retrying resolves it.
+    """
+    client = FakeDynamo({})
+
+    def rebound(**kwargs: object) -> dict[str, object]:
+        error = _client_error("ConditionalCheckFailedException")
+        error.response["Item"] = {
+            "runtimeSessionId": {"S": "session-2"},
+            "state": {"S": "READY"},
+        }
+        raise error
+
+    client.update_item = rebound  # type: ignore[method-assign]
+    store = DynamoSandboxStateStore(client, "sandboxes")
+    with pytest.raises(InitOwnershipError, match="bound to a newer runtime session"):
+        store.acquire_init("sbx_0123456789ABCDEFGHJKMNPQ", "session-1", "owner-1")
+
+    def owned(**kwargs: object) -> dict[str, object]:
+        error = _client_error("ConditionalCheckFailedException")
+        error.response["Item"] = {
+            "runtimeSessionId": {"S": "session-1"},
+            "state": {"S": "RESTORING"},
+            "initOwner": {"S": "owner-2"},
+            "initExpiresAt": {"N": "4000000000"},
+        }
+        raise error
+
+    client.update_item = owned  # type: ignore[method-assign]
+    with pytest.raises(InitOwnershipError, match="Another container owns"):
+        store.acquire_init("sbx_0123456789ABCDEFGHJKMNPQ", "session-1", "owner-1")
+
+
 def test_session_initializer_failure_remains_read_only_and_never_ready(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -483,7 +542,7 @@ def test_losing_the_init_ownership_race_never_poisons_the_record() -> None:
     async def scenario() -> None:
         initializer = OwnedElsewhereInitializer()
         claims = BindingClaims("sandbox", "session", 2_000_000_000)
-        with pytest.raises(SessionInitializationError, match="in progress elsewhere"):
+        with pytest.raises(SessionInitializationError, match="owned elsewhere"):
             await initializer.initialize("subject", "binding", claims)
         # The loser walks away: no ERROR write, no gateway termination side
         # effects beyond its own cleanup.

@@ -162,15 +162,19 @@ def _conditional_update(
     runtime maps to its lifecycle decisions; every other DynamoDB failure
     propagates as a broker error.
     """
+    request: dict[str, object] = {
+        "TableName": _required("SANDBOX_TABLE"),
+        "Key": _record_key(sandbox_id),
+        "UpdateExpression": update,
+        "ConditionExpression": condition,
+        "ExpressionAttributeValues": dict(values),
+    }
+    # DynamoDB rejects a placeholder that no expression uses, so the reserved
+    # word alias is attached only to the updates that touch the state field.
+    if "#state" in update or "#state" in condition:
+        request["ExpressionAttributeNames"] = {"#state": "state"}
     try:
-        dynamodb.update_item(
-            TableName=_required("SANDBOX_TABLE"),
-            Key=_record_key(sandbox_id),
-            UpdateExpression=update,
-            ConditionExpression=condition,
-            ExpressionAttributeNames={"#state": "state"},
-            ExpressionAttributeValues=dict(values),
-        )
+        dynamodb.update_item(**request)
     except ClientError as error:
         if error.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
             raise

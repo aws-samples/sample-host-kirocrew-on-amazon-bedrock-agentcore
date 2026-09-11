@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from datetime import UTC, datetime
+from typing import cast
 
 import pytest
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
@@ -110,6 +112,19 @@ class FakeDynamo:
 
     def update_item(self, **request: object) -> dict[str, object]:
         self.updates.append(request)
+        # Mirror the DynamoDB validations that bit the first live deployment:
+        # every declared placeholder must be used, and every used one declared.
+        expressions = (
+            f"{request.get('UpdateExpression', '')} {request.get('ConditionExpression', '')}"
+        )
+        declared = set(cast(dict[str, str], request.get("ExpressionAttributeNames", {})))
+        used = set(re.findall(r"#[A-Za-z0-9_]+", expressions))
+        if declared != used:
+            raise client_error("ValidationException")
+        declared_values = set(cast(dict[str, object], request.get("ExpressionAttributeValues", {})))
+        used_values = set(re.findall(r":[A-Za-z0-9_]+", expressions))
+        if declared_values != used_values:
+            raise client_error("ValidationException")
         if self.update_error is not None:
             error, self.update_error = self.update_error, None
             raise error
@@ -456,19 +471,26 @@ def test_read_record_needs_only_a_matching_claim_and_reports_lifecycle_fields() 
 
 def test_conditional_updates_report_rejected_conditions_and_raise_other_failures() -> None:
     dynamo = FakeDynamo()
-    assert broker._conditional_update(
-        dynamo, SANDBOX, "SET a = :a", "b = :b", {":a": {"S": "x"}}
-    ) == {"applied": True}
+    values = {":a": {"S": "x"}, ":b": {"S": "y"}}
+    assert broker._conditional_update(dynamo, SANDBOX, "SET #state = :a", "b = :b", values) == {
+        "applied": True
+    }
     update = dynamo.updates[0]
     assert update["Key"] == {"pk": {"S": f"SANDBOX#{SANDBOX}"}, "sk": {"S": "METADATA"}}
     assert update["ExpressionAttributeNames"] == {"#state": "state"}
+    # An update that never mentions the state field must not declare the alias:
+    # DynamoDB rejects unused placeholders.
+    assert broker._conditional_update(dynamo, SANDBOX, "SET a = :a", "b = :b", values) == {
+        "applied": True
+    }
+    assert "ExpressionAttributeNames" not in dynamo.updates[1]
     dynamo.update_error = client_error("ConditionalCheckFailedException")
-    assert broker._conditional_update(dynamo, SANDBOX, "SET a = :a", "b = :b", {}) == {
+    assert broker._conditional_update(dynamo, SANDBOX, "SET a = :a", "b = :b", values) == {
         "applied": False
     }
     dynamo.update_error = client_error("ProvisionedThroughputExceededException")
     with pytest.raises(ClientError):
-        broker._conditional_update(dynamo, SANDBOX, "SET a = :a", "b = :b", {})
+        broker._conditional_update(dynamo, SANDBOX, "SET a = :a", "b = :b", values)
 
 
 def test_acquire_init_mints_a_runtime_session_token_only_when_the_claim_applies(

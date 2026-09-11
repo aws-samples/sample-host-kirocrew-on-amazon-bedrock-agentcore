@@ -10,6 +10,7 @@ import {
   type SandboxHistoryEvent,
   type SandboxSnapshot,
   type SandboxState,
+  type KiroIdentityPresentation,
 } from "./lifecycle.js";
 import {
   PasswordAuthClient,
@@ -168,6 +169,32 @@ function parseDescriptor(value: unknown): RuntimeConnectionDescriptor {
     );
   }
   return value as unknown as RuntimeConnectionDescriptor;
+}
+
+/** Read the identity fields `kiro.auth_status` carries, ignoring anything else.
+ *
+ * The adapter already bounds and sanitises every value; this keeps the shell
+ * from trusting the envelope's shape and from rendering a non-string. */
+function kiroIdentity(value: unknown): KiroIdentityPresentation | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const fields = [
+    "accountType",
+    "email",
+    "profileArn",
+    "profileName",
+    "region",
+    "startUrl",
+  ] as const;
+  const identity: Record<string, string> = {};
+  for (const field of fields) {
+    const candidate = value[field];
+    if (typeof candidate === "string" && candidate !== "") {
+      identity[field] = candidate;
+    }
+  }
+  return Object.keys(identity).length > 0 ? identity : undefined;
 }
 
 function safeError(value: unknown, status: number): ErrorResponse {
@@ -903,7 +930,13 @@ export class BrowserApplication {
         this.#scheduleKiroPoll();
       }
     } else if (envelope.operation === "kiro.authenticated") {
-      this.#store.dispatch({ type: "device-authenticated" });
+      const authenticatedIdentity = kiroIdentity(envelope.payload.identity);
+      this.#store.dispatch({
+        type: "device-authenticated",
+        ...(authenticatedIdentity === undefined
+          ? {}
+          : { identity: authenticatedIdentity }),
+      });
     } else if (envelope.operation === "kiro.auth_status") {
       const state = envelope.payload.state;
       if (
@@ -912,7 +945,12 @@ export class BrowserApplication {
         state === "expired" ||
         state === "failed"
       ) {
-        this.#store.dispatch({ type: "kiro-status", state });
+        const identity = kiroIdentity(envelope.payload.identity);
+        this.#store.dispatch({
+          type: "kiro-status",
+          state,
+          ...(identity === undefined ? {} : { identity }),
+        });
       }
     } else if (envelope.operation === "checkpoint.committed") {
       const receipt = envelope.payload.checkpointReceipt;

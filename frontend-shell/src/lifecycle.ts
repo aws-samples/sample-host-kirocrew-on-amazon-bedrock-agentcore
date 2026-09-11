@@ -38,8 +38,19 @@ export type KiroAuthState =
   | "expired"
   | "failed";
 
+/** What `kiro-cli whoami` reports about the sandbox's signed-in identity. */
+export interface KiroIdentityPresentation {
+  readonly accountType?: string;
+  readonly email?: string;
+  readonly profileArn?: string;
+  readonly profileName?: string;
+  readonly region?: string;
+  readonly startUrl?: string;
+}
+
 export interface KiroAuthPresentation {
   readonly state: KiroAuthState;
+  readonly identity?: KiroIdentityPresentation;
 }
 
 export interface DeviceFlowPresentation {
@@ -95,10 +106,24 @@ export type LifecycleEvent =
       readonly type: "device-flow";
       readonly presentation: DeviceFlowPresentation;
     }
-  | { readonly type: "device-authenticated" }
-  | { readonly type: "kiro-status"; readonly state: KiroAuthState }
+  | {
+      readonly type: "device-authenticated";
+      readonly identity?: KiroIdentityPresentation;
+    }
+  | {
+      readonly type: "kiro-status";
+      readonly state: KiroAuthState;
+      readonly identity?: KiroIdentityPresentation;
+    }
   | { readonly type: "details"; readonly value: SandboxDetails }
   | { readonly type: "stop-requested" };
+
+function kiroAuthPresentation(
+  state: KiroAuthState,
+  identity: KiroIdentityPresentation | undefined,
+): KiroAuthPresentation {
+  return { state, ...(identity === undefined ? {} : { identity }) };
+}
 
 const VIEW_COPY: Readonly<
   Record<
@@ -367,15 +392,24 @@ export function reduceLifecycle(
     case "device-authenticated":
       return {
         ...withoutProperty(model, "deviceFlow"),
-        kiroAuth: { state: "authenticated" },
+        kiroAuth: {
+          state: "authenticated",
+          ...(event.identity === undefined ? {} : { identity: event.identity }),
+        },
       };
     case "kiro-status":
       if (event.state === "authenticated" || event.state === "checking") {
         return {
           ...withoutProperty(model, "deviceFlow"),
-          kiroAuth: { state: event.state },
+          // A probe in flight keeps the identity already on screen so the
+          // panel does not blank out and refill on every refresh.
+          kiroAuth: kiroAuthPresentation(
+            event.state,
+            event.identity ?? model.kiroAuth?.identity,
+          ),
         };
       }
+      // Signed out, expired or failed: whatever identity was shown is stale.
       return { ...model, kiroAuth: { state: event.state } };
     case "details":
       return { ...model, details: event.value };

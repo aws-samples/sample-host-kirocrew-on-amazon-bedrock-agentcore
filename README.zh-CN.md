@@ -167,6 +167,9 @@ terraform -chdir=infrastructure output -state="$TF_STATE" deployment
 Cognito 注册或登录。登录后点击 **Start**。新沙箱首次启动约需一分钟，之后每次启动都会在数秒
 内恢复检查点。
 
+面向最终用户的图文使用手册（从注册、登录、Kiro 账号登录到开始第一个会话，并逐一说明悬浮面板
+上每个按钮的作用）见 [docs/user-guide/README.zh-CN.md](docs/user-guide/README.zh-CN.md)。
+
 ## 日常运维
 
 - **更新 Runtime。** 发布新镜像（第 3 步），然后带上新的 `TF_VAR_runtime_image_digest`
@@ -257,7 +260,7 @@ TypeScript Shell（`frontend-shell/src/remote-transport.ts`）以及 `contracts/
 | `contracts/` | JSON Schema、OpenAPI/AsyncAPI、路由策略和上游兼容性固定信息 |
 | `tests/` | 单元测试、跨语言契约测试、已部署环境端到端测试和浏览器 UI 测试 |
 | `tools/` | 协议代码生成、上游 SPA 提取、Terraform 包装脚本和镜像工具 |
-| `docs/` | 架构图源文件、截图和持久化契约 |
+| `docs/` | 架构图源文件、截图、持久化契约和最终用户使用手册 |
 | `CLAUDE.md`（`AGENTS.md`） | 编码 Agent 上手指南：构建/验证/部署命令与承重不变量 |
 
 ## 安全

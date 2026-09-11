@@ -4,7 +4,7 @@
 
 This guide is for first-time users. It follows the order you actually perform the steps: create an account, sign in, start your sandbox, connect your Kiro account, and start the first session. It also explains what every button on the page does. All screenshots come from a real deployment.
 
-> You need: the access address your deployment operator gave you (an `https://` link), an email address the deployment accepts (by default only `@amazon.com`; the operator can allow others), and a Kiro account (Builder ID or your organization's SSO).
+> You need: the access address your deployment operator gave you (an `https://` link), an email address the deployment accepts, and a Kiro account (Builder ID or your organization's SSO).
 
 ## Contents
 
@@ -164,13 +164,9 @@ Panel titles and what they mean:
 
 ## 9. Troubleshooting
 
-**"Email not allowed" on registration**: the deployment accepts only `@amazon.com` by default. Ask the operator to add your address via `allowed_email_domains` or `allowed_email_patterns`.
+**"Email not allowed" on registration**: ask the deployment operator to add your address to the allow list.
 
 **No verification code**: check spam. The subject is "Your verification code", the sender `no-reply@verificationemail.com`; click Resend code.
-
-**After Kiro sign-in, a message returns "Your User ID is temporarily suspended"**: this is Kiro's own account-side restriction on that Builder ID and is unrelated to this deployment. Contact Kiro support as the message says, or use another Kiro account: click **Sign out of Kiro**, then sign in again.
-
-![Kiro account temporarily suspended](images/99-kiro-account-suspended.png)
 
 **Sandbox needs attention**: click **Reload** first; if that does not help, **Start sandbox**. Your data is in the checkpoint and is not lost by restarting.
 

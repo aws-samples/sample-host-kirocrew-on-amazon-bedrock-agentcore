@@ -17,6 +17,12 @@ checkpoints.
 panel in the corner is the only UI this project adds: sandbox lifecycle, Kiro
 sign-in, and a safe stop that checkpoints the workspace.*
 
+> **Using a deployment someone else set up?** Start with the
+> **[User Guide](docs/user-guide/README.md)** ([中文](docs/user-guide/README.zh-CN.md)):
+> a screenshot walkthrough from registration through Kiro sign-in to the first chat
+> session, with every control on the floating panel explained. The rest of this
+> README is for people deploying and operating the sample.
+
 > **Sample code, not for production use.** This repository is a reference
 > implementation that demonstrates how to run KiroCrew on Amazon Bedrock AgentCore.
 > It has not been hardened, load tested, or optimized for production workloads, and
@@ -198,11 +204,6 @@ Nobody can register or
 sign in against Cognito directly. After signing in, press **Start**. The first
 start of a new sandbox takes about a minute; later starts restore the
 checkpoint in seconds.
-
-A screenshot walkthrough for end users, from registration through Kiro sign-in
-to the first chat session, with an explanation of every control on the floating
-panel, is in [docs/user-guide/README.md](docs/user-guide/README.md)
-(also available in [Chinese](docs/user-guide/README.zh-CN.md)).
 
 ## Operate the deployment
 

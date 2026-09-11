@@ -199,6 +199,11 @@ sign in against Cognito directly. After signing in, press **Start**. The first
 start of a new sandbox takes about a minute; later starts restore the
 checkpoint in seconds.
 
+A screenshot walkthrough for end users, from registration through Kiro sign-in
+to the first chat session, with an explanation of every control on the floating
+panel, is in [docs/user-guide/README.md](docs/user-guide/README.md)
+(also available in [Chinese](docs/user-guide/README.zh-CN.md)).
+
 ## Operate the deployment
 
 - **Update the runtime.** Publish a new image (step 3), then run `make infra-deploy`
@@ -303,7 +308,7 @@ classified.
 | `contracts/` | JSON Schema, OpenAPI/AsyncAPI definitions, route policy, and upstream compatibility pins |
 | `tests/` | Unit, cross-language contract, deployed-stack end-to-end, and browser UI tests |
 | `tools/` | Protocol code generation, upstream SPA extraction, Terraform wrapper, and image tooling |
-| `docs/` | Architecture source, screenshots, and the persistence contract |
+| `docs/` | Architecture source, screenshots, the persistence contract, and the end-user guide |
 | `CLAUDE.md` (`AGENTS.md`) | Coding-agent onboarding: build/verify/deploy commands and load-bearing invariants |
 
 ## Security

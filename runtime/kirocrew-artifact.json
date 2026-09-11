@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "distribution": "kirocrew",
-  "version": "0.3.0",
-  "wheel": "kirocrew-0.3.0-py3-none-any.whl",
-  "sha256": "30bd90fcf5e0adc87541f67162866dcc3b5b2d5a0a44418c6d42022c8c7abbb2",
+  "version": "0.5.0",
+  "wheel": "kirocrew-0.5.0-py3-none-any.whl",
+  "sha256": "48a722da4a1957b3962e42b675c83c19a4b898bca0d54af81a6305c4dd915d57",
   "entrypoint": "kirocrew",
-  "source": "https://github.com/kirodotdev/KiroCrew/releases/tag/v0.3.0"
+  "source": "https://github.com/kirodotdev/KiroCrew/releases/tag/v0.5.0"
 }

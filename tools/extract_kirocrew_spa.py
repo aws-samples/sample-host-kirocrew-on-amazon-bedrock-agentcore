@@ -29,6 +29,10 @@ _COMPILED_SUFFIXES: Final = frozenset(
         ".mjs",
         ".png",
         ".svg",
+        # A bundled font's licence text ships beside it: the SIL Open Font
+        # License requires the copy to travel with the font (0.5.0 adds
+        # fonts/opendyslexic/OFL.txt).
+        ".txt",
         ".ttf",
         ".wasm",
         ".webmanifest",

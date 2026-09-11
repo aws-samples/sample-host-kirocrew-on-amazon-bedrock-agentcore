@@ -355,6 +355,15 @@ wheels = [
 ]
 
 [[package]]
+name = "et-xmlfile"
+version = "2.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d3/38/af70d7ab1ae9d4da450eeec1fa3918940a5fafb9055e934af8d6eb0c2313/et_xmlfile-2.0.0.tar.gz", hash = "sha256:dab3f4764309081ce75662649be815c4c9081e88f0837825f90fd28317d4da54", size = 17234, upload-time = "2024-10-25T17:25:40.039Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c1/8b/5fe2cc11fee489817272089c4203e679c63b570a5aaeb18d852ae3cbba6a/et_xmlfile-2.0.0-py3-none-any.whl", hash = "sha256:7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa", size = 18059, upload-time = "2024-10-25T17:25:39.051Z" },
+]
+
+[[package]]
 name = "filelock"
 version = "3.32.3"
 source = { registry = "https://pypi.org/simple" }
@@ -557,8 +566,8 @@ wheels = [
 
 [[package]]
 name = "kirocrew"
-version = "0.3.0"
-source = { url = "https://download.crew.kiro.dev/cli/stable/0.3.0/kirocrew-0.3.0-py3-none-any.whl" }
+version = "0.5.0"
+source = { url = "https://download.crew.kiro.dev/cli/stable/0.5.0/kirocrew-0.5.0-py3-none-any.whl" }
 dependencies = [
     { name = "aiohttp" },
     { name = "cron-descriptor" },
@@ -567,6 +576,7 @@ dependencies = [
     { name = "defusedxml" },
     { name = "jinja2" },
     { name = "numpy" },
+    { name = "openpyxl" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-sdk" },
     { name = "pdfplumber" },
@@ -578,6 +588,7 @@ dependencies = [
     { name = "requests" },
     { name = "slack-sdk" },
     { name = "snowballstemmer" },
+    { name = "truststore", marker = "sys_platform == 'darwin'" },
     { name = "typing-extensions" },
     { name = "tzdata", marker = "sys_platform == 'win32'" },
     { name = "tzlocal", marker = "sys_platform == 'win32'" },
@@ -586,15 +597,15 @@ dependencies = [
     { name = "yarl" },
 ]
 wheels = [
-    { url = "https://download.crew.kiro.dev/cli/stable/0.3.0/kirocrew-0.3.0-py3-none-any.whl", hash = "sha256:30bd90fcf5e0adc87541f67162866dcc3b5b2d5a0a44418c6d42022c8c7abbb2" },
+    { url = "https://download.crew.kiro.dev/cli/stable/0.5.0/kirocrew-0.5.0-py3-none-any.whl", hash = "sha256:48a722da4a1957b3962e42b675c83c19a4b898bca0d54af81a6305c4dd915d57" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.9,<4" },
-    { name = "amazon-transcribe", marker = "extra == 'voice'", specifier = ">=0.6,<1" },
+    { name = "amazon-transcribe", marker = "extra == 'voice-aws'", specifier = ">=0.6,<1" },
     { name = "black", marker = "extra == 'dev'", specifier = "==26.3.1" },
-    { name = "boto3", marker = "extra == 'voice'", specifier = ">=1.34,<2" },
+    { name = "boto3", marker = "extra == 'voice-aws'", specifier = ">=1.34,<2" },
     { name = "cron-descriptor", specifier = ">=1.4,<2" },
     { name = "croniter", specifier = ">=2.0,<3" },
     { name = "cryptography", specifier = ">=42,<48" },
@@ -603,14 +614,17 @@ requires-dist = [
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6" },
     { name = "isort", marker = "extra == 'dev'", specifier = "==6.0.0" },
     { name = "jinja2", specifier = ">=2.11.3" },
+    { name = "kirocrew", extras = ["voice-aws"], marker = "extra == 'voice'" },
+    { name = "lark-oapi", marker = "extra == 'feishu'", specifier = ">=1.4,<2" },
     { name = "mypy", marker = "extra == 'dev'", specifier = "==1.14.1" },
+    { name = "neonize", marker = "extra == 'whatsapp'", specifier = "==0.4.3.post0" },
     { name = "numpy", specifier = ">=1.21,<3" },
+    { name = "openpyxl", specifier = ">=3.1,<4" },
     { name = "opentelemetry-api", specifier = ">=1,<2" },
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otlp'", specifier = "==1.44.0" },
     { name = "opentelemetry-sdk", specifier = ">=1,<2" },
     { name = "pdfplumber", specifier = ">=0.10,<1" },
     { name = "py-spy", marker = "extra == 'perf'", specifier = ">=0.3,<1" },
-    { name = "pyinstaller", marker = "extra == 'desktop'", specifier = ">=6,<7" },
     { name = "pyjwt", extras = ["crypto"], marker = "extra == 'dev'", specifier = "==2.13.0" },
     { name = "pyjwt", extras = ["crypto"], marker = "extra == 'teams'", specifier = "==2.13.0" },
     { name = "pysqlite3-binary", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = ">=0.5.4" },
@@ -621,12 +635,14 @@ requires-dist = [
     { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3" },
     { name = "python-docx", specifier = ">=1,<2" },
+    { name = "pywhispercpp", marker = "extra == 'voice'", specifier = ">=1.5,<2" },
     { name = "pywinpty", marker = "sys_platform == 'win32'", specifier = ">=2.0,<4" },
     { name = "pyyaml", specifier = ">=6,<7" },
     { name = "qrcode", extras = ["pil"], specifier = ">=7.4,<9" },
     { name = "requests", specifier = ">=2.28,<3" },
     { name = "slack-sdk", specifier = ">=3.27,<4" },
     { name = "snowballstemmer", specifier = ">=1.0" },
+    { name = "truststore", marker = "sys_platform == 'darwin'", specifier = "==0.10.4" },
     { name = "typing-extensions", specifier = ">=4.5.0" },
     { name = "tzdata", marker = "sys_platform == 'win32'", specifier = ">=2024.1" },
     { name = "tzlocal", marker = "sys_platform == 'win32'", specifier = ">=5.0" },
@@ -634,7 +650,7 @@ requires-dist = [
     { name = "websockets", specifier = ">=12,<16" },
     { name = "yarl", specifier = ">=1.9,<2" },
 ]
-provides-extras = ["otlp", "perf", "teams", "voice", "desktop", "dev"]
+provides-extras = ["otlp", "perf", "teams", "whatsapp", "feishu", "voice-aws", "voice", "dev"]
 
 [[package]]
 name = "kirocrew-agentcore-adapter"
@@ -701,7 +717,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = "==1.40.21" },
-    { name = "kirocrew", url = "https://download.crew.kiro.dev/cli/stable/0.3.0/kirocrew-0.3.0-py3-none-any.whl" },
+    { name = "kirocrew", url = "https://download.crew.kiro.dev/cli/stable/0.5.0/kirocrew-0.5.0-py3-none-any.whl" },
 ]
 
 [[package]]
@@ -909,6 +925,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/36/33/29208b8b075bde62d26a81d14b358c42b0f69b6cabd98d4ff97f37f22b05/numpy-2.5.2-cp312-cp312-win32.whl", hash = "sha256:d6a48072864e3324e194a8fbb3c657bcc5b5c869dbc64c9537b1d5c862572c0a", size = 6072817, upload-time = "2026-08-09T13:45:17.867Z" },
     { url = "https://files.pythonhosted.org/packages/7f/b9/87fea2769fe1c47c1b5b01d8310772c9d1a85d485de7cf386ef7a3332b02/numpy-2.5.2-cp312-cp312-win_amd64.whl", hash = "sha256:28ac63476ec7651484215ee7fa15a1f78b57c14621f01e392afe17b9a1390ce4", size = 12464674, upload-time = "2026-08-09T13:45:20.734Z" },
     { url = "https://files.pythonhosted.org/packages/14/52/032b97e00461ab0809bbe4c588b035620e5a14b8cdee47ecddefc7b17d33/numpy-2.5.2-cp312-cp312-win_arm64.whl", hash = "sha256:27650bb0e7140fa3d37b9923b4803645e0b125d190f326eecfd3f4dad8e8ade1", size = 10397131, upload-time = "2026-08-09T13:45:23.73Z" },
+]
+
+[[package]]
+name = "openpyxl"
+version = "3.1.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "et-xmlfile" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3d/f9/88d94a75de065ea32619465d2f77b29a0469500e99012523b91cc4141cd1/openpyxl-3.1.5.tar.gz", hash = "sha256:cf0e3cf56142039133628b5acffe8ef0c12bc902d2aadd3e0fe5878dc08d1050", size = 186464, upload-time = "2024-06-28T14:03:44.161Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c0/da/977ded879c29cbd04de313843e76868e6e13408a94ed6b987245dc7c8506/openpyxl-3.1.5-py2.py3-none-any.whl", hash = "sha256:5282c12b107bffeef825f4617dc029afaf41d0ea60823bbb665ef3079dc79de2", size = 250910, upload-time = "2024-06-28T14:03:41.161Z" },
 ]
 
 [[package]]
@@ -1479,6 +1507,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/be/ba/1f744cdc819428fc6b5084ec34d9b30660f6f9daaf70eead706e3203ec3c/toml-0.10.2.tar.gz", hash = "sha256:b3bda1d108d5dd99f4a20d24d9c348e91c4db7ab1b749200bded2f839ccbe68f", size = 22253, upload-time = "2020-11-01T01:40:22.204Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/44/6f/7120676b6d73228c96e17f1f794d8ab046fc910d781c8d151120c3f1569e/toml-0.10.2-py2.py3-none-any.whl", hash = "sha256:806143ae5bfb6a3c6e736a764057db0e6a0e05e338b5630894a5f779cabb4f9b", size = 16588, upload-time = "2020-11-01T01:40:20.672Z" },
+]
+
+[[package]]
+name = "truststore"
+version = "0.10.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/53/a3/1585216310e344e8102c22482f6060c7a6ea0322b63e026372e6dcefcfd6/truststore-0.10.4.tar.gz", hash = "sha256:9d91bd436463ad5e4ee4aba766628dd6cd7010cf3e2461756b3303710eebc301", size = 26169, upload-time = "2025-08-12T18:49:02.73Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/19/97/56608b2249fe206a67cd573bc93cd9896e1efb9e98bce9c163bcdc704b88/truststore-0.10.4-py3-none-any.whl", hash = "sha256:adaeaecf1cbb5f4de3b1959b42d41f6fab57b2b1666adb59e89cb0b53361d981", size = 18660, upload-time = "2025-08-12T18:49:01.46Z" },
 ]
 
 [[package]]

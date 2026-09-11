@@ -1,0 +1,220 @@
+{
+  "schemaVersion": 1,
+  "kiroCrew": {
+    "version": "0.5.0",
+    "artifactSha256": "48a722da4a1957b3962e42b675c83c19a4b898bca0d54af81a6305c4dd915d57"
+  },
+  "bootstrap": {
+    "path": "/bootstrap.js",
+    "mustLoadBeforeUpstreamBundle": true
+  },
+  "browserAuthority": {
+    "cognitoOnly": true,
+    "browserVisibleKiroCrewToken": false,
+    "browserKiroCrewTokenStorageKeys": []
+  },
+  "syntheticAuthRoutes": [
+    "GET /api/auth/local-token",
+    "GET /api/auth/status",
+    "POST /api/auth/logout",
+    "POST /api/auth/refresh"
+  ],
+  "allowedRouteFamilies": [
+    {
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/health"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/status"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/system"
+    },
+    {
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/terminal"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/ws/terminal"
+    },
+    {
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/chat"
+    },
+    {
+      "methods": [
+        "DELETE",
+        "GET",
+        "PATCH",
+        "POST"
+      ],
+      "path": "/api/conversations"
+    },
+    {
+      "methods": [
+        "DELETE",
+        "GET",
+        "PATCH",
+        "POST"
+      ],
+      "path": "/api/agents"
+    },
+    {
+      "methods": [
+        "DELETE",
+        "GET",
+        "PATCH",
+        "POST"
+      ],
+      "path": "/api/workspaces"
+    },
+    {
+      "methods": [
+        "DELETE",
+        "GET",
+        "PATCH",
+        "POST"
+      ],
+      "path": "/api/artifacts"
+    },
+    {
+      "methods": [
+        "DELETE",
+        "GET",
+        "POST"
+      ],
+      "path": "/api/memory"
+    },
+    {
+      "methods": [
+        "DELETE",
+        "GET",
+        "POST"
+      ],
+      "path": "/api/knowledge"
+    },
+    {
+      "methods": [
+        "DELETE",
+        "GET",
+        "PATCH",
+        "POST"
+      ],
+      "path": "/api/cron"
+    },
+    {
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "path": "/api/tasks"
+    },
+    {
+      "methods": [
+        "GET",
+        "PATCH"
+      ],
+      "path": "/api/settings"
+    },
+    {
+      "methods": [
+        "DELETE",
+        "GET",
+        "PATCH",
+        "POST"
+      ],
+      "path": "/api/mcp"
+    },
+    {
+      "methods": [
+        "DELETE",
+        "GET",
+        "PATCH",
+        "POST"
+      ],
+      "path": "/api/apps"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/events",
+      "transport": "sse"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/ws",
+      "transport": "websocket"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/file-raw",
+      "transfer": "bounded"
+    }
+  ],
+  "unavailableRouteFamilies": [
+    "/api/desktop",
+    "/api/files/pick"
+  ],
+  "deniedRouteFamilies": [
+    "/api/auth/token",
+    "/api/config/export",
+    "/api/restart",
+    "/api/secrets",
+    "/api/shutdown",
+    "/api/token"
+  ],
+  "supportedStreaming": [
+    "fetch-stream",
+    "sse",
+    "websocket"
+  ],
+  "compiledNetworkContract": {
+    "observedApiLiteralsSha256": "5ad5e87a564e7d00933253d358175e0612f97c4cfd4bed4ec285f249ce86ebe1",
+    "unlistedRouteDisposition": "allowed",
+    "unsupportedConstructors": [
+      "WebTransport",
+      "RTCDataChannel"
+    ],
+    "observedApiLiteralsCount": 380
+  },
+  "transferLimits": {
+    "requestBytes": 1048576,
+    "responseBytes": 8388608,
+    "largerFiles": "sandbox-scoped-presigned-url"
+  },
+  "assetIntegrity": {
+    "manifest": "/upstream/0.2.0/asset-manifest.json",
+    "algorithm": "sha256",
+    "assetSetSha256": "70cb3ec88c2a42f177724c2ab16bd7f69ff706bf63fd8fc32c2ea3e58a93c50f",
+    "requiredTypes": [
+      "html",
+      "javascript",
+      "css",
+      "font",
+      "icon"
+    ]
+  },
+  "version": "0.5.0"
+}

@@ -36,7 +36,10 @@ class ContractLease:
     def __init__(self, expected: tuple[str, str, str]) -> None:
         self._expected = expected
 
-    def authorize(self, subject: str, sandbox_id: str, runtime_session_id: str) -> None:
+    def authorize(
+        self, subject: str, sandbox_id: str, runtime_session_id: str, binding_token: str
+    ) -> None:
+        assert binding_token
         assert (subject, sandbox_id, runtime_session_id) == self._expected
 
 

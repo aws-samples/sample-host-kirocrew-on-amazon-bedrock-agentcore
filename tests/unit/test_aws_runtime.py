@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os as module_os
 import signal
@@ -12,7 +13,6 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 from cryptography.exceptions import InvalidSignature
 from kirocrew_agentcore_adapter.identity import KiroAuthState
 from kirocrew_agentcore_adapter.transport import (
@@ -32,16 +32,21 @@ from kirocrew_agentcore_persistence.checkpoint import (
     CheckpointReceipt,
     SystemFlusher,
 )
-from kirocrew_agentcore_persistence.durability import BrokeredCheckpointStore
+from kirocrew_agentcore_persistence.durability import (
+    BrokerAuthorizationError,
+    BrokeredCheckpointStore,
+    BrokerRefusalError,
+)
 from kirocrew_agentcore_persistence.remote import LambdaBrokerClient
 from kirocrew_agentcore_persistence.restore import RestoreError, RestoreReport
 from kirocrew_agentcore_runtime.aws_runtime import (
     AwsKmsSignatureVerifier,
     AwsSessionInitializer,
-    DynamoLeaseAuthorizer,
-    DynamoSandboxStateStore,
+    BrokeredLeaseAuthorizer,
+    BrokeredSandboxStateStore,
     InitOwnershipError,
     ProductionRuntimeBackend,
+    SandboxRecordConflictError,
     StagedStateFlusher,
     _required,
 )
@@ -63,19 +68,37 @@ class FakeKms:
         return {"SignatureValid": self.valid}
 
 
-class FakeDynamo:
-    def __init__(self, item: dict[str, dict[str, str]]) -> None:
-        self.item = item
-        self.request: dict[str, Any] | None = None
-        self.updates: list[dict[str, Any]] = []
+class _Payload:
+    def __init__(self, value: object) -> None:
+        self.value = value
 
-    def get_item(self, **request: Any) -> dict[str, object]:
-        self.request = request
-        return {"Item": self.item}
+    def read(self) -> bytes:
+        return json.dumps(self.value).encode()
 
-    def update_item(self, **request: Any) -> dict[str, object]:
-        self.updates.append(request)
-        return {}
+
+class FakeBrokerLambda:
+    """Persistence broker double: replays scripted results, ``None`` = refusal."""
+
+    def __init__(self, *responses: dict[str, object] | str | None) -> None:
+        self.responses = list(responses)
+        self.requests: list[dict[str, Any]] = []
+
+    def invoke(self, **request: Any) -> dict[str, object]:
+        self.requests.append(json.loads(request["Payload"]))
+        value = self.responses.pop(0) if len(self.responses) > 1 else self.responses[0]
+        if value is None or isinstance(value, str):
+            # ``None`` is a refusal; a string names another Lambda error type.
+            error_type = "PermissionError" if value is None else value
+            error = {"errorMessage": "broker failed", "errorType": error_type}
+            return {"Payload": _Payload(error), "FunctionError": "Unhandled"}
+        return {"Payload": _Payload(value)}
+
+    def operations(self) -> list[tuple[str, str]]:
+        return [(str(r["operation"]), str(r["bindingToken"])) for r in self.requests]
+
+
+SANDBOX = "sbx_0123456789ABCDEFGHJKMNPQ"
+OWNER = "6f1d2c3b-4a5e-4f60-9b1c-2d3e4f5a6b7c"
 
 
 def test_kms_verifier_uses_rsa_pss_and_fails_closed() -> None:
@@ -95,32 +118,46 @@ def test_kms_verifier_uses_rsa_pss_and_fails_closed() -> None:
         AwsKmsSignatureVerifier(client, "")
 
 
-def test_dynamo_authorizer_requires_matching_active_session() -> None:
-    client = FakeDynamo({"runtimeSessionId": {"S": "session-1"}, "state": {"S": "READY"}})
-    authorizer = DynamoLeaseAuthorizer(client, "sandboxes")
-    authorizer.authorize("subject", "sbx_0123456789ABCDEFGHJKMNPQ", "session-1")
-    assert client.request == {
-        "TableName": "sandboxes",
-        "Key": {
-            "pk": {"S": "SANDBOX#sbx_0123456789ABCDEFGHJKMNPQ"},
-            "sk": {"S": "METADATA"},
-        },
-        "ConsistentRead": True,
-        "ProjectionExpression": "runtimeSessionId, #state",
-        "ExpressionAttributeNames": {"#state": "state"},
-    }
+def test_brokered_authorizer_delegates_the_lease_check_and_caches_only_approvals() -> None:
+    now = [100.0]
+    lambda_client = FakeBrokerLambda({"authorized": True})
+    authorizer = BrokeredLeaseAuthorizer(
+        lambda_client, "arn:broker", cache_seconds=15, clock=lambda: now[0]
+    )
+    authorizer.authorize("subject", SANDBOX, "session-1", "binding-a")
+    assert lambda_client.requests == [
+        {
+            "bindingToken": "binding-a",
+            "operation": "lease",
+            "runtimeSessionId": "session-1",
+            "sandboxId": SANDBOX,
+        }
+    ]
+    # Within the cache window the same binding is trusted without a round trip.
+    now[0] = 110.0
+    authorizer.authorize("subject", SANDBOX, "session-1", "binding-a")
+    assert len(lambda_client.requests) == 1
+    # A renewed token, or an expired window, is checked again.
+    authorizer.authorize("subject", SANDBOX, "session-1", "binding-b")
+    now[0] = 130.0
+    authorizer.authorize("subject", SANDBOX, "session-1", "binding-b")
+    assert len(lambda_client.requests) == 3
 
-    for item in (
-        {"runtimeSessionId": {"S": "other"}, "state": {"S": "READY"}},
-        {"runtimeSessionId": {"S": "session-1"}, "state": {"S": "STOPPED"}},
-        {},
-    ):
+    refusing = FakeBrokerLambda(None)
+    rejecting = BrokeredLeaseAuthorizer(refusing, "arn:broker", clock=lambda: now[0])
+    for _ in range(2):
         with pytest.raises(LeaseAuthorizationError):
-            DynamoLeaseAuthorizer(FakeDynamo(item), "sandboxes").authorize(
-                "subject", "sandbox", "session-1"
-            )
-    with pytest.raises(ValueError, match="SANDBOX_TABLE"):
-        DynamoLeaseAuthorizer(client, "")
+            rejecting.authorize("subject", SANDBOX, "session-1", "binding-a")
+    assert len(refusing.requests) == 2, "refusals are never cached"
+    # A broker that fails for any other reason is not a binding problem.
+    crashing = BrokeredLeaseAuthorizer(FakeBrokerLambda("ClientError"), "arn:broker")
+    with pytest.raises(BrokerAuthorizationError) as failure:
+        crashing.authorize("subject", SANDBOX, "session-1", "binding-a")
+    assert not isinstance(failure.value, BrokerRefusalError)
+    with pytest.raises(ValueError, match="PERSISTENCE_BROKER_ARN"):
+        BrokeredLeaseAuthorizer(lambda_client, "")
+    with pytest.raises(ValueError, match="PERSISTENCE_BROKER_ARN"):
+        BrokeredLeaseAuthorizer(lambda_client, "arn:broker", cache_seconds=-1)
 
 
 def test_required_environment_and_native_invocation_routes() -> None:
@@ -129,7 +166,7 @@ def test_required_environment_and_native_invocation_routes() -> None:
         _required({}, "MISSING")
 
     class AllowLease:
-        def authorize(self, _subject: str, _sandbox: str, _session: str) -> None:
+        def authorize(self, _subject: str, _sandbox: str, _session: str, _token: str) -> None:
             return
 
     class AllowSignature:
@@ -158,7 +195,6 @@ def test_required_environment_and_native_invocation_routes() -> None:
 class FakeStateStore:
     def __init__(self) -> None:
         self.errors: list[tuple[str, str, str, str, str]] = []
-        self.checkpoints: list[tuple[str, str, int, str]] = []
         self.healed: list[tuple[str, str]] = []
 
     def heal_ready(self, sandbox_id: str, runtime_session_id: str) -> None:
@@ -183,15 +219,6 @@ class FakeStateStore:
                 upstream_exception,
             )
         )
-
-    def record_checkpoint(
-        self,
-        sandbox_id: str,
-        runtime_session_id: str,
-        generation: int,
-        manifest_digest: str,
-    ) -> None:
-        self.checkpoints.append((sandbox_id, runtime_session_id, generation, manifest_digest))
 
 
 class FakeSupervisor:
@@ -230,7 +257,7 @@ class StubAwsSessionInitializer(AwsSessionInitializer):
         super().__init__(
             object(),
             "arn:aws:lambda:us-east-2:123456789012:function:broker",
-            cast(DynamoSandboxStateStore, self.state_store),
+            cast(BrokeredSandboxStateStore, self.state_store),
             Path.cwd() / "test-workspace",
             RuntimeMetadata("0.2.0", "a" * 64, "kirocrew-agentcore.v1"),
             cast(KiroCrewSupervisor, self.supervisor),
@@ -314,19 +341,22 @@ class FakeBrokerClient:
         return f"receipt-{generation}"
 
 
-def test_dynamo_state_store_validates_metadata_and_uses_conditional_updates() -> None:
-    client = FakeDynamo(
-        {
-            "runtimeSessionId": {"S": "session-1"},
-            "state": {"S": "STARTING"},
-            "lastCheckpointGeneration": {"N": "3"},
-        }
+def test_brokered_state_store_maps_lifecycle_operations_and_adopts_the_session_token() -> None:
+    lambda_client = FakeBrokerLambda(
+        {"runtimeSessionId": "session-1", "state": "STARTING", "lastCheckpointGeneration": 3},
+        {"applied": True, "runtimeSessionToken": "session-token"},
+        {"applied": True},
     )
-    store = DynamoSandboxStateStore(client, "sandboxes")
-    metadata = store.read("sbx_0123456789ABCDEFGHJKMNPQ")
+    store = BrokeredSandboxStateStore(lambda_client, "arn:broker")
+    with pytest.raises(SessionInitializationError, match="binding is unavailable"):
+        store.read(SANDBOX, "session-1")
+    store.binding_token = "binding"  # noqa: S105 - opaque binding fixture
+    metadata = store.read(SANDBOX, "session-1")
     assert metadata.runtime_session_id == "session-1"
+    assert metadata.state == "STARTING"
     assert metadata.last_checkpoint_generation == 3
-    store.acquire_init("sbx_0123456789ABCDEFGHJKMNPQ", "session-1", "owner-1")
+    assert store.acquire_init(SANDBOX, "session-1", OWNER) == "session-token"
+    assert store.session_token == "session-token"  # noqa: S105 - opaque fixture
     report = RestoreReport(
         "restored",
         3,
@@ -335,36 +365,72 @@ def test_dynamo_state_store_validates_metadata_and_uses_conditional_updates() ->
         (3,),
         datetime(2026, 8, 17, tzinfo=UTC),
     )
-    store.mark_ready("sbx_0123456789ABCDEFGHJKMNPQ", "session-1", report, "owner-1")
-    store.heartbeat_init("sbx_0123456789ABCDEFGHJKMNPQ", "owner-1")
-    store.mark_error("sbx_0123456789ABCDEFGHJKMNPQ", "session-1", init_owner="owner-1")
-    store.heal_ready("sbx_0123456789ABCDEFGHJKMNPQ", "session-1")
-    assert len(client.updates) == 5
-    heartbeat_update = client.updates[2]
-    assert heartbeat_update["ConditionExpression"] == "initOwner = :owner"
-    owned_error = client.updates[3]
-    assert "initOwner = :owner" in owned_error["ConditionExpression"]
-    assert "REMOVE initOwner, initExpiresAt" in owned_error["UpdateExpression"]
-    assert "runtimeSessionId = :session" in client.updates[0]["ConditionExpression"]
-    assert client.updates[1]["ExpressionAttributeValues"][":restore"] == {"S": "RESTORED"}
-    assert client.updates[4]["ExpressionAttributeValues"][":state"] == {"S": "READY"}
-    assert client.updates[4]["ExpressionAttributeValues"][":allowed0"] == {"S": "STARTING"}
+    store.mark_ready(SANDBOX, "session-1", report, OWNER)
+    store.heartbeat_init(SANDBOX, "session-1", OWNER)
+    store.heartbeat_lease(SANDBOX, "session-1")
+    store.mark_error(SANDBOX, "session-1", init_owner=OWNER)
+    store.mark_error(SANDBOX, "session-1", "RestoreError", "PERSISTENCE_RESTORE_FAILED", "OSError")
+    store.heal_ready(SANDBOX, "session-1")
+    # Record access starts on the browser's binding token and switches to the
+    # broker-issued runtime-session token once initialization is owned.
+    assert lambda_client.operations() == [
+        ("readRecord", "binding"),
+        ("acquireInit", "binding"),
+        ("markReady", "session-token"),
+        ("heartbeatInit", "session-token"),
+        ("heartbeatLease", "session-token"),
+        ("markError", "session-token"),
+        ("markError", "session-token"),
+        ("healReady", "session-token"),
+    ]
+    requests = lambda_client.requests
+    assert all(r["sandboxId"] == SANDBOX and r["runtimeSessionId"] == "session-1" for r in requests)
+    assert requests[1]["initOwner"] == OWNER
+    assert requests[2]["restoreOutcome"] == "restored"
+    assert requests[5]["initOwner"] == OWNER
+    assert "initOwner" not in requests[6]
+    assert requests[6]["failureType"] == "RestoreError"
+    assert requests[6]["failureDetail"] == "PERSISTENCE_RESTORE_FAILED"
+    assert requests[6]["upstreamException"] == "OSError"
 
-    for item in (
+    # The broker's conditional outcome surfaces as a typed conflict.
+    conflicted = BrokeredSandboxStateStore(FakeBrokerLambda({"applied": False}), "arn:broker")
+    conflicted.binding_token = "binding"  # noqa: S105 - opaque binding fixture
+    with pytest.raises(SandboxRecordConflictError, match="healReady"):
+        conflicted.heal_ready(SANDBOX, "session-1")
+    with pytest.raises(InitOwnershipError, match="acquireInit"):
+        conflicted.acquire_init(SANDBOX, "session-1", OWNER)
+    # The broker's own reason for the refusal reaches the caller unflattened.
+    explained = BrokeredSandboxStateStore(
+        FakeBrokerLambda({"applied": False, "reason": "Sandbox is not claimable from state BUSY."}),
+        "arn:broker",
+    )
+    explained.binding_token = "binding"  # noqa: S105 - opaque binding fixture
+    with pytest.raises(InitOwnershipError, match="not claimable from state BUSY"):
+        explained.acquire_init(SANDBOX, "session-1", OWNER)
+    # A refusal from the broker is not a conflict; it propagates as such.
+    refused = BrokeredSandboxStateStore(FakeBrokerLambda(None), "arn:broker")
+    refused.binding_token = "binding"  # noqa: S105 - opaque binding fixture
+    with pytest.raises(BrokerRefusalError):
+        refused.heartbeat_lease(SANDBOX, "session-1")
+    tokenless = BrokeredSandboxStateStore(FakeBrokerLambda({"applied": True}), "arn:broker")
+    tokenless.binding_token = "binding"  # noqa: S105 - opaque binding fixture
+    with pytest.raises(SessionInitializationError, match="session token"):
+        tokenless.acquire_init(SANDBOX, "session-1", OWNER)
+
+    records: list[dict[str, object]] = [
         {},
-        {
-            "runtimeSessionId": {"S": "session-1"},
-            "state": {"S": "READY"},
-            "lastCheckpointGeneration": {"N": "0"},
-        },
-        {
-            "runtimeSessionId": {"S": "session-1"},
-            "state": {"S": "READY"},
-            "lastCheckpointGeneration": {"N": "invalid"},
-        },
-    ):
+        {"runtimeSessionId": "session-1"},
+        {"runtimeSessionId": "session-1", "state": "READY", "lastCheckpointGeneration": 0},
+        {"runtimeSessionId": "session-1", "state": "READY", "lastCheckpointGeneration": "3"},
+    ]
+    for record in records:
+        reader = BrokeredSandboxStateStore(FakeBrokerLambda(record), "arn:broker")
+        reader.binding_token = "binding"  # noqa: S105 - opaque binding fixture
         with pytest.raises(SessionInitializationError):
-            DynamoSandboxStateStore(FakeDynamo(item), "sandboxes").read("sandbox")
+            reader.read(SANDBOX, "session-1")
+    with pytest.raises(ValueError, match="PERSISTENCE_BROKER_ARN"):
+        BrokeredSandboxStateStore(lambda_client, "")
 
 
 def test_session_initializer_is_exactly_once_and_rejects_cross_session_reuse() -> None:
@@ -380,19 +446,19 @@ def test_session_initializer_is_exactly_once_and_rejects_cross_session_reuse() -
             (claims.sandbox_id, claims.runtime_session_id)
         ]
 
-        # A ConditionalCheckFailedException (record not STARTING) is benign.
+        # A rejected condition (record not STARTING) is benign.
         def conditional_failure(sandbox: str, session: str) -> None:
-            raise ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+            raise SandboxRecordConflictError("healReady")
 
         cast(Any, initializer).state_store.heal_ready = conditional_failure
         await initializer.initialize("subject", "binding-2b", claims)
 
-        # Any other Dynamo failure surfaces.
+        # Any other broker failure surfaces.
         def hard_failure(sandbox: str, session: str) -> None:
-            raise ClientError({"Error": {"Code": "InternalServerError"}}, "UpdateItem")
+            raise BrokerAuthorizationError("broker refused")
 
         cast(Any, initializer).state_store.heal_ready = hard_failure
-        with pytest.raises(ClientError):
+        with pytest.raises(BrokerAuthorizationError):
             await initializer.initialize("subject", "binding-2c", claims)
 
         # An unhealthy runtime must not publish READY.
@@ -405,8 +471,12 @@ def test_session_initializer_is_exactly_once_and_rejects_cross_session_reuse() -
         assert healed_calls == []
         initializer.readiness.read_only = False
         assert len(initializer.backend.configurations) == 1
+        # Every invocation hands its binding token to the record store, while the
+        # persistence client keeps the token it was initialized with: it runs on
+        # the broker-issued runtime-session token, not the browser's.
+        assert cast(Any, initializer).state_store.binding_token == final_binding
         client = cast(Any, initializer)._broker_client
-        assert client.binding_token == final_binding
+        assert client.binding_token == "binding-1"  # noqa: S105 - opaque fixture
         with pytest.raises(SessionInitializationError):
             await initializer.initialize(
                 "subject",
@@ -415,34 +485,6 @@ def test_session_initializer_is_exactly_once_and_rejects_cross_session_reuse() -
             )
 
     asyncio.run(scenario())
-
-
-def _client_error(code: str) -> ClientError:
-    return ClientError({"Error": {"Code": code}}, "UpdateItem")
-
-
-def test_acquire_init_translates_conditional_failure_to_ownership_error() -> None:
-    client = FakeDynamo(
-        {
-            "runtimeSessionId": {"S": "session-1"},
-            "state": {"S": "STARTING"},
-        }
-    )
-
-    def failing_update(**kwargs: object) -> dict[str, object]:
-        raise _client_error("ConditionalCheckFailedException")
-
-    client.update_item = failing_update  # type: ignore[method-assign]
-    store = DynamoSandboxStateStore(client, "sandboxes")
-    with pytest.raises(InitOwnershipError):
-        store.acquire_init("sbx_0123456789ABCDEFGHJKMNPQ", "session-1", "owner-2")
-
-    def failing_other(**kwargs: object) -> dict[str, object]:
-        raise _client_error("ProvisionedThroughputExceededException")
-
-    client.update_item = failing_other  # type: ignore[method-assign]
-    with pytest.raises(ClientError):
-        store.acquire_init("sbx_0123456789ABCDEFGHJKMNPQ", "session-1", "owner-2")
 
 
 def test_session_initializer_failure_remains_read_only_and_never_ready(
@@ -483,7 +525,8 @@ def test_losing_the_init_ownership_race_never_poisons_the_record() -> None:
     async def scenario() -> None:
         initializer = OwnedElsewhereInitializer()
         claims = BindingClaims("sandbox", "session", 2_000_000_000)
-        with pytest.raises(SessionInitializationError, match="in progress elsewhere"):
+        # The broker's reason reaches the client instead of one flat message.
+        with pytest.raises(SessionInitializationError, match="owned elsewhere"):
             await initializer.initialize("subject", "binding", claims)
         # The loser walks away: no ERROR write, no gateway termination side
         # effects beyond its own cleanup.
@@ -498,7 +541,8 @@ def test_init_heartbeat_extends_the_lease_and_survives_beat_failures() -> None:
         initializer = StubAwsSessionInitializer()
         beats: list[str] = []
 
-        def heartbeat(sandbox: str, owner: str, *, ttl_seconds: int = 90) -> None:
+        def heartbeat(sandbox: str, session: str, owner: str) -> None:
+            del session, owner
             beats.append(sandbox)
             if len(beats) == 2:
                 raise RuntimeError("dynamo hiccup")
@@ -519,7 +563,7 @@ def test_init_heartbeat_extends_the_lease_and_survives_beat_failures() -> None:
         asyncio.sleep = fast_sleep  # type: ignore[assignment]
         try:
             with pytest.raises(asyncio.CancelledError):
-                await initializer._init_heartbeat("sandbox")
+                await initializer._init_heartbeat("sandbox", "session-1")
         finally:
             asyncio.sleep = real_sleep
         assert beats == ["sandbox", "sandbox", "sandbox"]
@@ -779,16 +823,15 @@ def test_shutdown_checkpoint_is_final_best_effort_and_bounded() -> None:
 
 
 def test_remaining_state_store_and_backend_branches() -> None:
-    with pytest.raises(ValueError, match="SANDBOX_TABLE"):
-        DynamoSandboxStateStore(FakeDynamo({}), "")
-    client = FakeDynamo({})
-    store = DynamoSandboxStateStore(client, "sandboxes")
-    store.mark_error("sandbox", "session")
-    assert client.updates[0]["ExpressionAttributeValues"][":failure"] == {"S": "UNKNOWN"}
-    assert client.updates[0]["ExpressionAttributeValues"][":detail"] == {"S": "UNKNOWN"}
-    assert ":starting, :restoring" in client.updates[0]["ConditionExpression"]
-    store.record_checkpoint("sandbox", "session", 2, "a" * 64)
-    assert len(client.updates) == 2
+    lambda_client = FakeBrokerLambda({"applied": True})
+    store = BrokeredSandboxStateStore(lambda_client, "arn:broker")
+    store.binding_token = "binding"  # noqa: S105 - opaque binding fixture
+    store.mark_error(SANDBOX, "session")
+    request = lambda_client.requests[0]
+    assert request["failureType"] == "UNKNOWN"
+    assert request["failureDetail"] == "UNKNOWN"
+    assert request["upstreamException"] == "UNKNOWN"
+    assert "initOwner" not in request
 
     async def scenario() -> None:
         readiness = RuntimeReadiness(True, True, False)
@@ -938,7 +981,7 @@ def test_initializer_constructor_and_error_update_failure() -> None:
         AwsSessionInitializer(
             object(),
             "",
-            cast(DynamoSandboxStateStore, object()),
+            cast(BrokeredSandboxStateStore, object()),
             Path.cwd(),
             RuntimeMetadata("0.2.0", "a" * 64, "kirocrew-agentcore.v1"),
             cast(KiroCrewSupervisor, FakeSupervisor()),
@@ -961,7 +1004,7 @@ def test_initializer_constructor_and_error_update_failure() -> None:
             raise RuntimeError("state update failed")
 
     initializer = StubAwsSessionInitializer(fail=True)
-    initializer._state_store = cast(DynamoSandboxStateStore, BrokenStateStore())
+    initializer._state_store = cast(BrokeredSandboxStateStore, BrokenStateStore())
 
     async def scenario() -> None:
         claims = BindingClaims("sandbox", "session", 2_000_000_000)
@@ -984,13 +1027,14 @@ def test_initialize_sync_restore_composition(monkeypatch: pytest.MonkeyPatch) ->
             self.ready: list[object] = []
             self.restoring: list[tuple[str, str]] = []
 
-        def read(self, _sandbox: str) -> object:
+        def read(self, _sandbox: str, _session: str) -> object:
             return metadata
 
-        def acquire_init(self, sandbox: str, session: str, owner: str) -> None:
+        def acquire_init(self, sandbox: str, session: str, owner: str) -> str:
             self.restoring.append((sandbox, session))
+            return "session-token"
 
-        def heartbeat_init(self, sandbox: str, owner: str, *, ttl_seconds: int = 90) -> None:
+        def heartbeat_init(self, sandbox: str, session: str, owner: str) -> None:
             return None
 
         def mark_ready(self, sandbox: str, session: str, report: object, owner: str) -> None:
@@ -1007,7 +1051,7 @@ def test_initialize_sync_restore_composition(monkeypatch: pytest.MonkeyPatch) ->
     initializer = AwsSessionInitializer(
         object(),
         "arn:broker",
-        cast(DynamoSandboxStateStore, state),
+        cast(BrokeredSandboxStateStore, state),
         Path("/workspace"),
         RuntimeMetadata("0.2.0", "a" * 64, "kirocrew-agentcore.v1"),
         cast(KiroCrewSupervisor, supervisor),
@@ -1018,8 +1062,9 @@ def test_initialize_sync_restore_composition(monkeypatch: pytest.MonkeyPatch) ->
     claims = BindingClaims("sandbox", "session", 2_000_000_000)
 
     class Client:
-        def __init__(self, *_args: object) -> None:
-            self.binding_token = "binding"  # noqa: S105 - opaque binding fixture
+        def __init__(self, *args: object) -> None:
+            # The persistence client is built on the broker-issued token.
+            self.binding_token = str(args[-1])
 
     class Broker:
         def __init__(self, _client: object, _sandbox: str) -> None:
@@ -1052,7 +1097,7 @@ def test_initialize_sync_restore_composition(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(module, "RestoreEngine", Restore)
     monkeypatch.setattr(module, "CheckpointEngine", lambda *_args, **_kwargs: sentinel_engine)
     client, actual_report, store, engine = initializer._initialize_sync("binding", claims)
-    assert client.binding_token == "binding"  # noqa: S105 - opaque binding fixture
+    assert client.binding_token == "session-token"  # noqa: S105 - opaque fixture
     assert actual_report is report
     assert isinstance(store, Store)
     assert engine is sentinel_engine
@@ -1155,7 +1200,6 @@ def test_build_runtime_application_cleanup_and_serve(monkeypatch: pytest.MonkeyP
         "BINDING_KEY_ARN": "arn:key",
         "COGNITO_ISSUER": "https://issuer",
         "PERSISTENCE_BROKER_ARN": "arn:broker",
-        "SANDBOX_TABLE": "sandboxes",
         "WORKSPACE_ROOT": str(Path.cwd() / "workspace"),
         "KIROCREW_START_TIMEOUT": "5",
     }
@@ -1481,16 +1525,6 @@ def test_cloudwatch_logging_attaches_only_when_configured(
     assert [h for h in root.handlers if h not in before] == []
 
 
-def test_lease_heartbeat_extends_the_start_lease_conditionally() -> None:
-    client = FakeDynamo({"runtimeSessionId": {"S": "session-1"}, "state": {"S": "READY"}})
-    store = DynamoSandboxStateStore(client, "sandboxes")
-    store.heartbeat_lease("sbx_0123456789ABCDEFGHJKMNPQ", "session-1")
-    update = client.updates[0]
-    assert update["ConditionExpression"] == "leaseOwner = :owner"
-    assert update["ExpressionAttributeValues"][":owner"] == {"S": "session-1"}
-    assert "leaseExpiresAt" in update["UpdateExpression"]
-
-
 def test_lifetime_lease_heartbeat_stops_when_superseded() -> None:
     """A newer start owns the lease: the loop exits instead of fighting it."""
 
@@ -1498,15 +1532,12 @@ def test_lifetime_lease_heartbeat_stops_when_superseded() -> None:
         initializer = StubAwsSessionInitializer()
         beats: list[str] = []
 
-        def heartbeat(sandbox: str, session: str, *, ttl_seconds: int = 90) -> None:
+        def heartbeat(sandbox: str, session: str) -> None:
             beats.append(session)
             if len(beats) == 2:
-                raise RuntimeError("dynamo hiccup")
+                raise RuntimeError("broker hiccup")
             if len(beats) == 3:
-                raise ClientError(
-                    {"Error": {"Code": "ConditionalCheckFailedException"}},
-                    "UpdateItem",
-                )
+                raise SandboxRecordConflictError("heartbeatLease")
 
         initializer.state_store.heartbeat_lease = heartbeat  # type: ignore[attr-defined]
         original_sleep = asyncio.sleep
@@ -1525,15 +1556,46 @@ def test_lifetime_lease_heartbeat_stops_when_superseded() -> None:
     asyncio.run(scenario())
 
 
+def test_lifetime_lease_heartbeat_stops_when_the_broker_no_longer_accepts_the_session() -> None:
+    """An expired or rotated-away token means the lease is not ours to extend."""
+
+    async def scenario() -> None:
+        initializer = StubAwsSessionInitializer()
+        beats: list[int] = []
+
+        def heartbeat(sandbox: str, session: str) -> None:
+            beats.append(1)
+            if len(beats) == 1:
+                # A non-refusal broker failure (throttling, a crash) is transient.
+                raise BrokerAuthorizationError("Persistence broker rejected the operation.")
+            raise BrokerRefusalError("Invalid runtime binding.")
+
+        initializer.state_store.heartbeat_lease = heartbeat  # type: ignore[attr-defined]
+        original_sleep = asyncio.sleep
+
+        async def fast_sleep(delay: float) -> None:
+            del delay
+            await original_sleep(0)
+
+        asyncio.sleep = fast_sleep  # type: ignore[assignment]
+        try:
+            await initializer._lease_heartbeat("sandbox", "session-1")
+        finally:
+            asyncio.sleep = original_sleep
+        assert beats == [1, 1]
+
+    asyncio.run(scenario())
+
+
 def test_lifetime_lease_heartbeat_propagates_cancellation_and_other_client_errors() -> None:
     async def scenario() -> None:
         initializer = StubAwsSessionInitializer()
         beats: list[int] = []
 
-        def heartbeat(sandbox: str, session: str, *, ttl_seconds: int = 90) -> None:
+        def heartbeat(sandbox: str, session: str) -> None:
             beats.append(1)
             if len(beats) == 1:
-                raise ClientError({"Error": {"Code": "Throttling"}}, "UpdateItem")
+                raise RuntimeError("Throttling")
             raise asyncio.CancelledError
 
         initializer.state_store.heartbeat_lease = heartbeat  # type: ignore[attr-defined]
@@ -1776,7 +1838,7 @@ def test_superseded_container_exits_so_the_platform_reschedules(
         class Meta:
             runtime_session_id = "new-session"
 
-        initializer.state_store.read = lambda sandbox_id: Meta()  # type: ignore[attr-defined]
+        initializer.state_store.read = lambda sandbox_id, session: Meta()  # type: ignore[attr-defined]
         shutdowns: list[int] = []
 
         async def checkpoint_on_shutdown(*, timeout_seconds: float = 15.0) -> None:
@@ -1810,7 +1872,7 @@ def test_supersession_check_stays_put_in_every_other_case(
         class Meta:
             runtime_session_id = "current"
 
-        initializer.state_store.read = lambda sandbox_id: Meta()  # type: ignore[attr-defined]
+        initializer.state_store.read = lambda sandbox_id, session: Meta()  # type: ignore[attr-defined]
         # A different owner or sandbox is a binding violation, not supersession.
         await initializer._exit_if_superseded(("intruder", "sandbox", "y"))
         await initializer._exit_if_superseded(("subject", "other-box", "y"))
@@ -1818,8 +1880,8 @@ def test_supersession_check_stays_put_in_every_other_case(
         await initializer._exit_if_superseded(("subject", "sandbox", "stale"))
 
         # A failing authority lookup degrades to staying put.
-        def boom(sandbox_id: str) -> object:
-            raise RuntimeError("dynamo down")
+        def boom(sandbox_id: str, session: str) -> object:
+            raise RuntimeError("broker down")
 
         initializer.state_store.read = boom  # type: ignore[attr-defined]
         await initializer._exit_if_superseded(("subject", "sandbox", "y"))

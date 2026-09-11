@@ -29,7 +29,19 @@ Each sandbox receives a 256-bit data key outside the manifest. AES-256-GCM uses 
 
 ## Brokered long-term durability and restore
 
-S3 checkpoints are the authoritative state; the workspace disk is ephemeral scratch space. The persistence broker derives `snapshots/<sandboxId>/...` keys itself, issues operation-specific URLs for at most 15 minutes, and requires KMS encryption-context headers containing the validated sandbox ID. Runtime callers cannot submit a bucket prefix or list objects.
+S3 checkpoints are the authoritative state; the workspace disk is ephemeral scratch space. The persistence broker derives `snapshots/<sandboxId>/...` keys itself, issues operation-specific URLs for at most 5 minutes, and requires KMS encryption-context headers containing the validated sandbox ID. Runtime callers cannot submit a bucket prefix or list objects.
+
+The broker is also the runtime's only path to its sandbox record. The microVM's execution role is shared by every process in the sandbox, including the user's terminal, so it holds no DynamoDB, S3, or data-key KMS grants. Every broker call carries a token under `bindingToken`: either the control plane's browser-scoped binding token (`type: binding`, 30 minutes) or a runtime-session token (`type: runtime-session`) the broker mints when a container wins `acquireInit`, carrying the same `sandboxId`, `runtimeSessionId`, and `subjectHash` claims and expiring no later than the platform session lifetime (`runtime_max_lifetime_seconds`). The broker verifies the signature, matches the claims against the request, and, for every operation except `readRecord`, confirms the record still names that session and is in a live state (or holds an unexpired initialization lease). Record operations are narrow and server-defined; the caller supplies only validated values, never expressions:
+
+| Operation | Effect on the caller's own record |
+|---|---|
+| `readRecord` | Returns `runtimeSessionId`, `state`, and `lastCheckpointGeneration` so a starting container can detect a rotated session and walk away. |
+| `lease` | Pure authorization; the adapter calls it per invocation and caches approvals for 15 seconds per binding token. |
+| `acquireInit` | Claims initialization ownership (`initOwner`, 90-second lease) and returns `runtimeSessionToken` when the claim applied. Claimable from `STARTING`, `RESTORING`, or `READY` **with a dead start lease** — the last case is how a sandbox reclaimed by idle scale-down is recovered instead of staying `READY` forever. A refusal carries a `reason` naming the clause that rejected it. |
+| `heartbeatInit` / `heartbeatLease` | Extend the initialization lease or the start lease; a rejected condition means a newer container or start owns it. |
+| `healReady` / `markReady` / `markError` | Publish the lifecycle transitions the container is entitled to, each conditioned on the session and, where relevant, the initialization owner. |
+
+A rejected condition is a normal result (`applied: false`); the runtime maps it to its lifecycle decisions. A refused token is a broker error, which the lease heartbeat treats as supersession.
 
 Before KiroCrew starts, an existing sandbox restores from S3 whenever the mount is empty, its pointer differs from the latest commit, local integrity sampling fails, managed storage expired, or the runtime version changed. Restore decrypts and validates a manifest, reconstructs an isolated staging tree, enforces allowlisted paths/file-count/size/type limits, verifies every chunk and whole-file digest, then atomically swaps the tree into place. A corrupt latest generation falls back once to the preceding commit. A new logical sandbox may initialize empty; an existing sandbox with no valid retained generation returns `PERSISTENCE_RESTORE_FAILED`.
 

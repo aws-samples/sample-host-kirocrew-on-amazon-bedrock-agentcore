@@ -117,13 +117,29 @@ def test_gated_auth_lambda_is_least_privilege_and_domain_limited() -> None:
     assert 'authorization_scopes = ["aws.cognito.signin.user.admin"]' in control_api
 
 
-def test_runtime_role_cannot_access_snapshot_objects() -> None:
+def test_runtime_role_cannot_access_snapshot_objects_or_the_sandbox_table() -> None:
+    """Everything in the microVM shares the execution role, the user's shell included.
+
+    The role may verify bindings, invoke the broker, and write its own logs and
+    metrics; the sandbox table and the checkpoint bucket are reachable only
+    through the broker, which verifies the caller's token before it touches a
+    record. Any direct table grant here would be a cross-tenant primitive.
+    """
     runtime = terraform("modules/runtime-common/main.tf")
+    root = terraform("main.tf")
     assert 'actions   = ["lambda:InvokeFunction"]' in runtime
     assert 'actions   = ["kms:GetPublicKey", "kms:Verify"]' in runtime
     assert 'actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]' in runtime
     assert 'resources = ["${aws_cloudwatch_log_group.runtime.arn}:*"]' in runtime
     assert not re.search(r'actions\s*=\s*\[[^]]*"s3:', runtime)
+    assert not re.search(r'actions\s*=\s*\[[^]]*"dynamodb:', runtime)
+    assert "sandbox_table" not in runtime
+    assert "kms:Decrypt" not in runtime
+    assert "kms:GenerateDataKey" not in runtime
+    # The runtime never learns the table name; it only knows the broker.
+    runtime_env = root[root.index('module "runtime_microvm"') : root.index('module "control_api"')]
+    assert "SANDBOX_TABLE" not in runtime_env
+    assert "PERSISTENCE_BROKER_ARN = module.persistence.broker_function_arn" in runtime_env
     persistence = terraform("modules/persistence/main.tf")
     assert 'resources = ["${aws_s3_bucket.snapshots.arn}/sandboxes/*"]' in persistence
     assert 'actions   = ["s3:ListBucket"]' in persistence
@@ -213,8 +229,7 @@ def test_lambda_archives_exclude_generated_python_caches() -> None:
     assert 'excludes    = ["kirocrew_agentcore_persistence/__pycache__"]' in persistence
 
 
-def test_runtime_and_persistence_can_use_encrypted_table_only_through_dynamodb() -> None:
-    runtime = terraform("modules/runtime-common/main.tf")
+def test_persistence_broker_uses_the_encrypted_table_only_through_dynamodb() -> None:
     persistence = terraform("modules/persistence/main.tf")
     root = terraform("main.tf")
     actions = 'actions   = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey", "kms:DescribeKey"]'
@@ -222,14 +237,14 @@ def test_runtime_and_persistence_can_use_encrypted_table_only_through_dynamodb()
         'values   = ["dynamodb.${data.aws_region.current.region}.'
         '${data.aws_partition.current.dns_suffix}"]'
     )
-    assert 'variable "sandbox_table_key_arn" { type = string }' in runtime
-    assert actions in runtime
-    assert "resources = [var.sandbox_table_key_arn]" in runtime
-    assert via_dynamodb in runtime
-    assert "sandbox_table_key_arn = module.persistence.snapshot_key_arn" in root
     assert actions in persistence
     assert "resources = [aws_kms_key.snapshots.arn]" in persistence
     assert via_dynamodb in persistence
+    # Runtime-session tokens are capped at the platform session lifetime.
+    assert (
+        "RUNTIME_SESSION_TOKEN_TTL_SECONDS = var.runtime_session_token_ttl_seconds" in persistence
+    )
+    assert "runtime_session_token_ttl_seconds = var.runtime_max_lifetime_seconds" in root
 
 
 def test_panel_persisted_paths_mirror_the_persistence_policy() -> None:

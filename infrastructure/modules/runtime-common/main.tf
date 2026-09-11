@@ -1,6 +1,4 @@
 variable "prefix" { type = string }
-variable "sandbox_table_arn" { type = string }
-variable "sandbox_table_key_arn" { type = string }
 variable "binding_key_arn" { type = string }
 variable "broker_function_arn" { type = string }
 variable "log_retention_days" { type = number }
@@ -57,22 +55,12 @@ resource "aws_iam_role" "runtime" {
   tags               = var.tags
 }
 
+# Everything inside the microVM - the adapter, the KiroCrew gateway, and the
+# user's own terminal - runs under this one role, so it must hold nothing a
+# sandbox user could turn against another tenant. The sandbox table and the
+# checkpoint bucket are reachable only through the persistence broker, which
+# verifies the caller's token before touching a record.
 data "aws_iam_policy_document" "runtime" {
-  statement {
-    sid       = "SandboxLeaseOnly"
-    actions   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
-    resources = [var.sandbox_table_arn]
-  }
-  statement {
-    sid       = "SandboxStateCryptography"
-    actions   = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey", "kms:DescribeKey"]
-    resources = [var.sandbox_table_key_arn]
-    condition {
-      test     = "StringEquals"
-      variable = "kms:ViaService"
-      values   = ["dynamodb.${data.aws_region.current.region}.${data.aws_partition.current.dns_suffix}"]
-    }
-  }
   statement {
     sid       = "VerifySandboxBindings"
     actions   = ["kms:GetPublicKey", "kms:Verify"]

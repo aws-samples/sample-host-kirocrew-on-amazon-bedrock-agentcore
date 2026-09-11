@@ -11,6 +11,7 @@ from typing import Any, cast
 import pytest
 from kirocrew_agentcore_persistence.durability import (
     BrokerAuthorizationError,
+    BrokerRefusalError,
     PresignedOperation,
     StorageOperation,
 )
@@ -25,6 +26,8 @@ class Payload:
         self.value = value
 
     def read(self) -> bytes:
+        if isinstance(self.value, str):
+            return self.value.encode()
         return json.dumps(self.value).encode()
 
 
@@ -74,9 +77,21 @@ def test_lambda_client_validates_binding_calls_and_receipts() -> None:
         with pytest.raises(BrokerAuthorizationError, match="receipt is unavailable"):
             broken.checkpoint_receipt(1, "a" * 64)
 
-    failed, _ = client({}, function_error=True)
-    with pytest.raises(BrokerAuthorizationError, match="rejected"):
+    failed, _ = client({"errorMessage": "boom", "errorType": "ClientError"}, function_error=True)
+    with pytest.raises(BrokerAuthorizationError, match="rejected") as other:
         failed.call("dataKey")
+    assert not isinstance(other.value, BrokerRefusalError)
+    refused, _ = client(
+        {"errorMessage": "Invalid runtime binding.", "errorType": "PermissionError"},
+        function_error=True,
+    )
+    with pytest.raises(BrokerRefusalError, match="refused"):
+        refused.call("dataKey")
+    for unreadable in ("not json", ["list"], {"errorType": 7}):
+        unparsed, _ = client(unreadable, function_error=True)
+        with pytest.raises(BrokerAuthorizationError, match="rejected") as generic:
+            unparsed.call("dataKey")
+        assert not isinstance(generic.value, BrokerRefusalError)
     invalid, _ = client(["not", "an", "object"])
     with pytest.raises(BrokerAuthorizationError, match="response is invalid"):
         invalid.call("dataKey")

@@ -28,7 +28,16 @@ class StorageOperation(StrEnum):
 
 
 class BrokerAuthorizationError(ValueError):
-    """A caller attempted an operation outside its derived sandbox scope."""
+    """The persistence broker did not complete the operation."""
+
+
+class BrokerRefusalError(BrokerAuthorizationError):
+    """The broker refused the caller's token or sandbox binding outright.
+
+    Distinct from other broker failures (throttling, malformed input, an
+    unexpected exception) because a refusal is authoritative: the token or the
+    session it names is no longer accepted, so retrying cannot help.
+    """
 
 
 class ObjectNotFoundError(KeyError):

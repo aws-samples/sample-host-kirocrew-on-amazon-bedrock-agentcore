@@ -41,8 +41,8 @@ from kirocrew_agentcore_persistence.checkpoint import (
     SystemFlusher,
 )
 from kirocrew_agentcore_persistence.durability import (
-    BrokerAuthorizationError,
     BrokeredCheckpointStore,
+    BrokerRefusalError,
 )
 from kirocrew_agentcore_persistence.journal import DirtyJournal
 from kirocrew_agentcore_persistence.manifest import ManifestBuilder, workspace_fingerprint
@@ -93,7 +93,9 @@ class BrokeredLeaseAuthorizer:
     is reachable only through the broker Lambda, which verifies the caller's
     binding token before it looks at the record. Positive answers are cached
     briefly for the one session this process serves so a chatty page does not
-    pay one Lambda round trip per request; refusals are never cached.
+    pay one Lambda round trip per request; refusals are never cached. Only a
+    refusal is a lease failure; any other broker failure propagates unchanged,
+    exactly as a table error did when the check ran in the microVM.
     """
 
     def __init__(
@@ -133,7 +135,7 @@ class BrokeredLeaseAuthorizer:
                 sandbox_id=sandbox_id,
                 runtime_session_id=runtime_session_id,
             )
-        except BrokerAuthorizationError as error:
+        except BrokerRefusalError as error:
             raise LeaseAuthorizationError("Sandbox lease is unavailable.") from error
         self._cached = (key, now + self._ttl)
 
@@ -890,9 +892,10 @@ class AwsSessionInitializer:
     async def _lease_heartbeat(self, sandbox_id: str, runtime_session_id: str) -> None:
         """Extend the start lease every 30s until the process dies.
 
-        A rejected condition, or a broker that no longer accepts this
-        session's token, means a newer start owns the lease; this session is
-        superseded and stops heartbeating so the takeover completes cleanly.
+        A rejected condition, or a broker that refuses this session's token,
+        means a newer start owns the lease; this session is superseded and
+        stops heartbeating so the takeover completes cleanly. Any other broker
+        failure is transient and the next beat retries.
         """
         while True:
             await asyncio.sleep(30)
@@ -904,7 +907,7 @@ class AwsSessionInitializer:
                 )
             except asyncio.CancelledError:
                 raise
-            except (SandboxRecordConflictError, BrokerAuthorizationError):
+            except (SandboxRecordConflictError, BrokerRefusalError):
                 _LOGGER.info("Lease superseded by a newer start; heartbeat stops.")
                 return
             except Exception:

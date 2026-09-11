@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 from kirocrew_agentcore_persistence.crypto import SandboxCipher
 from kirocrew_agentcore_persistence.durability import (
     BrokerAuthorizationError,
+    BrokerRefusalError,
     PresignedOperation,
     StorageOperation,
 )
@@ -31,8 +32,9 @@ def invoke_broker(
 
     ``token`` is either the browser-issued binding token or the broker-issued
     runtime-session token; the broker accepts both under ``bindingToken`` and
-    checks the sandbox record against the claims on every call. Any broker
-    refusal surfaces as :class:`BrokerAuthorizationError`.
+    checks the sandbox record against the claims on every call. A refused
+    token or binding surfaces as :class:`BrokerRefusalError`; any other broker
+    failure as its base :class:`BrokerAuthorizationError`.
     """
     request = {
         "bindingToken": token,
@@ -48,11 +50,25 @@ def invoke_broker(
     )
     payload = response["Payload"].read()
     if response.get("FunctionError"):
+        if _error_type(payload) == "PermissionError":
+            raise BrokerRefusalError("Persistence broker refused the binding.")
         raise BrokerAuthorizationError("Persistence broker rejected the operation.")
     value = cast(object, json.loads(payload))
     if not isinstance(value, dict):
         raise BrokerAuthorizationError("Persistence broker response is invalid.")
     return cast(dict[str, object], value)
+
+
+def _error_type(payload: bytes) -> str | None:
+    """Return the Lambda error payload's ``errorType`` when it is readable."""
+    try:
+        value = cast(object, json.loads(payload))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    error_type = cast(dict[str, object], value).get("errorType")
+    return error_type if isinstance(error_type, str) else None
 
 
 class LambdaBrokerClient:

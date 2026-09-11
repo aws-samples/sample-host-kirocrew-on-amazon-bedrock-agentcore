@@ -35,6 +35,7 @@ from kirocrew_agentcore_persistence.checkpoint import (
 from kirocrew_agentcore_persistence.durability import (
     BrokerAuthorizationError,
     BrokeredCheckpointStore,
+    BrokerRefusalError,
 )
 from kirocrew_agentcore_persistence.remote import LambdaBrokerClient
 from kirocrew_agentcore_persistence.restore import RestoreError, RestoreReport
@@ -78,15 +79,18 @@ class _Payload:
 class FakeBrokerLambda:
     """Persistence broker double: replays scripted results, ``None`` = refusal."""
 
-    def __init__(self, *responses: dict[str, object] | None) -> None:
+    def __init__(self, *responses: dict[str, object] | str | None) -> None:
         self.responses = list(responses)
         self.requests: list[dict[str, Any]] = []
 
     def invoke(self, **request: Any) -> dict[str, object]:
         self.requests.append(json.loads(request["Payload"]))
         value = self.responses.pop(0) if len(self.responses) > 1 else self.responses[0]
-        if value is None:
-            return {"Payload": _Payload({"errorMessage": "refused"}), "FunctionError": "Unhandled"}
+        if value is None or isinstance(value, str):
+            # ``None`` is a refusal; a string names another Lambda error type.
+            error_type = "PermissionError" if value is None else value
+            error = {"errorMessage": "broker failed", "errorType": error_type}
+            return {"Payload": _Payload(error), "FunctionError": "Unhandled"}
         return {"Payload": _Payload(value)}
 
     def operations(self) -> list[tuple[str, str]]:
@@ -145,6 +149,11 @@ def test_brokered_authorizer_delegates_the_lease_check_and_caches_only_approvals
         with pytest.raises(LeaseAuthorizationError):
             rejecting.authorize("subject", SANDBOX, "session-1", "binding-a")
     assert len(refusing.requests) == 2, "refusals are never cached"
+    # A broker that fails for any other reason is not a binding problem.
+    crashing = BrokeredLeaseAuthorizer(FakeBrokerLambda("ClientError"), "arn:broker")
+    with pytest.raises(BrokerAuthorizationError) as failure:
+        crashing.authorize("subject", SANDBOX, "session-1", "binding-a")
+    assert not isinstance(failure.value, BrokerRefusalError)
     with pytest.raises(ValueError, match="PERSISTENCE_BROKER_ARN"):
         BrokeredLeaseAuthorizer(lambda_client, "")
     with pytest.raises(ValueError, match="PERSISTENCE_BROKER_ARN"):
@@ -394,7 +403,7 @@ def test_brokered_state_store_maps_lifecycle_operations_and_adopts_the_session_t
     # A refusal from the broker is not a conflict; it propagates as such.
     refused = BrokeredSandboxStateStore(FakeBrokerLambda(None), "arn:broker")
     refused.binding_token = "binding"  # noqa: S105 - opaque binding fixture
-    with pytest.raises(BrokerAuthorizationError):
+    with pytest.raises(BrokerRefusalError):
         refused.heartbeat_lease(SANDBOX, "session-1")
     tokenless = BrokeredSandboxStateStore(FakeBrokerLambda({"applied": True}), "arn:broker")
     tokenless.binding_token = "binding"  # noqa: S105 - opaque binding fixture
@@ -1182,7 +1191,6 @@ def test_build_runtime_application_cleanup_and_serve(monkeypatch: pytest.MonkeyP
         "BINDING_KEY_ARN": "arn:key",
         "COGNITO_ISSUER": "https://issuer",
         "PERSISTENCE_BROKER_ARN": "arn:broker",
-        "SANDBOX_TABLE": "sandboxes",
         "WORKSPACE_ROOT": str(Path.cwd() / "workspace"),
         "KIROCREW_START_TIMEOUT": "5",
     }
@@ -1548,7 +1556,10 @@ def test_lifetime_lease_heartbeat_stops_when_the_broker_no_longer_accepts_the_se
 
         def heartbeat(sandbox: str, session: str) -> None:
             beats.append(1)
-            raise BrokerAuthorizationError("Invalid runtime binding.")
+            if len(beats) == 1:
+                # A non-refusal broker failure (throttling, a crash) is transient.
+                raise BrokerAuthorizationError("Persistence broker rejected the operation.")
+            raise BrokerRefusalError("Invalid runtime binding.")
 
         initializer.state_store.heartbeat_lease = heartbeat  # type: ignore[attr-defined]
         original_sleep = asyncio.sleep
@@ -1562,7 +1573,7 @@ def test_lifetime_lease_heartbeat_stops_when_the_broker_no_longer_accepts_the_se
             await initializer._lease_heartbeat("sandbox", "session-1")
         finally:
             asyncio.sleep = original_sleep
-        assert beats == [1]
+        assert beats == [1, 1]
 
     asyncio.run(scenario())
 

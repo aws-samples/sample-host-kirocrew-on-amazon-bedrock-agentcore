@@ -201,8 +201,8 @@ checkpoint in seconds.
 
 A screenshot walkthrough for end users, from registration through Kiro sign-in
 to the first chat session, with an explanation of every control on the floating
-panel, is in [docs/user-guide/README.zh-CN.md](docs/user-guide/README.zh-CN.md)
-(Chinese).
+panel, is in [docs/user-guide/README.md](docs/user-guide/README.md)
+(also available in [Chinese](docs/user-guide/README.zh-CN.md)).
 
 ## Operate the deployment
 

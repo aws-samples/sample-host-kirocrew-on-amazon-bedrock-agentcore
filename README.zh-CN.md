@@ -168,7 +168,8 @@ Cognito 注册或登录。登录后点击 **Start**。新沙箱首次启动约�
 内恢复检查点。
 
 面向最终用户的图文使用手册（从注册、登录、Kiro 账号登录到开始第一个会话，并逐一说明悬浮面板
-上每个按钮的作用）见 [docs/user-guide/README.zh-CN.md](docs/user-guide/README.zh-CN.md)。
+上每个按钮的作用）见 [docs/user-guide/README.zh-CN.md](docs/user-guide/README.zh-CN.md)
+（英文版：[docs/user-guide/README.md](docs/user-guide/README.md)）。
 
 ## 日常运维
 

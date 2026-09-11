@@ -4,7 +4,7 @@
 
 本手册面向第一次使用的用户，按实际操作顺序介绍：注册账号、登录、启动沙箱、登录 Kiro 账号、开始第一个会话，以及页面上每个按钮的作用。所有截图均来自真实部署环境。
 
-> 你需要准备：部署方提供的访问地址（一个 `https://` 链接）、一个允许注册的邮箱（默认只允许 `@amazon.com`，部署方可放开其他地址），以及一个 Kiro 账号（Builder ID 或组织 SSO）。
+> 你需要准备：部署方提供的访问地址（一个 `https://` 链接）、一个部署方允许注册的邮箱，以及一个 Kiro 账号（Builder ID 或组织 SSO）。
 
 ## 目录
 
@@ -164,13 +164,9 @@
 
 ## 9. 常见问题
 
-**注册时提示邮箱不允许**：部署默认只接受 `@amazon.com`。请部署方在 `allowed_email_domains` 或 `allowed_email_patterns` 里加上你的邮箱。
+**注册时提示邮箱不允许**：请部署方把你的邮箱加入允许列表。
 
 **没收到验证码**：检查垃圾邮件，邮件主题是 "Your verification code"，发件人 `no-reply@verificationemail.com`；点 Resend code 重发。
-
-**Kiro 登录后发消息报 "Your User ID is temporarily suspended"**：这是 Kiro 服务端对该 Builder ID 的临时风控，与本部署无关。按提示联系 Kiro 支持，或换一个 Kiro 账号：先点 **Sign out of Kiro**，再用另一账号登录。
-
-![Kiro 账号被临时冻结的提示](images/99-kiro-account-suspended.png)
 
 **Sandbox needs attention**：先点 **Reload**；仍不行就点 **Start sandbox**。数据保存在检查点里，不会因为重新启动丢失。
 

@@ -14,6 +14,10 @@ KiroCrew 体验。
 *由 AgentCore microVM 提供服务的原版 KiroCrew 控制台。右下角的悬浮面板是本项目唯一新增的
 界面：沙箱生命周期、Kiro 登录，以及会先创建检查点的安全停止。*
 
+> **只是使用别人部署好的环境？** 请直接看 **[使用手册](docs/user-guide/README.zh-CN.md)**
+> （[English](docs/user-guide/README.md)）：从注册、登录、Kiro 账号登录到开始第一个会话的图文
+> 步骤，并逐一说明悬浮面板上每个按钮的作用。本 README 其余部分面向部署和运维本示例的人。
+
 > **示例代码，不适用于生产环境。** 本仓库是一份参考实现，用于演示如何在 Amazon Bedrock
 > AgentCore 上运行 KiroCrew。它未经生产级加固、压力测试和优化，也不附带任何服务级别承诺。
 > 投入生产前请自行评审并调整，尤其是认证边界、凭证处理、IAM 权限范围、成本控制和运维监控。
@@ -166,10 +170,6 @@ terraform -chdir=infrastructure output -state="$TF_STATE" deployment
 新账号需要输入发送到邮箱的验证码完成确认，表单支持重新发送。任何人都无法绕过该网关直接对
 Cognito 注册或登录。登录后点击 **Start**。新沙箱首次启动约需一分钟，之后每次启动都会在数秒
 内恢复检查点。
-
-面向最终用户的图文使用手册（从注册、登录、Kiro 账号登录到开始第一个会话，并逐一说明悬浮面板
-上每个按钮的作用）见 [docs/user-guide/README.zh-CN.md](docs/user-guide/README.zh-CN.md)
-（英文版：[docs/user-guide/README.md](docs/user-guide/README.md)）。
 
 ## 日常运维
 

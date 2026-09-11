@@ -181,6 +181,24 @@ incidents and the invariants that now prevent them:
   no renewal turned a long-open page into a 503 storm. *Invariant:* a runtime
   lease heartbeat keeps the session alive, `start` inside a live lease renews the
   token without rotating the session, and the browser renews five minutes early.
+- **A reclaimed sandbox self-locked at READY.** AgentCore reclaims an idle
+  microVM without telling the control plane, so the record was left `READY`
+  while nothing was serving. `acquireInit` accepted only `STARTING` or
+  `RESTORING`, so the replacement container the platform started for the next
+  invocation could not claim the record: every `POST /invocations` was refused
+  while the panel showed **Sandbox ready**, Kiro sign-in reported
+  `Sign-in failed`, the terminal came up blank, and **Stop travelled the same
+  blocked path**, so the user could not even stop the sandbox to clear it.
+  Observed live on 2026-09-11 for a user whose container logged nothing but the
+  platform's own `/ping` for its entire life while the record read `READY`, and
+  whose history showed a reclaim/restart cycle every 10-15 minutes.
+  *Invariant:* `READY` is claimable **once the start lease is dead** — a
+  90-second-stale lease is what distinguishes a container that is gone from a
+  live warm owner, which republishes `READY` through `healReady` instead of
+  having its restore taken away. The broker refuses the claim while the lease
+  is alive and names the clause that rejected it, so a retryable cause is not
+  reported as a permanent one. Credit to the analysis in PR #11, whose branch
+  proposed the same fix on the pre-broker code.
 - **The execution role was a cross-tenant primitive.** The runtime role once held
   table-wide DynamoDB read/write so the container could manage its own record,
   but every process in the microVM shares that role, the user's terminal

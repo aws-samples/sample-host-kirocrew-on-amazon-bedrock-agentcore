@@ -99,6 +99,13 @@ KiroCrew is not actually serving.** Confirm with a real invocation.
   expressions. A guard test fails on any `dynamodb:` action in the runtime role.
   The broker mints a runtime-session token on `acquireInit` so heartbeats and
   checkpoints outlive the browser's 30-minute binding token.
+- **Reclaim from READY** (persistence `lambda_handler.py::_acquire_init`): idle
+  reclaim leaves the record `READY` with nothing serving, so a replacement
+  container must be able to claim it — but only once the start lease is dead
+  (90s), which is what separates a container that is gone from a live warm
+  owner (that one republishes READY via `healReady`). Narrowing this back to
+  `STARTING`/`RESTORING` self-locks the sandbox: every invocation is refused
+  while the panel reads ready, and Stop is refused too.
 - **Stop is best-effort**: the JWT-authed runtime rejects the control plane's
   SigV4 `StopRuntimeSession`, so stop finalizes STOPPED on the committed
   checkpoint and lets idle reclaim free the microVM.

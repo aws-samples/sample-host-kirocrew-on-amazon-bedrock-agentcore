@@ -396,10 +396,18 @@ def test_brokered_state_store_maps_lifecycle_operations_and_adopts_the_session_t
     # The broker's conditional outcome surfaces as a typed conflict.
     conflicted = BrokeredSandboxStateStore(FakeBrokerLambda({"applied": False}), "arn:broker")
     conflicted.binding_token = "binding"  # noqa: S105 - opaque binding fixture
-    with pytest.raises(SandboxRecordConflictError):
+    with pytest.raises(SandboxRecordConflictError, match="healReady"):
         conflicted.heal_ready(SANDBOX, "session-1")
-    with pytest.raises(InitOwnershipError):
+    with pytest.raises(InitOwnershipError, match="acquireInit"):
         conflicted.acquire_init(SANDBOX, "session-1", OWNER)
+    # The broker's own reason for the refusal reaches the caller unflattened.
+    explained = BrokeredSandboxStateStore(
+        FakeBrokerLambda({"applied": False, "reason": "Sandbox is not claimable from state BUSY."}),
+        "arn:broker",
+    )
+    explained.binding_token = "binding"  # noqa: S105 - opaque binding fixture
+    with pytest.raises(InitOwnershipError, match="not claimable from state BUSY"):
+        explained.acquire_init(SANDBOX, "session-1", OWNER)
     # A refusal from the broker is not a conflict; it propagates as such.
     refused = BrokeredSandboxStateStore(FakeBrokerLambda(None), "arn:broker")
     refused.binding_token = "binding"  # noqa: S105 - opaque binding fixture
@@ -517,7 +525,8 @@ def test_losing_the_init_ownership_race_never_poisons_the_record() -> None:
     async def scenario() -> None:
         initializer = OwnedElsewhereInitializer()
         claims = BindingClaims("sandbox", "session", 2_000_000_000)
-        with pytest.raises(SessionInitializationError, match="in progress elsewhere"):
+        # The broker's reason reaches the client instead of one flat message.
+        with pytest.raises(SessionInitializationError, match="owned elsewhere"):
             await initializer.initialize("subject", "binding", claims)
         # The loser walks away: no ERROR write, no gateway termination side
         # effects beyond its own cleanup.

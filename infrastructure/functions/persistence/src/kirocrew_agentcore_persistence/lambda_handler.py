@@ -4,7 +4,7 @@ import base64
 import json
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final, cast
 
@@ -155,12 +155,16 @@ def _conditional_update(
     update: str,
     condition: str,
     values: Mapping[str, Mapping[str, str]],
+    *,
+    reason: Callable[[Mapping[str, Mapping[str, str]]], str] | None = None,
 ) -> dict[str, object]:
     """Apply one server-defined conditional update to the caller's own record.
 
     A failed condition is a normal outcome (``applied: false``) that the
     runtime maps to its lifecycle decisions; every other DynamoDB failure
-    propagates as a broker error.
+    propagates as a broker error. Pass ``reason`` to also read the rejecting
+    item back and name the clause that failed: one message for every
+    rejection sends whoever debugs it after the wrong cause.
     """
     request: dict[str, object] = {
         "TableName": _required("SANDBOX_TABLE"),
@@ -173,12 +177,17 @@ def _conditional_update(
     # word alias is attached only to the updates that touch the state field.
     if "#state" in update or "#state" in condition:
         request["ExpressionAttributeNames"] = {"#state": "state"}
+    if reason is not None:
+        request["ReturnValuesOnConditionCheckFailure"] = "ALL_OLD"
     try:
         dynamodb.update_item(**request)
     except ClientError as error:
         if error.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
             raise
-        return {"applied": False}
+        if reason is None:
+            return {"applied": False}
+        item = cast(Mapping[str, Mapping[str, str]], error.response.get("Item", {}))
+        return {"applied": False, "reason": reason(item)}
     return {"applied": True}
 
 
@@ -228,6 +237,31 @@ def _runtime_session_token(kms: Any, claims: Mapping[str, object], now: datetime
     return f"{payload}.{_base64url(signature)}"
 
 
+def _claim_rejection(
+    item: Mapping[str, Mapping[str, str]], owner: str, epoch: int, deadline: str
+) -> str:
+    """Name the clause that rejected an initialization claim.
+
+    ``initialization is in progress elsewhere`` reads as a live competing
+    container even when the record is simply not claimable from its current
+    state, or when a live owner is still heartbeating its lease -- two causes
+    with opposite remedies (retry vs reconnect).
+    """
+    if not item:
+        return "Sandbox initialization could not be claimed."
+    init_owner = item.get("initOwner", {}).get("S")
+    expires = item.get("initExpiresAt", {}).get("N")
+    if init_owner and init_owner != owner and expires is not None and int(expires) >= epoch:
+        return "Another container owns this sandbox initialization."
+    state = item.get("state", {}).get("S")
+    lease = item.get("leaseExpiresAt", {}).get("S")
+    if state == "READY" and lease is not None and lease >= deadline:
+        return "A live container still holds this sandbox; its lease has not expired."
+    if state:
+        return f"Sandbox is not claimable from state {state}."
+    return "Sandbox initialization could not be claimed."
+
+
 def _acquire_init(
     kms: Any,
     dynamodb: Any,
@@ -238,6 +272,7 @@ def _acquire_init(
     owner = _init_owner(event)
     now = datetime.now(UTC)
     epoch = int(now.timestamp())
+    deadline = _iso(now)
     result = _conditional_update(
         dynamodb,
         sandbox_id,
@@ -246,22 +281,38 @@ def _acquire_init(
             "initExpiresAt = :expires, updatedAt = :updated "
             "ADD stateVersion :one"
         ),
+        # READY is claimable once the start lease is dead. A container left
+        # gone by idle reclaim publishes nothing, so without this the record
+        # stays READY forever, every later invocation fails the state clause,
+        # and the sandbox self-locks with no way out - Stop travels the same
+        # path, so the user cannot even stop it to clear the record. Requiring
+        # a dead lease is what separates a container that is gone (nothing has
+        # heartbeated for 90s) from a live warm owner, which keeps its own
+        # restore from being yanked out from under it and republishes READY
+        # through healReady instead. The initOwner lease keeps two *live*
+        # initializers apart, and the caller's token has already been matched
+        # to this record's session, so no other tenant can reach this claim.
         (
             "runtimeSessionId = :session "
-            "AND #state IN (:starting, :restoring) "
+            "AND (#state IN (:starting, :restoring) "
+            "OR (#state = :ready AND (attribute_not_exists(leaseExpiresAt) "
+            "OR leaseExpiresAt < :deadline))) "
             "AND (attribute_not_exists(initOwner) "
             "OR initOwner = :owner OR initExpiresAt < :now)"
         ),
         {
+            ":deadline": {"S": deadline},
             ":expires": {"N": str(epoch + 90)},
             ":now": {"N": str(epoch)},
             ":one": {"N": "1"},
             ":owner": {"S": owner},
+            ":ready": {"S": "READY"},
             ":restoring": {"S": "RESTORING"},
             ":session": {"S": str(claims["runtimeSessionId"])},
             ":starting": {"S": "STARTING"},
             ":updated": {"S": _iso(now)},
         },
+        reason=lambda item: _claim_rejection(item, owner, epoch, deadline),
     )
     if result["applied"]:
         result["runtimeSessionToken"] = _runtime_session_token(kms, claims, now)

@@ -105,6 +105,9 @@ class FakeDynamo:
         self.transactions: list[dict[str, object]] = []
         self.updates: list[dict[str, object]] = []
         self.update_error: ClientError | None = None
+        # Set when the scripted failure should report the rejecting item back,
+        # as ReturnValuesOnConditionCheckFailure=ALL_OLD does.
+        self.rejecting_item: dict[str, dict[str, str]] | None = None
 
     def get_item(self, **request: object) -> dict[str, object]:
         self.get_request = request
@@ -127,6 +130,8 @@ class FakeDynamo:
             raise client_error("ValidationException")
         if self.update_error is not None:
             error, self.update_error = self.update_error, None
+            if self.rejecting_item is not None and "ReturnValuesOnConditionCheckFailure" in request:
+                error.response["Item"] = self.rejecting_item
             raise error
         return {}
 
@@ -524,9 +529,11 @@ def test_acquire_init_mints_a_runtime_session_token_only_when_the_claim_applies(
     assert values[":restoring"] == {"S": "RESTORING"}  # type: ignore[index]
 
     dynamo.update_error = client_error("ConditionalCheckFailedException")
-    assert broker._acquire_init(
+    refused = broker._acquire_init(
         kms, dynamo, SANDBOX, claims, event("acquireInit", initOwner=OWNER)
-    ) == {"applied": False}
+    )
+    assert refused["applied"] is False
+    assert "could not be claimed" in str(refused["reason"])
     with pytest.raises(ValueError, match="Invalid initialization owner"):
         broker._acquire_init(kms, dynamo, SANDBOX, claims, event("acquireInit", initOwner="me"))
     kms.signature = "not-bytes"
@@ -604,3 +611,78 @@ def test_lifecycle_updates_are_server_defined_and_validate_their_inputs() -> Non
         broker._mark_error(dynamo, SANDBOX, claims, {"failureDetail": 7})
     with pytest.raises(ValueError, match="Invalid initialization owner"):
         broker._mark_error(dynamo, SANDBOX, claims, {"initOwner": "owner"})
+
+
+def test_acquire_init_reclaims_a_record_left_ready_once_its_lease_is_dead() -> None:
+    """An idle-reclaimed sandbox must not self-lock at READY.
+
+    The container that was reclaimed publishes nothing, so without this the
+    record stays READY, every later claim fails the state clause, and Stop -
+    which travels the same path - cannot clear it either.
+    """
+    kms = FakeKms()
+    claims = broker._binding(kms, token())
+    dynamo = FakeDynamo(state="READY")
+    result = broker._acquire_init(
+        kms, dynamo, SANDBOX, claims, event("acquireInit", initOwner=OWNER)
+    )
+    assert result["applied"] is True
+    assert isinstance(result["runtimeSessionToken"], str)
+    condition = str(dynamo.updates[-1]["ConditionExpression"])
+    values = dynamo.updates[-1]["ExpressionAttributeValues"]
+    assert "#state = :ready" in condition
+    assert "attribute_not_exists(leaseExpiresAt) OR leaseExpiresAt < :deadline" in condition
+    assert values[":ready"] == {"S": "READY"}  # type: ignore[index]
+    # The deadline is now, so a lease that has not expired keeps the claim out.
+    assert dynamo.updates[-1]["ReturnValuesOnConditionCheckFailure"] == "ALL_OLD"
+
+
+def test_acquire_init_names_the_clause_that_rejected_the_claim() -> None:
+    kms = FakeKms()
+    claims = broker._binding(kms, token())
+    dynamo = FakeDynamo(state="READY")
+    live_lease = "2999-01-01T00:00:00Z"
+    cases: list[tuple[dict[str, dict[str, str]], str]] = [
+        ({}, "could not be claimed"),
+        (
+            {
+                "initOwner": {"S": "8f1d2c3b-4a5e-4f60-9b1c-2d3e4f5a6b7c"},
+                "initExpiresAt": {"N": "9999999999"},
+            },
+            "Another container owns this sandbox initialization",
+        ),
+        (
+            {"state": {"S": "READY"}, "leaseExpiresAt": {"S": live_lease}},
+            "A live container still holds this sandbox",
+        ),
+        ({"state": {"S": "CHECKPOINTING"}}, "not claimable from state CHECKPOINTING"),
+        ({"updatedAt": {"S": "2026-09-11T00:00:00Z"}}, "could not be claimed"),
+        # A stale init lease does not name a competing owner: the state clause
+        # is what actually rejected the claim.
+        (
+            {
+                "initOwner": {"S": "8f1d2c3b-4a5e-4f60-9b1c-2d3e4f5a6b7c"},
+                "initExpiresAt": {"N": "1"},
+                "state": {"S": "BUSY"},
+            },
+            "not claimable from state BUSY",
+        ),
+    ]
+    for item, expected in cases:
+        dynamo.update_error = client_error("ConditionalCheckFailedException")
+        dynamo.rejecting_item = item
+        result = broker._acquire_init(
+            kms, dynamo, SANDBOX, claims, event("acquireInit", initOwner=OWNER)
+        )
+        assert result["applied"] is False
+        assert "runtimeSessionToken" not in result
+        assert expected in str(result["reason"]), (item, result["reason"])
+
+    # Without a reason builder a rejection stays a plain conditional failure.
+    dynamo.update_error = client_error("ConditionalCheckFailedException")
+    dynamo.rejecting_item = {"state": {"S": "READY"}}
+    plain = broker._conditional_update(
+        dynamo, SANDBOX, "SET a = :a", "b = :b", {":a": {"S": "x"}, ":b": {"S": "y"}}
+    )
+    assert plain == {"applied": False}
+    assert "ReturnValuesOnConditionCheckFailure" not in dynamo.updates[-1]

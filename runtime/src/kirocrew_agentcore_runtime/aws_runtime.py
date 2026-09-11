@@ -219,7 +219,14 @@ class BrokeredSandboxStateStore:
     ) -> dict[str, object]:
         result = self._call(operation, sandbox_id, runtime_session_id, **values)
         if result.get("applied") is not True:
-            raise SandboxRecordConflictError(operation)
+            # The broker names the clause that rejected the write when it can;
+            # a flattened message sends whoever debugs this after the wrong
+            # cause (a live competing owner rather than, say, a state the
+            # record cannot be claimed from).
+            reason = result.get("reason")
+            raise SandboxRecordConflictError(
+                reason if isinstance(reason, str) and reason else operation
+            )
         return result
 
     def read(self, sandbox_id: str, runtime_session_id: str) -> SandboxPersistenceMetadata:
@@ -242,15 +249,17 @@ class BrokeredSandboxStateStore:
         startup). The claim is a heartbeat-extended lease so a replacement
         container can take over only once the previous owner is provably
         dead, and nothing else may reset the record underneath a live owner.
+        The broker also lets a replacement claim a record left READY by a
+        container that is gone, which is what keeps an idle-reclaimed sandbox
+        from self-locking; it reports why a claim was refused, so the reason
+        is carried through instead of flattened.
         """
         try:
             result = self._apply(
                 "acquireInit", sandbox_id, runtime_session_id, initOwner=init_owner
             )
         except SandboxRecordConflictError as error:
-            raise InitOwnershipError(
-                "Another container owns this sandbox initialization."
-            ) from error
+            raise InitOwnershipError(str(error)) from error
         token = result.get("runtimeSessionToken")
         if not isinstance(token, str) or not token:
             raise SessionInitializationError("Runtime session token is unavailable.")
@@ -808,12 +817,12 @@ class AwsSessionInitializer:
                     self._lease_heartbeat(claims.sandbox_id, claims.runtime_session_id)
                 )
             except InitOwnershipError as error:
-                # A live owner is initializing elsewhere; walk away without
-                # touching the record and let the client retry against it.
+                # A live owner is initializing elsewhere, or the record is not
+                # claimable yet. Walk away without touching the record and
+                # pass the specific reason through: a flattened message sends
+                # the reader after the wrong cause.
                 self._readiness.read_only = True
-                raise SessionInitializationError(
-                    "Sandbox initialization is in progress elsewhere."
-                ) from error
+                raise SessionInitializationError(str(error)) from error
             except Exception as error:
                 _LOGGER.error(
                     "Sandbox initialization failed (%s): %s",

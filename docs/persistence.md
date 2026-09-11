@@ -37,7 +37,7 @@ The broker is also the runtime's only path to its sandbox record. The microVM's 
 |---|---|
 | `readRecord` | Returns `runtimeSessionId`, `state`, and `lastCheckpointGeneration` so a starting container can detect a rotated session and walk away. |
 | `lease` | Pure authorization; the adapter calls it per invocation and caches approvals for 15 seconds per binding token. |
-| `acquireInit` | Claims initialization ownership (`initOwner`, 90-second lease) and returns `runtimeSessionToken` when the claim applied. |
+| `acquireInit` | Claims initialization ownership (`initOwner`, 90-second lease) and returns `runtimeSessionToken` when the claim applied. Claimable from `STARTING`, `RESTORING`, or `READY` **with a dead start lease** — the last case is how a sandbox reclaimed by idle scale-down is recovered instead of staying `READY` forever. A refusal carries a `reason` naming the clause that rejected it. |
 | `heartbeatInit` / `heartbeatLease` | Extend the initialization lease or the start lease; a rejected condition means a newer container or start owns it. |
 | `healReady` / `markReady` / `markError` | Publish the lifecycle transitions the container is entitled to, each conditioned on the session and, where relevant, the initialization owner. |
 

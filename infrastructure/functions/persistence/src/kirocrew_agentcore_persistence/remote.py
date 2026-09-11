@@ -17,6 +17,44 @@ from kirocrew_agentcore_persistence.durability import (
 )
 
 
+def invoke_broker(
+    client: Any,
+    function_arn: str,
+    operation: str,
+    *,
+    token: str,
+    sandbox_id: str,
+    runtime_session_id: str,
+    **values: object,
+) -> dict[str, object]:
+    """Invoke one persistence broker operation and return its JSON result.
+
+    ``token`` is either the browser-issued binding token or the broker-issued
+    runtime-session token; the broker accepts both under ``bindingToken`` and
+    checks the sandbox record against the claims on every call. Any broker
+    refusal surfaces as :class:`BrokerAuthorizationError`.
+    """
+    request = {
+        "bindingToken": token,
+        "operation": operation,
+        "runtimeSessionId": runtime_session_id,
+        "sandboxId": sandbox_id,
+        **values,
+    }
+    response = client.invoke(
+        FunctionName=function_arn,
+        InvocationType="RequestResponse",
+        Payload=json.dumps(request, separators=(",", ":")).encode(),
+    )
+    payload = response["Payload"].read()
+    if response.get("FunctionError"):
+        raise BrokerAuthorizationError("Persistence broker rejected the operation.")
+    value = cast(object, json.loads(payload))
+    if not isinstance(value, dict):
+        raise BrokerAuthorizationError("Persistence broker response is invalid.")
+    return cast(dict[str, object], value)
+
+
 class LambdaBrokerClient:
     def __init__(
         self,
@@ -35,25 +73,15 @@ class LambdaBrokerClient:
         self.binding_token = binding_token
 
     def call(self, operation: str, **values: object) -> dict[str, object]:
-        request = {
-            "bindingToken": self.binding_token,
-            "operation": operation,
-            "runtimeSessionId": self._runtime_session_id,
-            "sandboxId": self._sandbox_id,
+        return invoke_broker(
+            self._client,
+            self._function_arn,
+            operation,
+            token=self.binding_token,
+            sandbox_id=self._sandbox_id,
+            runtime_session_id=self._runtime_session_id,
             **values,
-        }
-        response = self._client.invoke(
-            FunctionName=self._function_arn,
-            InvocationType="RequestResponse",
-            Payload=json.dumps(request, separators=(",", ":")).encode(),
         )
-        payload = response["Payload"].read()
-        if response.get("FunctionError"):
-            raise BrokerAuthorizationError("Persistence broker rejected the operation.")
-        value = cast(object, json.loads(payload))
-        if not isinstance(value, dict):
-            raise BrokerAuthorizationError("Persistence broker response is invalid.")
-        return cast(dict[str, object], value)
 
     def checkpoint_receipt(
         self, generation: int, manifest_digest: str, *, final: bool = True

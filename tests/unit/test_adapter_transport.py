@@ -72,7 +72,10 @@ class FakeLeaseAuthorizer:
         self.calls: list[tuple[str, str, str]] = []
         self.reject = False
 
-    def authorize(self, cognito_subject: str, sandbox_id: str, runtime_session_id: str) -> None:
+    def authorize(
+        self, cognito_subject: str, sandbox_id: str, runtime_session_id: str, binding_token: str
+    ) -> None:
+        assert binding_token, "the caller's binding token must reach the lease check"
         actual = (cognito_subject, sandbox_id, runtime_session_id)
         self.calls.append(actual)
         if self.reject or actual != self.expected:

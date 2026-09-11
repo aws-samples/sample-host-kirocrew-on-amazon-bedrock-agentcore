@@ -90,6 +90,15 @@ KiroCrew is not actually serving.** Confirm with a real invocation.
   authoritative DynamoDB record: superseded → checkpoint + SIGTERM self so the
   platform reschedules; still authoritative → refuse the stale caller without
   exiting; cross owner/sandbox → always refuse.
+- **Zero data access in the microVM** (`runtime-common/main.tf`, `aws_runtime.py`,
+  persistence `lambda_handler.py`): the execution role is shared by the user's
+  shell, so it has no DynamoDB, S3, or data-key KMS grants. Every sandbox-record
+  operation is a narrow, server-defined broker operation (`readRecord`, `lease`,
+  `acquireInit`, `heartbeatInit`, `heartbeatLease`, `healReady`, `markReady`,
+  `markError`) gated on the caller's token; the broker never accepts caller
+  expressions. A guard test fails on any `dynamodb:` action in the runtime role.
+  The broker mints a runtime-session token on `acquireInit` so heartbeats and
+  checkpoints outlive the browser's 30-minute binding token.
 - **Stop is best-effort**: the JWT-authed runtime rejects the control plane's
   SigV4 `StopRuntimeSession`, so stop finalizes STOPPED on the committed
   checkpoint and lets idle reclaim free the microVM.

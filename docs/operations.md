@@ -181,6 +181,20 @@ incidents and the invariants that now prevent them:
   no renewal turned a long-open page into a 503 storm. *Invariant:* a runtime
   lease heartbeat keeps the session alive, `start` inside a live lease renews the
   token without rotating the session, and the browser renews five minutes early.
+- **The execution role was a cross-tenant primitive.** The runtime role once held
+  table-wide DynamoDB read/write so the container could manage its own record,
+  but every process in the microVM shares that role, the user's terminal
+  included, so any sandbox user could read or corrupt other tenants' records.
+  *Invariant:* the role has no data access at all. Record operations go through
+  the persistence broker as narrow server-defined operations authorized by the
+  caller's token; a guard test rejects any `dynamodb:` grant on the runtime role.
+  The per-invocation lease check caches approvals for 15 seconds per binding, so
+  a rotated-away session is refused within that window rather than instantly.
+  Because the broker now stands between the runtime and its record, it also
+  mints a runtime-session token (capped at `runtime_max_lifetime_seconds`) when a
+  container wins `acquireInit`; lease heartbeats and background checkpoints run
+  on that token, which also closes the older gap where a sandbox with no browser
+  attached for over 30 minutes could no longer commit checkpoints.
 - **Opaque 5xx with no logs.** The transport mapped every failure to an opaque
   envelope and logged nothing. *Invariant:* initialization rejections and
   unhandled invocation errors now log their cause; runtime logs ship straight to

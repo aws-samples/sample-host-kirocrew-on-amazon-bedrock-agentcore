@@ -30,18 +30,18 @@ module "persistence" {
   alarm_actions             = var.alarm_actions
   tags                      = module.naming.tags
   source_directory          = "${path.module}/functions/persistence/src"
+
+  runtime_session_token_ttl_seconds = var.runtime_max_lifetime_seconds
 }
 
 module "runtime_common" {
   source = "./modules/runtime-common"
 
-  prefix                = module.naming.prefix
-  sandbox_table_arn     = module.persistence.sandbox_table_arn
-  sandbox_table_key_arn = module.persistence.snapshot_key_arn
-  binding_key_arn       = module.persistence.binding_key_arn
-  broker_function_arn   = module.persistence.broker_function_arn
-  log_retention_days    = var.log_retention_days
-  tags                  = module.naming.tags
+  prefix              = module.naming.prefix
+  binding_key_arn     = module.persistence.binding_key_arn
+  broker_function_arn = module.persistence.broker_function_arn
+  log_retention_days  = var.log_retention_days
+  tags                = module.naming.tags
 }
 
 module "identity" {
@@ -78,7 +78,6 @@ module "runtime_microvm" {
     # ships its own log records directly to this dedicated group.
     KIROCREW_LOG_GROUP     = module.runtime_common.runtime_log_group
     PERSISTENCE_BROKER_ARN = module.persistence.broker_function_arn
-    SANDBOX_TABLE          = module.persistence.sandbox_table_name
   }
   tags = module.naming.tags
 }

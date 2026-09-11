@@ -103,9 +103,19 @@ lifecycle, **green** for persistence, and **purple** for user authentication.
   exist in a microVM answer `501`. The policy is pinned in
   `contracts/kirocrew/0.3.0-route-allowlist.json` and enforced by contract tests on
   both the Python adapter and the TypeScript shell.
-- **Binding tokens** authorize the in-VM persistence broker for 30 minutes and are
-  renewed transparently while the sandbox's lease is alive, so a long-open page
-  keeps working without rotating the session.
+- **Binding tokens** authorize invocations for 30 minutes and are renewed
+  transparently while the sandbox's lease is alive, so a long-open page keeps
+  working without rotating the session. When a container wins its sandbox's
+  initialization, the broker issues it a runtime-session token bound to the same
+  sandbox and session (capped at the platform session lifetime), so heartbeats
+  and background checkpoints keep working after the browser goes away.
+- **The microVM's execution role holds no data access.** Everything in the
+  sandbox, including the user's own terminal, shares that role, so it can only
+  verify bindings, invoke the persistence broker, and write its own logs and
+  metrics. The sandbox table and the checkpoint bucket are reachable solely
+  through the broker Lambda, which verifies the caller's token and confirms the
+  record still names that session before every read or write. A sandbox user
+  who extracts the role's credentials gains nothing beyond their own sandbox.
 - **Checkpoints** use per-sandbox KMS data keys and are committed as generations in
   S3. The latest two generations are retained; an offline auditor verifies them.
 - **Restore** stages under `.agentcore/` inside the workspace on the microVM's

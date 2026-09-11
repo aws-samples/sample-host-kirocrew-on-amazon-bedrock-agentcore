@@ -101,10 +101,19 @@ class FakeDynamo:
             self.item["initExpiresAt"] = {"N": str(init_expires)}
         self.get_request: dict[str, object] | None = None
         self.transactions: list[dict[str, object]] = []
+        self.updates: list[dict[str, object]] = []
+        self.update_error: ClientError | None = None
 
     def get_item(self, **request: object) -> dict[str, object]:
         self.get_request = request
         return {"Item": self.item}
+
+    def update_item(self, **request: object) -> dict[str, object]:
+        self.updates.append(request)
+        if self.update_error is not None:
+            error, self.update_error = self.update_error, None
+            raise error
+        return {}
 
     def transact_write_items(self, **request: object) -> dict[str, object]:
         self.transactions.append(request)
@@ -175,8 +184,10 @@ def test_binding_validation_success_and_failure_matrix() -> None:
         with pytest.raises(PermissionError, match="Invalid runtime binding"):
             broker._binding(kms, value)
 
+    assert broker._binding(kms, token({"type": "runtime-session"}))["type"] == "runtime-session"
     invalid_claims: list[dict[str, object]] = [
         {"type": "other"},
+        {"type": "checkpoint-receipt"},
         {"aud": "other"},
         {"exp": "later"},
         {"exp": 1},
@@ -391,9 +402,183 @@ def test_handler_dispatch_and_audit(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(broker, "_presign", lambda *_args: {"presign": True})
     monkeypatch.setattr(broker, "_list", lambda *_args: {"list": True})
     monkeypatch.setattr(broker, "_checkpoint_receipt", lambda *_args: {"receipt": True})
+    monkeypatch.setattr(broker, "_claimed_sandbox", lambda _claims, _event: SANDBOX)
+    monkeypatch.setattr(broker, "_read_record", lambda _ddb, _sandbox: {"record": True})
+    monkeypatch.setattr(broker, "_acquire_init", lambda *_args: {"acquire": True})
+    monkeypatch.setattr(broker, "_heartbeat_init", lambda *_args: {"init": True})
+    monkeypatch.setattr(broker, "_heartbeat_lease", lambda *_args: {"lease": True})
+    monkeypatch.setattr(broker, "_heal_ready", lambda *_args: {"heal": True})
+    monkeypatch.setattr(broker, "_mark_ready", lambda *_args: {"ready": True})
+    monkeypatch.setattr(broker, "_mark_error", lambda *_args: {"error": True})
+    assert broker.handler(event("readRecord"), object()) == {"record": True}
+    assert broker.handler(event("lease"), object()) == {"authorized": True}
+    assert broker.handler(event("acquireInit"), object()) == {"acquire": True}
+    assert broker.handler(event("heartbeatInit"), object()) == {"init": True}
+    assert broker.handler(event("heartbeatLease"), object()) == {"lease": True}
+    assert broker.handler(event("healReady"), object()) == {"heal": True}
+    assert broker.handler(event("markReady"), object()) == {"ready": True}
+    assert broker.handler(event("markError"), object()) == {"error": True}
     assert broker.handler(event("dataKey"), object()) == {"data": True}
     assert broker.handler(event("presign"), object()) == {"presign": True}
     assert broker.handler(event("list"), object()) == {"list": True}
     assert broker.handler(event("checkpointReceipt"), object()) == {"receipt": True}
     with pytest.raises(ValueError, match="Unsupported"):
         broker.handler(event("unknown"), object())
+
+
+OWNER = "6f1d2c3b-4a5e-4f60-9b1c-2d3e4f5a6b7c"
+
+
+def test_read_record_needs_only_a_matching_claim_and_reports_lifecycle_fields() -> None:
+    claims = broker._binding(FakeKms(), token())
+    assert broker._claimed_sandbox(claims, event("readRecord")) == SANDBOX
+    with pytest.raises(PermissionError, match="Invalid runtime binding"):
+        broker._claimed_sandbox(claims, event("readRecord", sandboxId="sbx_" + "A" * 26))
+
+    dynamo = FakeDynamo(state="STARTING", session="rotated")
+    dynamo.item["lastCheckpointGeneration"] = {"N": "7"}
+    # The record may name a different session: the runtime compares and walks away.
+    assert broker._read_record(dynamo, SANDBOX) == {
+        "lastCheckpointGeneration": 7,
+        "runtimeSessionId": "rotated",
+        "state": "STARTING",
+    }
+    assert dynamo.get_request is not None
+    assert dynamo.get_request["ConsistentRead"] is True
+    empty = FakeDynamo()
+    empty.item = {}
+    assert broker._read_record(empty, SANDBOX) == {
+        "lastCheckpointGeneration": None,
+        "runtimeSessionId": None,
+        "state": None,
+    }
+
+
+def test_conditional_updates_report_rejected_conditions_and_raise_other_failures() -> None:
+    dynamo = FakeDynamo()
+    assert broker._conditional_update(
+        dynamo, SANDBOX, "SET a = :a", "b = :b", {":a": {"S": "x"}}
+    ) == {"applied": True}
+    update = dynamo.updates[0]
+    assert update["Key"] == {"pk": {"S": f"SANDBOX#{SANDBOX}"}, "sk": {"S": "METADATA"}}
+    assert update["ExpressionAttributeNames"] == {"#state": "state"}
+    dynamo.update_error = client_error("ConditionalCheckFailedException")
+    assert broker._conditional_update(dynamo, SANDBOX, "SET a = :a", "b = :b", {}) == {
+        "applied": False
+    }
+    dynamo.update_error = client_error("ProvisionedThroughputExceededException")
+    with pytest.raises(ClientError):
+        broker._conditional_update(dynamo, SANDBOX, "SET a = :a", "b = :b", {})
+
+
+def test_acquire_init_mints_a_runtime_session_token_only_when_the_claim_applies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kms = FakeKms()
+    claims = broker._binding(kms, token())
+    dynamo = FakeDynamo(state="STARTING")
+    monkeypatch.setenv("RUNTIME_SESSION_TOKEN_TTL_SECONDS", "3600")
+    result = broker._acquire_init(
+        kms, dynamo, SANDBOX, claims, event("acquireInit", initOwner=OWNER)
+    )
+    assert result["applied"] is True
+    session_token = result["runtimeSessionToken"]
+    assert isinstance(session_token, str)
+    payload, signature = session_token.split(".")
+    assert broker._unbase64url(signature) == b"signature"
+    minted = json.loads(broker._unbase64url(payload))
+    assert minted["type"] == "runtime-session"
+    assert minted["sandboxId"] == SANDBOX
+    assert minted["runtimeSessionId"] == SESSION
+    assert minted["subjectHash"] == SUBJECT_HASH
+    assert minted["aud"] == "audience"
+    assert minted["exp"] - minted["iat"] == 3600
+    assert kms.sign_request is not None
+    assert kms.sign_request["SigningAlgorithm"] == "RSASSA_PSS_SHA_256"
+    update = dynamo.updates[0]
+    assert "initOwner = :owner OR initExpiresAt < :now" in str(update["ConditionExpression"])
+    values = update["ExpressionAttributeValues"]
+    assert values[":owner"] == {"S": OWNER}  # type: ignore[index]
+    assert values[":restoring"] == {"S": "RESTORING"}  # type: ignore[index]
+
+    dynamo.update_error = client_error("ConditionalCheckFailedException")
+    assert broker._acquire_init(
+        kms, dynamo, SANDBOX, claims, event("acquireInit", initOwner=OWNER)
+    ) == {"applied": False}
+    with pytest.raises(ValueError, match="Invalid initialization owner"):
+        broker._acquire_init(kms, dynamo, SANDBOX, claims, event("acquireInit", initOwner="me"))
+    kms.signature = "not-bytes"
+    with pytest.raises(RuntimeError, match="signature is unavailable"):
+        broker._acquire_init(kms, dynamo, SANDBOX, claims, event("acquireInit", initOwner=OWNER))
+    monkeypatch.delenv("RUNTIME_SESSION_TOKEN_TTL_SECONDS")
+    assert broker._runtime_session_ttl().total_seconds() == 28800
+
+
+def test_lifecycle_updates_are_server_defined_and_validate_their_inputs() -> None:
+    claims = broker._binding(FakeKms(), token())
+    dynamo = FakeDynamo()
+
+    assert broker._heartbeat_init(dynamo, SANDBOX, {"initOwner": OWNER}) == {"applied": True}
+    assert dynamo.updates[-1]["ConditionExpression"] == "initOwner = :owner"
+    assert "initExpiresAt" in str(dynamo.updates[-1]["UpdateExpression"])
+
+    assert broker._heartbeat_lease(dynamo, SANDBOX, claims) == {"applied": True}
+    assert dynamo.updates[-1]["ConditionExpression"] == "leaseOwner = :owner"
+    lease_values = dynamo.updates[-1]["ExpressionAttributeValues"]
+    assert lease_values[":owner"] == {"S": SESSION}  # type: ignore[index]
+
+    assert broker._heal_ready(dynamo, SANDBOX, claims) == {"applied": True}
+    heal_values = dynamo.updates[-1]["ExpressionAttributeValues"]
+    assert heal_values[":ready"] == {"S": "READY"}  # type: ignore[index]
+    assert heal_values[":starting"] == {"S": "STARTING"}  # type: ignore[index]
+    assert "#state IN (:starting)" in str(dynamo.updates[-1]["ConditionExpression"])
+
+    ready = broker._mark_ready(
+        dynamo, SANDBOX, claims, {"initOwner": OWNER, "restoreOutcome": "restored"}
+    )
+    assert ready == {"applied": True}
+    ready_update = dynamo.updates[-1]
+    assert (
+        ready_update["ConditionExpression"] == "runtimeSessionId = :session AND initOwner = :owner"
+    )
+    assert "REMOVE initOwner, initExpiresAt" in str(ready_update["UpdateExpression"])
+    assert ready_update["ExpressionAttributeValues"][":restore"] == {"S": "RESTORED"}  # type: ignore[index]
+    for outcome in ("", "Restored!", 3, "x" * 40):
+        with pytest.raises(ValueError, match="Invalid restore outcome"):
+            broker._mark_ready(
+                dynamo, SANDBOX, claims, {"initOwner": OWNER, "restoreOutcome": outcome}
+            )
+
+    owned = broker._mark_error(
+        dynamo,
+        SANDBOX,
+        claims,
+        {
+            "failureDetail": "GATEWAY_EXITED",
+            "failureType": "GatewayExitedError",
+            "initOwner": OWNER,
+            "upstreamException": "OSError",
+        },
+    )
+    assert owned == {"applied": True}
+    owned_update = dynamo.updates[-1]
+    assert (
+        owned_update["ConditionExpression"] == "runtimeSessionId = :session AND initOwner = :owner"
+    )
+    owned_values = owned_update["ExpressionAttributeValues"]
+    assert owned_values[":failure"] == {"S": "GatewayExitedError"}  # type: ignore[index]
+    assert owned_values[":detail"] == {"S": "GATEWAY_EXITED"}  # type: ignore[index]
+    assert owned_values[":upstream"] == {"S": "OSError"}  # type: ignore[index]
+    assert ":starting" not in owned_values  # type: ignore[operator]
+
+    unowned = broker._mark_error(dynamo, SANDBOX, claims, {})
+    assert unowned == {"applied": True}
+    unowned_update = dynamo.updates[-1]
+    assert ":starting, :restoring" in str(unowned_update["ConditionExpression"])
+    assert unowned_update["ExpressionAttributeValues"][":failure"] == {"S": "UNKNOWN"}  # type: ignore[index]
+    with pytest.raises(ValueError, match="Invalid initialization diagnostic"):
+        broker._mark_error(dynamo, SANDBOX, claims, {"failureType": "bad\nline"})
+    with pytest.raises(ValueError, match="Invalid initialization diagnostic"):
+        broker._mark_error(dynamo, SANDBOX, claims, {"failureDetail": 7})
+    with pytest.raises(ValueError, match="Invalid initialization owner"):
+        broker._mark_error(dynamo, SANDBOX, claims, {"initOwner": "owner"})

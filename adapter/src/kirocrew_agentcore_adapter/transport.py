@@ -107,7 +107,19 @@ class KmsBindingVerifier:
 
 
 class LeaseAuthorizer(Protocol):
-    def authorize(self, cognito_subject: str, sandbox_id: str, runtime_session_id: str) -> None: ...
+    def authorize(
+        self,
+        cognito_subject: str,
+        sandbox_id: str,
+        runtime_session_id: str,
+        binding_token: str,
+    ) -> None:
+        """Confirm the caller's session still holds the sandbox lease.
+
+        The caller's own binding token is passed through so an implementation
+        can delegate the record check to a party that verifies it, instead of
+        needing table access of its own.
+        """
 
 
 class RuntimeBackend(Protocol):
@@ -601,7 +613,9 @@ class AgentCoreAdapter:
     def _authorize(self, request: web.Request, binding_token: str) -> tuple[str, BindingClaims]:
         subject = _cognito_subject(request.headers.get("authorization"))
         claims = self._binding_verifier.verify(binding_token, subject)
-        self._lease_authorizer.authorize(subject, claims.sandbox_id, claims.runtime_session_id)
+        self._lease_authorizer.authorize(
+            subject, claims.sandbox_id, claims.runtime_session_id, binding_token
+        )
         return subject, claims
 
     async def _execute(

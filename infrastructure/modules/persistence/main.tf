@@ -7,6 +7,10 @@ variable "log_retention_days" { type = number }
 variable "alarm_actions" { type = list(string) }
 variable "tags" { type = map(string) }
 variable "source_directory" { type = string }
+# Upper bound for the runtime-session tokens the broker mints to a container that
+# owns a sandbox initialization; pinned to the platform session lifetime so a
+# token can never outlive the microVM it was issued to.
+variable "runtime_session_token_ttl_seconds" { type = number }
 
 resource "aws_kms_key" "snapshots" {
   description             = "${var.prefix} checkpoint envelope encryption"
@@ -247,6 +251,8 @@ resource "aws_lambda_function" "broker" {
       CHECKPOINT_BUCKET = aws_s3_bucket.snapshots.id
       KMS_KEY_ARN       = aws_kms_key.snapshots.arn
       SANDBOX_TABLE     = aws_dynamodb_table.sandboxes.name
+
+      RUNTIME_SESSION_TOKEN_TTL_SECONDS = var.runtime_session_token_ttl_seconds
     }
   }
   tracing_config { mode = "Active" }

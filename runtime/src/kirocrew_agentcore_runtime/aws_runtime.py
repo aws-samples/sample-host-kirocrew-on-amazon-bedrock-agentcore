@@ -10,13 +10,11 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 
 import boto3  # type: ignore[import-untyped]
 from aiohttp import ClientSession, web
-from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 from cryptography.exceptions import InvalidSignature
 from kirocrew_agentcore_adapter.identity import (
     KiroAuthState,
@@ -42,10 +40,17 @@ from kirocrew_agentcore_persistence.checkpoint import (
     CheckpointReceipt,
     SystemFlusher,
 )
-from kirocrew_agentcore_persistence.durability import BrokeredCheckpointStore
+from kirocrew_agentcore_persistence.durability import (
+    BrokerAuthorizationError,
+    BrokeredCheckpointStore,
+)
 from kirocrew_agentcore_persistence.journal import DirtyJournal
 from kirocrew_agentcore_persistence.manifest import ManifestBuilder, workspace_fingerprint
-from kirocrew_agentcore_persistence.remote import LambdaBrokerClient, LambdaPersistenceBroker
+from kirocrew_agentcore_persistence.remote import (
+    LambdaBrokerClient,
+    LambdaPersistenceBroker,
+    invoke_broker,
+)
 from kirocrew_agentcore_persistence.restore import RestoreEngine, RestoreError, RestoreReport
 
 from kirocrew_agentcore_runtime.cloudwatch_logs import CloudWatchLogHandler
@@ -80,38 +85,57 @@ class AwsKmsSignatureVerifier:
             raise InvalidSignature
 
 
-class DynamoLeaseAuthorizer:
-    def __init__(self, client: Any, table_name: str) -> None:
-        if not table_name:
-            raise ValueError("SANDBOX_TABLE is required.")
-        self._client = client
-        self._table_name = table_name
+class BrokeredLeaseAuthorizer:
+    """Per-invocation lease check delegated to the persistence broker.
+
+    The microVM holds no DynamoDB access of its own: everything running in it,
+    including the user's shell, shares the execution role, so the sandbox table
+    is reachable only through the broker Lambda, which verifies the caller's
+    binding token before it looks at the record. Positive answers are cached
+    briefly for the one session this process serves so a chatty page does not
+    pay one Lambda round trip per request; refusals are never cached.
+    """
+
+    def __init__(
+        self,
+        lambda_client: Any,
+        function_arn: str,
+        *,
+        cache_seconds: float = 15.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if not function_arn or cache_seconds < 0:
+            raise ValueError("PERSISTENCE_BROKER_ARN is required.")
+        self._client = lambda_client
+        self._function_arn = function_arn
+        self._ttl = cache_seconds
+        self._clock = clock
+        self._cached: tuple[tuple[str, str, str], float] | None = None
 
     def authorize(
         self,
         cognito_subject: str,
         sandbox_id: str,
         runtime_session_id: str,
+        binding_token: str,
     ) -> None:
         del cognito_subject  # The signed binding already binds the Cognito subject hash.
-        response = self._client.get_item(
-            TableName=self._table_name,
-            Key={"pk": {"S": f"SANDBOX#{sandbox_id}"}, "sk": {"S": "METADATA"}},
-            ConsistentRead=True,
-            ProjectionExpression="runtimeSessionId, #state",
-            ExpressionAttributeNames={"#state": "state"},
-        )
-        item = cast(Mapping[str, Mapping[str, str]], response.get("Item", {}))
-        stored_session = item.get("runtimeSessionId", {}).get("S")
-        state = item.get("state", {}).get("S")
-        if stored_session != runtime_session_id or state not in {
-            "STARTING",
-            "RESTORING",
-            "READY",
-            "BUSY",
-            "CHECKPOINTING",
-        }:
-            raise LeaseAuthorizationError("Sandbox lease is unavailable.")
+        key = (sandbox_id, runtime_session_id, binding_token)
+        now = self._clock()
+        if self._cached is not None and self._cached[0] == key and self._cached[1] > now:
+            return
+        try:
+            invoke_broker(
+                self._client,
+                self._function_arn,
+                "lease",
+                token=binding_token,
+                sandbox_id=sandbox_id,
+                runtime_session_id=runtime_session_id,
+            )
+        except BrokerAuthorizationError as error:
+            raise LeaseAuthorizationError("Sandbox lease is unavailable.") from error
+        self._cached = (key, now + self._ttl)
 
 
 class StagedStateFlusher:
@@ -148,113 +172,93 @@ class InitOwnershipError(Exception):
     """Another live container owns this sandbox initialization."""
 
 
-class DynamoSandboxStateStore:
-    def __init__(self, client: Any, table_name: str) -> None:
-        if not table_name:
-            raise ValueError("SANDBOX_TABLE is required.")
-        self._client = client
-        self._table_name = table_name
+class SandboxRecordConflictError(Exception):
+    """The broker's server-side condition rejected this sandbox-record update."""
 
-    def read(self, sandbox_id: str) -> SandboxPersistenceMetadata:
-        response = self._client.get_item(
-            TableName=self._table_name,
-            Key=self._key(sandbox_id),
-            ConsistentRead=True,
-            ProjectionExpression="runtimeSessionId, #state, lastCheckpointGeneration",
-            ExpressionAttributeNames={"#state": "state"},
+
+class BrokeredSandboxStateStore:
+    """Sandbox lifecycle-record operations executed by the persistence broker.
+
+    Each method maps to one server-defined broker operation; the runtime never
+    sends table expressions, only the few values the broker validates. The
+    browser's binding token authorizes the first calls of an initialization;
+    once this container wins ``acquireInit`` the broker issues a runtime-session
+    token bound to the same sandbox and session, and every later lifecycle or
+    persistence call uses that instead, so heartbeats and checkpoints outlive
+    the browser's 30-minute binding token.
+    """
+
+    def __init__(self, lambda_client: Any, function_arn: str) -> None:
+        if not function_arn:
+            raise ValueError("PERSISTENCE_BROKER_ARN is required.")
+        self._client = lambda_client
+        self._function_arn = function_arn
+        self.binding_token: str | None = None
+        self.session_token: str | None = None
+
+    def _call(
+        self, operation: str, sandbox_id: str, runtime_session_id: str, **values: object
+    ) -> dict[str, object]:
+        token = self.session_token or self.binding_token
+        if token is None:
+            raise SessionInitializationError("Sandbox binding is unavailable.")
+        return invoke_broker(
+            self._client,
+            self._function_arn,
+            operation,
+            token=token,
+            sandbox_id=sandbox_id,
+            runtime_session_id=runtime_session_id,
+            **values,
         )
-        item = cast(Mapping[str, Mapping[str, str]], response.get("Item", {}))
-        runtime_session_id = item.get("runtimeSessionId", {}).get("S")
-        state = item.get("state", {}).get("S")
-        raw_generation = item.get("lastCheckpointGeneration", {}).get("N")
-        if not runtime_session_id or not state:
-            raise SessionInitializationError("Sandbox persistence metadata is unavailable.")
-        try:
-            generation = int(raw_generation) if raw_generation is not None else None
-        except ValueError as error:
-            raise SessionInitializationError("Sandbox checkpoint generation is invalid.") from error
-        if generation is not None and generation <= 0:
-            raise SessionInitializationError("Sandbox checkpoint generation is invalid.")
-        return SandboxPersistenceMetadata(runtime_session_id, state, generation)
 
-    def acquire_init(
-        self,
-        sandbox_id: str,
-        runtime_session_id: str,
-        init_owner: str,
-        *,
-        ttl_seconds: int = 90,
-    ) -> None:
-        """Claim exclusive initialization ownership for this container.
+    def _apply(
+        self, operation: str, sandbox_id: str, runtime_session_id: str, **values: object
+    ) -> dict[str, object]:
+        result = self._call(operation, sandbox_id, runtime_session_id, **values)
+        if result.get("applied") is not True:
+            raise SandboxRecordConflictError(operation)
+        return result
+
+    def read(self, sandbox_id: str, runtime_session_id: str) -> SandboxPersistenceMetadata:
+        value = self._call("readRecord", sandbox_id, runtime_session_id)
+        stored_session = value.get("runtimeSessionId")
+        state = value.get("state")
+        generation = value.get("lastCheckpointGeneration")
+        if not isinstance(stored_session, str) or not stored_session:
+            raise SessionInitializationError("Sandbox persistence metadata is unavailable.")
+        if not isinstance(state, str) or not state:
+            raise SessionInitializationError("Sandbox persistence metadata is unavailable.")
+        if generation is not None and (type(generation) is not int or generation <= 0):
+            raise SessionInitializationError("Sandbox checkpoint generation is invalid.")
+        return SandboxPersistenceMetadata(stored_session, state, generation)
+
+    def acquire_init(self, sandbox_id: str, runtime_session_id: str, init_owner: str) -> str:
+        """Claim exclusive initialization ownership and adopt the session token.
 
         Cold-start initialization is a long transaction (restore plus gateway
         startup). The claim is a heartbeat-extended lease so a replacement
         container can take over only once the previous owner is provably
         dead, and nothing else may reset the record underneath a live owner.
         """
-        now = int(datetime.now(UTC).timestamp())
         try:
-            self._client.update_item(
-                TableName=self._table_name,
-                Key=self._key(sandbox_id),
-                UpdateExpression=(
-                    "SET #state = :restoring, initOwner = :owner, "
-                    "initExpiresAt = :expires, updatedAt = :updated "
-                    "ADD stateVersion :one"
-                ),
-                ConditionExpression=(
-                    "runtimeSessionId = :session "
-                    "AND #state IN (:starting, :restoring) "
-                    "AND (attribute_not_exists(initOwner) "
-                    "OR initOwner = :owner OR initExpiresAt < :now)"
-                ),
-                ExpressionAttributeNames={"#state": "state"},
-                ExpressionAttributeValues={
-                    ":expires": {"N": str(now + ttl_seconds)},
-                    ":now": {"N": str(now)},
-                    ":one": {"N": "1"},
-                    ":owner": {"S": init_owner},
-                    ":restoring": {"S": "RESTORING"},
-                    ":session": {"S": runtime_session_id},
-                    ":starting": {"S": "STARTING"},
-                    ":updated": {"S": _timestamp(datetime.now(UTC))},
-                },
+            result = self._apply(
+                "acquireInit", sandbox_id, runtime_session_id, initOwner=init_owner
             )
-        except ClientError as error:
-            code = error.response.get("Error", {}).get("Code")
-            if code == "ConditionalCheckFailedException":
-                raise InitOwnershipError(
-                    "Another container owns this sandbox initialization."
-                ) from error
-            raise
+        except SandboxRecordConflictError as error:
+            raise InitOwnershipError(
+                "Another container owns this sandbox initialization."
+            ) from error
+        token = result.get("runtimeSessionToken")
+        if not isinstance(token, str) or not token:
+            raise SessionInitializationError("Runtime session token is unavailable.")
+        self.session_token = token
+        return token
 
-    def heartbeat_init(
-        self,
-        sandbox_id: str,
-        init_owner: str,
-        *,
-        ttl_seconds: int = 90,
-    ) -> None:
-        now = int(datetime.now(UTC).timestamp())
-        self._client.update_item(
-            TableName=self._table_name,
-            Key=self._key(sandbox_id),
-            UpdateExpression="SET initExpiresAt = :expires, updatedAt = :updated",
-            ConditionExpression="initOwner = :owner",
-            ExpressionAttributeValues={
-                ":expires": {"N": str(now + ttl_seconds)},
-                ":owner": {"S": init_owner},
-                ":updated": {"S": _timestamp(datetime.now(UTC))},
-            },
-        )
+    def heartbeat_init(self, sandbox_id: str, runtime_session_id: str, init_owner: str) -> None:
+        self._apply("heartbeatInit", sandbox_id, runtime_session_id, initOwner=init_owner)
 
-    def heartbeat_lease(
-        self,
-        sandbox_id: str,
-        runtime_session_id: str,
-        *,
-        ttl_seconds: int = 90,
-    ) -> None:
+    def heartbeat_lease(self, sandbox_id: str, runtime_session_id: str) -> None:
         """Extend the start lease for as long as this session is alive.
 
         A live lease is the signal that lets the control plane renew
@@ -263,32 +267,17 @@ class DynamoSandboxStateStore:
         lease owner is this session's own id, so the condition fails - and
         the heartbeat stops mattering - the moment a newer start takes over.
         """
-        self._client.update_item(
-            TableName=self._table_name,
-            Key=self._key(sandbox_id),
-            UpdateExpression="SET leaseExpiresAt = :expires, updatedAt = :updated",
-            ConditionExpression="leaseOwner = :owner",
-            ExpressionAttributeValues={
-                ":expires": {"S": _timestamp(datetime.now(UTC) + timedelta(seconds=ttl_seconds))},
-                ":owner": {"S": runtime_session_id},
-                ":updated": {"S": _timestamp(datetime.now(UTC))},
-            },
-        )
+        self._apply("heartbeatLease", sandbox_id, runtime_session_id)
 
     def heal_ready(self, sandbox_id: str, runtime_session_id: str) -> None:
         """Flip a reconnect-induced STARTING back to READY.
 
         The control plane marks the record STARTING whenever the lease is
         (re)acquired, but a warm runtime session short-circuits
-        initialization and nothing else would ever publish READY again —
+        initialization and nothing else would ever publish READY again -
         leaving the browser stuck on the starting view forever.
         """
-        self._update_state(
-            sandbox_id,
-            runtime_session_id,
-            "READY",
-            allowed_states=("STARTING",),
-        )
+        self._apply("healReady", sandbox_id, runtime_session_id)
 
     def mark_ready(
         self,
@@ -297,25 +286,12 @@ class DynamoSandboxStateStore:
         report: RestoreReport,
         init_owner: str,
     ) -> None:
-        # Ownership, not the state value, authorizes publishing READY: a
-        # lease reclaim may have flipped the state to STARTING mid-flight.
-        self._client.update_item(
-            TableName=self._table_name,
-            Key=self._key(sandbox_id),
-            UpdateExpression=(
-                "SET #state = :ready, lastRestore = :restore, updatedAt = :updated "
-                "ADD stateVersion :one REMOVE initOwner, initExpiresAt"
-            ),
-            ConditionExpression=("runtimeSessionId = :session AND initOwner = :owner"),
-            ExpressionAttributeNames={"#state": "state"},
-            ExpressionAttributeValues={
-                ":one": {"N": "1"},
-                ":owner": {"S": init_owner},
-                ":ready": {"S": "READY"},
-                ":restore": {"S": report.outcome.upper()},
-                ":session": {"S": runtime_session_id},
-                ":updated": {"S": _timestamp(report.completed_at)},
-            },
+        self._apply(
+            "markReady",
+            sandbox_id,
+            runtime_session_id,
+            initOwner=init_owner,
+            restoreOutcome=report.outcome,
         )
 
     def mark_error(
@@ -327,109 +303,14 @@ class DynamoSandboxStateStore:
         upstream_exception: str = "UNKNOWN",
         init_owner: str | None = None,
     ) -> None:
-        # Only the initialization owner may poison the record: a container
-        # that lost the ownership race must walk away silently instead of
-        # breaking the winner's restore mid-flight.
-        condition = "runtimeSessionId = :session AND #state IN (:starting, :restoring)"
-        values = {
-            ":detail": {"S": failure_detail},
-            ":error": {"S": "ERROR"},
-            ":failure": {"S": failure_type},
-            ":one": {"N": "1"},
-            ":restoring": {"S": "RESTORING"},
-            ":upstream": {"S": upstream_exception},
-            ":session": {"S": runtime_session_id},
-            ":starting": {"S": "STARTING"},
-            ":updated": {"S": _timestamp(datetime.now(UTC))},
+        values: dict[str, object] = {
+            "failureDetail": failure_detail,
+            "failureType": failure_type,
+            "upstreamException": upstream_exception,
         }
         if init_owner is not None:
-            condition = "runtimeSessionId = :session AND initOwner = :owner"
-            values = {
-                key: value
-                for key, value in values.items()
-                if key not in (":starting", ":restoring")
-            }
-            values[":owner"] = {"S": init_owner}
-        self._client.update_item(
-            TableName=self._table_name,
-            Key=self._key(sandbox_id),
-            UpdateExpression=(
-                "SET #state = :error, lastInitializationFailure = :failure, "
-                "lastInitializationFailureDetail = :detail, "
-                "lastInitializationFailureException = :upstream, updatedAt = :updated "
-                "ADD stateVersion :one REMOVE initOwner, initExpiresAt"
-            ),
-            ConditionExpression=condition,
-            ExpressionAttributeNames={"#state": "state"},
-            ExpressionAttributeValues=values,
-        )
-
-    def record_checkpoint(
-        self,
-        sandbox_id: str,
-        runtime_session_id: str,
-        generation: int,
-        manifest_digest: str,
-    ) -> None:
-        self._client.update_item(
-            TableName=self._table_name,
-            Key=self._key(sandbox_id),
-            UpdateExpression=(
-                "SET #state = :stopping, lastCheckpointGeneration = :generation, "
-                "lastCheckpointManifestDigest = :digest, updatedAt = :updated "
-                "ADD stateVersion :one"
-            ),
-            ConditionExpression=(
-                "runtimeSessionId = :session AND #state IN (:ready, :checkpointing) AND "
-                "(attribute_not_exists(lastCheckpointGeneration) OR "
-                "lastCheckpointGeneration < :generation)"
-            ),
-            ExpressionAttributeNames={"#state": "state"},
-            ExpressionAttributeValues={
-                ":checkpointing": {"S": "CHECKPOINTING"},
-                ":digest": {"S": manifest_digest},
-                ":generation": {"N": str(generation)},
-                ":one": {"N": "1"},
-                ":ready": {"S": "READY"},
-                ":session": {"S": runtime_session_id},
-                ":stopping": {"S": "STOPPING"},
-                ":updated": {"S": _timestamp(datetime.now(UTC))},
-            },
-        )
-
-    def _update_state(
-        self,
-        sandbox_id: str,
-        runtime_session_id: str,
-        state: str,
-        *,
-        allowed_states: tuple[str, ...],
-    ) -> None:
-        values: dict[str, Mapping[str, str]] = {
-            ":one": {"N": "1"},
-            ":session": {"S": runtime_session_id},
-            ":state": {"S": state},
-            ":updated": {"S": _timestamp(datetime.now(UTC))},
-        }
-        allowed_names: list[str] = []
-        for index, allowed in enumerate(allowed_states):
-            name = f":allowed{index}"
-            allowed_names.append(name)
-            values[name] = {"S": allowed}
-        self._client.update_item(
-            TableName=self._table_name,
-            Key=self._key(sandbox_id),
-            UpdateExpression=("SET #state = :state, updatedAt = :updated ADD stateVersion :one"),
-            ConditionExpression=(
-                f"runtimeSessionId = :session AND #state IN ({', '.join(allowed_names)})"
-            ),
-            ExpressionAttributeNames={"#state": "state"},
-            ExpressionAttributeValues=values,
-        )
-
-    @staticmethod
-    def _key(sandbox_id: str) -> dict[str, dict[str, str]]:
-        return {"pk": {"S": f"SANDBOX#{sandbox_id}"}, "sk": {"S": "METADATA"}}
+            values["initOwner"] = init_owner
+        self._apply("markError", sandbox_id, runtime_session_id, **values)
 
 
 def _organization_login(payload: Mapping[str, object]) -> OrganizationLogin | None:
@@ -832,7 +713,7 @@ class AwsSessionInitializer:
         self,
         lambda_client: Any,
         broker_function_arn: str,
-        state_store: DynamoSandboxStateStore,
+        state_store: BrokeredSandboxStateStore,
         workspace: Path,
         metadata: RuntimeMetadata,
         supervisor: KiroCrewSupervisor,
@@ -866,6 +747,10 @@ class AwsSessionInitializer:
     ) -> None:
         identity = (cognito_subject, claims.sandbox_id, claims.runtime_session_id)
         async with self._lock:
+            # The browser's binding token authorizes record access until this
+            # container wins initialization; afterwards the store prefers the
+            # broker-issued runtime-session token it adopted.
+            self._state_store.binding_token = binding_token
             if self._initialized_session is not None:
                 if self._initialized_session != identity or self._broker_client is None:
                     _LOGGER.warning(
@@ -877,26 +762,23 @@ class AwsSessionInitializer:
                     raise SessionInitializationError(
                         "Runtime process is already bound to another sandbox session."
                     )
-                self._broker_client.binding_token = binding_token
                 if self._readiness.healthy:
                     # A lease reclaim flipped the record to STARTING; this warm
                     # session is the only party that can publish READY again.
-                    try:
+                    with contextlib.suppress(SandboxRecordConflictError):
                         await asyncio.to_thread(
                             self._state_store.heal_ready,
                             claims.sandbox_id,
                             claims.runtime_session_id,
                         )
-                    except ClientError as error:
-                        code = error.response.get("Error", {}).get("Code")
-                        if code != "ConditionalCheckFailedException":
-                            raise
                 return
             self._readiness.restore_complete = False
             self._readiness.loopback_ready = False
             self._readiness.read_only = True
             self._readiness.initializing = True
-            heartbeat = asyncio.create_task(self._init_heartbeat(claims.sandbox_id))
+            heartbeat = asyncio.create_task(
+                self._init_heartbeat(claims.sandbox_id, claims.runtime_session_id)
+            )
             try:
                 broker_client, report, store, engine = await asyncio.to_thread(
                     self._initialize_sync,
@@ -990,7 +872,7 @@ class AwsSessionInitializer:
             # reason to exit: the single-tenant boundary stays closed.
             return
         try:
-            metadata = await asyncio.to_thread(self._state_store.read, bound[1])
+            metadata = await asyncio.to_thread(self._state_store.read, bound[1], bound[2])
         except Exception:
             _LOGGER.warning("Supersession check failed.", exc_info=True)
             return
@@ -1008,9 +890,9 @@ class AwsSessionInitializer:
     async def _lease_heartbeat(self, sandbox_id: str, runtime_session_id: str) -> None:
         """Extend the start lease every 30s until the process dies.
 
-        A ConditionalCheckFailedException means a newer start owns the
-        lease; this session is superseded and stops heartbeating so the
-        takeover completes cleanly.
+        A rejected condition, or a broker that no longer accepts this
+        session's token, means a newer start owns the lease; this session is
+        superseded and stops heartbeating so the takeover completes cleanly.
         """
         while True:
             await asyncio.sleep(30)
@@ -1022,16 +904,13 @@ class AwsSessionInitializer:
                 )
             except asyncio.CancelledError:
                 raise
-            except ClientError as error:
-                code = error.response.get("Error", {}).get("Code")
-                if code == "ConditionalCheckFailedException":
-                    _LOGGER.info("Lease superseded by a newer start; heartbeat stops.")
-                    return
-                _LOGGER.warning("Lease heartbeat failed.", exc_info=True)
+            except (SandboxRecordConflictError, BrokerAuthorizationError):
+                _LOGGER.info("Lease superseded by a newer start; heartbeat stops.")
+                return
             except Exception:
                 _LOGGER.warning("Lease heartbeat failed.", exc_info=True)
 
-    async def _init_heartbeat(self, sandbox_id: str) -> None:
+    async def _init_heartbeat(self, sandbox_id: str, runtime_session_id: str) -> None:
         """Extend the initialization lease while restore and startup run."""
         while True:
             await asyncio.sleep(20)
@@ -1039,6 +918,7 @@ class AwsSessionInitializer:
                 await asyncio.to_thread(
                     self._state_store.heartbeat_init,
                     sandbox_id,
+                    runtime_session_id,
                     self._init_owner,
                 )
             except asyncio.CancelledError:
@@ -1072,18 +952,22 @@ class AwsSessionInitializer:
         BrokeredCheckpointStore,
         CheckpointEngine,
     ]:
-        metadata = self._state_store.read(claims.sandbox_id)
+        del binding_token  # Record access already runs on the store's current token.
+        metadata = self._state_store.read(claims.sandbox_id, claims.runtime_session_id)
         if metadata.runtime_session_id != claims.runtime_session_id:
             raise SessionInitializationError("Sandbox runtime session changed.")
-        self._state_store.acquire_init(
+        session_token = self._state_store.acquire_init(
             claims.sandbox_id, claims.runtime_session_id, self._init_owner
         )
+        # Persistence runs on the broker-issued runtime-session token so
+        # background checkpoints keep committing after the browser's
+        # binding token expires or the page goes away.
         client = LambdaBrokerClient(
             self._lambda_client,
             self._broker_function_arn,
             claims.sandbox_id,
             claims.runtime_session_id,
-            binding_token,
+            session_token,
         )
         broker = LambdaPersistenceBroker(client, claims.sandbox_id)
         store = BrokeredCheckpointStore(broker, claims.sandbox_id)
@@ -1147,10 +1031,6 @@ def _required(environment: Mapping[str, str], name: str) -> str:
     return value
 
 
-def _timestamp(value: datetime) -> str:
-    return value.isoformat().replace("+00:00", "Z")
-
-
 async def build_runtime_application(
     environment: Mapping[str, str] = os.environ,
 ) -> web.Application:
@@ -1166,16 +1046,17 @@ async def build_runtime_application(
     region = _required(environment, "AWS_REGION")
     session = boto3.Session(region_name=region)
     kms = session.client("kms")
-    dynamodb = session.client("dynamodb")
     lambda_client = session.client("lambda")
     binding_verifier = KmsBindingVerifier(
         AwsKmsSignatureVerifier(kms, _required(environment, "BINDING_KEY_ARN")),
         _required(environment, "BINDING_AUDIENCE"),
         _required(environment, "COGNITO_ISSUER"),
     )
-    table_name = _required(environment, "SANDBOX_TABLE")
-    lease_authorizer = DynamoLeaseAuthorizer(dynamodb, table_name)
-    state_store = DynamoSandboxStateStore(dynamodb, table_name)
+    # The microVM never touches the sandbox table: every record operation goes
+    # through the persistence broker, which verifies the caller's token first.
+    broker_function_arn = _required(environment, "PERSISTENCE_BROKER_ARN")
+    lease_authorizer = BrokeredLeaseAuthorizer(lambda_client, broker_function_arn)
+    state_store = BrokeredSandboxStateStore(lambda_client, broker_function_arn)
     loopback_session = ClientSession()
     loopback = LoopbackKiroCrewBackend(loopback_session, supervisor)
     readiness = RuntimeReadiness()
@@ -1202,7 +1083,7 @@ async def build_runtime_application(
     )
     initializer = AwsSessionInitializer(
         lambda_client,
-        _required(environment, "PERSISTENCE_BROKER_ARN"),
+        broker_function_arn,
         state_store,
         workspace,
         metadata,

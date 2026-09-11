@@ -54,7 +54,8 @@ shell 拦截、封装成协议信封，经 AgentCore 数据面送进沙盒内回
 | 令牌 | 签发者 | 证明什么 | 有效期 | 谁验证 |
 |---|---|---|---|---|
 | Cognito JWT | Cognito（PKCE 登录） | **这个人是谁** | Cognito 配置 | API Gateway authorizer；AgentCore 数据面每次调用（CustomJWTAuthorizer） |
-| binding token | Control Lambda，用 **KMS 非对称私钥**（RSASSA-PSS-SHA256）签名 | **这个沙盒、这个会话属于这个人**（载荷：sandboxId + runtimeSessionId + Cognito subject 哈希） | 30 分钟 | 沙盒内 adapter（KMS 验签 + subject 绑定核对）；Broker Lambda（存储操作前验签 + DynamoDB 会话核对） |
+| binding token | Control Lambda，用 **KMS 非对称私钥**（RSASSA-PSS-SHA256）签名 | **这个沙盒、这个会话属于这个人**（载荷：sandboxId + runtimeSessionId + Cognito subject 哈希） | 30 分钟 | 沙盒内 adapter（KMS 验签 + subject 绑定核对）；Broker Lambda（每次操作前验签 + DynamoDB 会话核对） |
+| runtime-session token | Broker Lambda，在容器赢得 `acquireInit` 时用同一把密钥签发 | **这个容器正合法地服务这个沙盒的这个会话**（载荷同上，type=runtime-session） | ≤ 平台会话生命周期（`runtime_max_lifetime_seconds`） | 仅 Broker Lambda 接受；adapter 不接受。运行时用它做租约心跳、生命周期更新与后台 checkpoint，浏览器离开 30 分钟后仍可继续 |
 
 链条：用户 PKCE 登录拿到 JWT → 按 Start 时 Control Lambda 验完 JWT、把用户
 身份与具体沙盒钉在一起签出 binding token → 之后每次协议调用带 JWT 过数据面、
@@ -109,8 +110,13 @@ storage / 托管同步盘 / 热恢复命中" 的位置，一律按"无此层"理
 
 **在每个用户自己的 microVM 里**，没有共享备份服务器。checkpoint 引擎读本地
 `/mnt/workspace`、在 VM 内加密、经预签名 URL **直连上传 S3**。Broker Lambda
-是门卫不是搬运工：数据不流经它，它只做三件事——验 binding token、派生 S3
-key 并签发 ≤5 分钟的一次性 URL、在 DynamoDB 上记代数指针。因此沙盒内可以
+是门卫不是搬运工：数据不流经它，它只做三件事——验 token、派生 S3
+key 并签发 ≤5 分钟的一次性 URL、在 DynamoDB 上记代数指针与沙盒生命周期。
+沙盒记录的每一次读写（`readRecord`、`lease`、`acquireInit`、`heartbeatInit`、
+`heartbeatLease`、`healReady`、`markReady`、`markError`）都是 Broker 端定义的
+窄操作，调用方只能传经校验的值，不能传表达式；microVM 的执行角色因此不持有
+任何 DynamoDB、S3 或数据密钥 KMS 权限——沙盒内所有进程（含用户终端）共享这个
+角色，它拿到手里不能越出本沙盒。因此沙盒内可以
 **不持有任何 S3 凭证**。
 
 ### 4.2 触发点与丢失边界

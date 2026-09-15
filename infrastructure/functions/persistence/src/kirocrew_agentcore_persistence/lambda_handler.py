@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Final, cast
 
 import boto3  # type: ignore[import-untyped]
+from botocore.config import Config  # type: ignore[import-untyped]
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 
 _SANDBOX = re.compile(r"^sbx_[0-9A-Z]{26}$")
@@ -45,7 +46,22 @@ def _iso(value: datetime) -> str:
 
 
 def _clients() -> tuple[Any, Any, Any]:
-    return boto3.client("s3"), boto3.client("kms"), boto3.client("dynamodb")
+    # The S3 client MUST be pinned to SigV4. A presigned PUT carries SSE-KMS as
+    # three signed ``x-amz-server-side-encryption*`` headers, and only SigV4
+    # places them in ``SignedHeaders`` -- under SigV2 the container's request
+    # sends headers the signature does not cover and S3 rejects it with
+    # SignatureDoesNotMatch (surfacing to the caller as an opaque HTTP 403).
+    # botocore still defaults S3 presigning to SigV2 in regions that predate
+    # SigV4-only enforcement, so leaving this unset makes durable persistence
+    # fail silently and REGION-DEPENDENTLY: every checkpoint upload dies on its
+    # first chunk in e.g. ap-southeast-1 while the identical deployment works in
+    # a SigV4-only region. HEAD and GET grants sign fine either way, which is
+    # why only the upload path fails and the fault looks like an IAM problem.
+    return (
+        boto3.client("s3", config=Config(signature_version="s3v4")),
+        boto3.client("kms"),
+        boto3.client("dynamodb"),
+    )
 
 
 def _unbase64url(value: str) -> bytes:

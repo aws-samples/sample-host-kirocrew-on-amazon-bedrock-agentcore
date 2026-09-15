@@ -186,9 +186,24 @@ def test_configuration_clients_and_base64_helpers(monkeypatch: pytest.MonkeyPatc
 
     expected = (object(), object(), object())
     clients = list(reversed(expected))
-    monkeypatch.setattr(vars(broker)["boto3"], "client", lambda _name: clients.pop())
+    recorded: list[tuple[str, object]] = []
+
+    def _client(name: str, *, config: object = None) -> object:
+        recorded.append((name, config))
+        return clients.pop()
+
+    monkeypatch.setattr(vars(broker)["boto3"], "client", _client)
     assert broker._clients() == expected
     assert clients == []
+    # The S3 client must be pinned to SigV4: a presigned PUT carries SSE-KMS as
+    # signed x-amz-server-side-encryption* headers, and SigV2 leaves them out of
+    # SignedHeaders, so S3 rejects the container's upload with
+    # SignatureDoesNotMatch. botocore still defaults to SigV2 in regions that
+    # predate SigV4-only enforcement, which makes the fault region-dependent.
+    assert [name for name, _ in recorded] == ["s3", "kms", "dynamodb"]
+    s3_config = recorded[0][1]
+    assert getattr(s3_config, "signature_version", None) == "s3v4"
+    assert [config for _, config in recorded[1:]] == [None, None]
     encoded = broker._base64url(b"payload")
     assert broker._unbase64url(encoded) == b"payload"
 

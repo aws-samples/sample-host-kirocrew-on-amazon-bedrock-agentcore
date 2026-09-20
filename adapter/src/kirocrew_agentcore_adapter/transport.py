@@ -67,6 +67,7 @@ class KmsBindingVerifier:
         issuer: str,
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        accepts_scheduler: bool = False,
     ) -> None:
         if not audience or not issuer:
             raise ValueError("Binding audience and issuer are required.")
@@ -74,8 +75,18 @@ class KmsBindingVerifier:
         self._audience = audience
         self._issuer = issuer
         self._clock = clock
+        # OFF unless this runtime is the machine-auth front door. Both runtimes
+        # run the same image, so the image cannot tell which door a request came
+        # through -- only its configuration can. Leaving this false on the
+        # browser-facing runtime is what stops a caller there from presenting a
+        # scheduler token and skipping the subject cross-check entirely.
+        self._accepts_scheduler = accepts_scheduler
 
-    def verify(self, token: str, cognito_subject: str) -> BindingClaims:
+    @property
+    def accepts_scheduler(self) -> bool:
+        return self._accepts_scheduler
+
+    def verify(self, token: str, cognito_subject: str | None) -> BindingClaims:
         try:
             payload_encoded, signature_encoded = token.split(".", 1)
             payload = _unbase64url(payload_encoded)
@@ -90,12 +101,29 @@ class KmsBindingVerifier:
         sandbox_id = claims.get("sandboxId")
         session_id = claims.get("runtimeSessionId")
         expires = claims.get("exp")
-        expected_subject = hashlib.sha256(
-            f"{self._issuer}\x00{cognito_subject}".encode()
-        ).hexdigest()
+        binding_kind = claims.get("type")
+        # A scheduled wake has no browser and therefore no Cognito token to
+        # recompute `subjectHash` from. The KMS signature is the authority in
+        # both cases; for a binding token the header is an additional
+        # cross-check, and a scheduler token simply has nothing to cross-check
+        # against. What keeps that safe is who can obtain one -- the control
+        # plane mints it only for a direct Lambda invocation -- plus this
+        # runtime having been configured to accept the type at all.
+        if binding_kind == "scheduler":
+            if not self._accepts_scheduler or cognito_subject is not None:
+                raise BindingVerificationError("Scheduler binding is not accepted on this runtime.")
+            expected_subject = claims.get("subjectHash")
+        elif binding_kind == "binding":
+            if cognito_subject is None:
+                raise BindingVerificationError("Forwarded Cognito authorization is missing.")
+            expected_subject = hashlib.sha256(
+                f"{self._issuer}\x00{cognito_subject}".encode()
+            ).hexdigest()
+        else:
+            raise BindingVerificationError("Binding token does not match this runtime request.")
         if (
-            claims.get("type") != "binding"
-            or claims.get("aud") != self._audience
+            claims.get("aud") != self._audience
+            or not isinstance(expected_subject, str)
             or claims.get("subjectHash") != expected_subject
             or not isinstance(sandbox_id, str)
             or not isinstance(session_id, str)
@@ -162,6 +190,12 @@ class RuntimeReadiness:
     loopback_ready: bool = False
     read_only: bool = False
     initializing: bool = False
+    # Monotonic clock reading of the last AUTHORIZED invocation, or None when
+    # none has arrived. The lease heartbeat reads it to decide whether this
+    # container is still serving anyone: a container nobody talks to must let
+    # its start lease lapse, or the record stays unclaimable forever and no
+    # replacement can take the sandbox over -- which is precisely the state an
+    # unattended wake finds. Not a timestamp: a wall clock can jump.
 
     @property
     def healthy(self) -> bool:
@@ -611,12 +645,18 @@ class AgentCoreAdapter:
             )
 
     def _authorize(self, request: web.Request, binding_token: str) -> tuple[str, BindingClaims]:
-        subject = _cognito_subject(request.headers.get("authorization"))
+        authorization = request.headers.get("authorization")
+        # A missing header is only tolerated where a scheduler token could be
+        # valid; everywhere else it stays the hard failure it has always been.
+        if authorization is None and self._binding_verifier.accepts_scheduler:
+            subject: str | None = None
+        else:
+            subject = _cognito_subject(authorization)
         claims = self._binding_verifier.verify(binding_token, subject)
         self._lease_authorizer.authorize(
-            subject, claims.sandbox_id, claims.runtime_session_id, binding_token
+            subject or "", claims.sandbox_id, claims.runtime_session_id, binding_token
         )
-        return subject, claims
+        return subject or "", claims
 
     async def _execute(
         self,

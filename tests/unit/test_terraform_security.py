@@ -175,8 +175,12 @@ def test_microvm_runtime_uses_official_agentcore_types_and_container_disk() -> N
     assert '"Authorization",' in variables
     assert 'type_name = "AWS::BedrockAgentCore::Runtime"' in runtime
     assert 'type_name = "AWS::BedrockAgentCore::RuntimeEndpoint"' in runtime
-    assert 'Type = "AWS::BedrockAgentCore::Runtime"' in runtime
-    assert 'Type = "AWS::BedrockAgentCore::RuntimeEndpoint"' in runtime
+    # Matched with the alignment collapsed: `terraform fmt` pads `=` to line up
+    # within a block, so an exact-spacing assertion breaks on unrelated edits to
+    # neighbouring attributes rather than on anything it is meant to catch.
+    squeezed = re.sub(r"[ \t]+", " ", runtime)
+    assert 'Type = "AWS::BedrockAgentCore::Runtime"' in squeezed
+    assert 'Type = "AWS::BedrockAgentCore::RuntimeEndpoint"' in squeezed
     # The workspace lives on the container disk; managed session storage
     # (1GB quota, 14-day retention) must stay out - durability is S3-only.
     assert "FilesystemConfigurations" not in runtime
@@ -188,6 +192,37 @@ def test_microvm_runtime_uses_official_agentcore_types_and_container_disk() -> N
     assert "IdleRuntimeSessionTimeout" in runtime
     assert "MaxLifetime" in runtime
     assert 'regex("@sha256:[0-9a-f]{64}$"' in runtime
+
+
+def test_machine_auth_runtime_omits_the_authorizer_and_is_opt_in() -> None:
+    """A runtime supports ONE inbound auth method, so a machine front door is a
+    second runtime rather than a flag.
+
+    The absence of an authorizer block is what selects SigV4 -- an empty or
+    partial block is not the same thing -- so the module must build the property
+    map conditionally rather than always emitting the key.
+    """
+    runtime = terraform("modules/runtime-microvm/main.tf")
+    root = terraform("main.tf")
+    variables = terraform("variables.tf")
+
+    assert 'contains(["jwt", "iam"], var.inbound_auth)' in runtime
+    squeezed = re.sub(r"[ \t]+", " ", runtime)
+    assert 'authorizer_properties = var.inbound_auth == "jwt" ?' in squeezed
+    assert "merge(local.authorizer_properties," in squeezed
+
+    assert 'inbound_auth = "jwt"' in re.sub(r"[ \t]+", " ", root)
+    assert 'inbound_auth = "iam"' in re.sub(r"[ \t]+", " ", root)
+    # Opt-in: an existing deployment must not grow a second front door on an
+    # ordinary apply, since an IAM-auth endpoint is reachable by any principal
+    # holding InvokeAgentRuntime.
+    assert "var.enable_machine_runtime" in root
+    assert 'variable "enable_machine_runtime"' in variables
+    assert "default     = false" in variables
+    # The idle tail is ~70% of an unattended wake's bill, so the machine runtime
+    # gets its own timeout instead of inheriting the human-facing one.
+    assert "var.machine_runtime_idle_session_timeout_seconds" in root
+    assert "machine_runtime_idle_session_timeout_seconds >= 60" in variables
 
 
 def test_microvm_profile_has_no_customer_capacity_or_shared_filesystem() -> None:

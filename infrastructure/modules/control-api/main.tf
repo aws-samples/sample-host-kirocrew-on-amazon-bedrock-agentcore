@@ -338,4 +338,8 @@ resource "aws_cloudwatch_metric_alarm" "authorization_failures" {
 output "api_id" { value = aws_apigatewayv2_api.control.id }
 output "api_endpoint" { value = aws_apigatewayv2_api.control.api_endpoint }
 output "function_arn" { value = aws_lambda_function.control.arn }
+# The scheduled waker invokes this function DIRECTLY rather than through the API,
+# because arriving without a `requestContext` is what identifies a caller as the
+# scheduler, and only a direct invoke can do that.
+output "function_name" { value = aws_lambda_function.control.function_name }
 output "role_arn" { value = aws_iam_role.control.arn }

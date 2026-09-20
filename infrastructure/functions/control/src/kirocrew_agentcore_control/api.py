@@ -121,6 +121,18 @@ class ClaimsValidator:
         self._administrator_group = administrator_group
         self._clock = clock
 
+    @property
+    def issuer(self) -> str:
+        """The issuer an Identity must be built against.
+
+        Exposed because a scheduled wake constructs an Identity from a configured
+        subject rather than from a verified token, and ``subject_hash`` -- which is
+        what the sandbox record and every token are keyed on -- folds the issuer
+        in. Reading it from the same validator the browser path uses is what keeps
+        the two from drifting apart into two different hashes for one person.
+        """
+        return self._issuer
+
     def validate(self, claims: Mapping[str, object] | None) -> Identity:
         if claims is None:
             raise ControlApiError(
@@ -204,6 +216,38 @@ class SignedControlTokens:
                 "subjectHash": identity.subject_hash,
                 "runtimeSessionId": record.runtime_session_id,
                 "type": "binding",
+            }
+        )
+        return token, expires
+
+    def issue_scheduler(self, identity: Identity, record: SandboxRecord) -> tuple[str, datetime]:
+        """Mint the token an unattended wake presents instead of a binding token.
+
+        Claim-for-claim identical to a binding token apart from ``type``, because
+        everything downstream -- lease authorization, the sandbox claim, restore --
+        should behave exactly as it does for a browser. The distinct type exists so
+        the adapter can tell that NO Cognito ``Authorization`` header will
+        accompany it: a scheduled wake has no browser and therefore no user token
+        to cross-check ``subjectHash`` against.
+
+        The signature is what carries the authority, exactly as for a binding
+        token. What makes skipping the cross-check safe is not the type name but
+        who can obtain one: this issuer is only reached through a direct Lambda
+        invocation, so the trust boundary is ``lambda:InvokeFunction`` on the
+        control plane. The adapter must ALSO refuse this type on the
+        browser-facing runtime -- see docs/design-scheduled-jobs.md.
+        """
+        expires = self._clock() + BINDING_TTL
+        token = self._issue(
+            {
+                "aud": self._audience,
+                "exp": int(expires.timestamp()),
+                "iat": int(self._clock().timestamp()),
+                "nonce": self._nonce_factory(),
+                "sandboxId": record.sandbox_id,
+                "subjectHash": identity.subject_hash,
+                "runtimeSessionId": record.runtime_session_id,
+                "type": "scheduler",
             }
         )
         return token, expires
@@ -390,6 +434,15 @@ class SandboxControlService:
         try:
             method = event.get("requestContext")
             request_context = method if isinstance(method, dict) else {}
+            # A scheduled wake arrives as a DIRECT Lambda invocation, which has no
+            # requestContext at all. Requiring its absence is what keeps this path
+            # off the HTTP surface: every API Gateway event carries one, so a
+            # browser cannot reach this branch even with a valid user token, and
+            # the trust boundary is lambda:InvokeFunction rather than a route.
+            if not request_context and event.get("operation") == "schedulerStart":
+                return self._scheduler_start(event, correlation_id)
+            if not request_context and event.get("operation") == "schedulerStop":
+                return self._scheduler_stop(event, correlation_id)
             http = request_context.get("http")
             http_value = http if isinstance(http, dict) else {}
             verb = http_value.get("method")
@@ -470,6 +523,84 @@ class SandboxControlService:
                 correlation_id,
             )
 
+    def _scheduler_start(
+        self, event: Mapping[str, object], correlation_id: str
+    ) -> dict[str, object]:
+        """Wake a sandbox on behalf of an owner who is not present.
+
+        The caller must name BOTH the Cognito subject and the sandbox id it
+        expects, and they must correspond. The subject alone would be enough to
+        mint a token, but then a typo or a stale config would silently CREATE a
+        sandbox for a subject that has none, and a scheduled job would start
+        writing into a fresh empty workspace instead of failing loudly. The
+        sandbox id is the assertion that turns that into an error.
+
+        The subject has to be supplied rather than discovered: the record keeps
+        only a one-way ``owner_hash``, so nothing here can recover whose sandbox
+        it is. See docs/design-scheduled-jobs.md for why that is deliberate and
+        what multi-owner support would need.
+        """
+        subject = event.get("cognitoSubject")
+        sandbox_id = event.get("sandboxId")
+        key = event.get("idempotencyKey")
+        if not isinstance(subject, str) or not subject:
+            raise ControlApiError(
+                400, "INVALID_MESSAGE", "LIFECYCLE", "Scheduler wake requires a subject."
+            )
+        if not isinstance(sandbox_id, str) or not sandbox_id:
+            raise ControlApiError(
+                400, "INVALID_MESSAGE", "LIFECYCLE", "Scheduler wake requires a sandbox id."
+            )
+        if not isinstance(key, str) or not key:
+            raise ControlApiError(
+                400, "INVALID_MESSAGE", "LIFECYCLE", "Scheduler wake requires an idempotency key."
+            )
+        identity = Identity(subject=subject, issuer=self._claims.issuer, administrator=False)
+        replay = self._idempotent(identity.subject, "schedulerStart", key, "schedulerStart")
+        if replay is not None:
+            return self._response(200, replay, correlation_id)
+        # `get`, never `get_or_create`. Creating on a wake is exactly the failure
+        # this path must not have: a stale or mistyped subject would mint a fresh
+        # empty sandbox, the job would run against it, and everything would look
+        # healthy while writing nowhere the owner can see.
+        try:
+            existing = self._registry.get(identity.subject)
+        except SandboxUnavailableError as error:
+            raise ControlApiError(
+                404,
+                "SANDBOX_NOT_FOUND",
+                "LIFECYCLE",
+                "The named subject has no sandbox to wake.",
+            ) from error
+        if existing.sandbox_id != sandbox_id:
+            # Deliberately not "not found": the subject DOES resolve, just not to
+            # the sandbox the caller expected, which means the caller's
+            # configuration and this deployment disagree about who owns what.
+            raise ControlApiError(
+                409,
+                "SANDBOX_MISMATCH",
+                "LIFECYCLE",
+                "The named sandbox does not belong to the named subject.",
+            )
+        lease = self._registry.acquire_start(
+            identity.subject,
+            existing.runtime_session_id,
+            ttl=self._lease_ttl,
+        )
+        token, expires = self._tokens.issue_scheduler(identity, lease.record)
+        body: dict[str, object] = {
+            "authoritative": lease.authoritative,
+            "expiresAt": _timestamp(expires),
+            "qualifier": self._config.qualifier,
+            "runtimeArn": self._config.runtime_arn,
+            "runtimeSessionId": lease.record.runtime_session_id,
+            "sandboxId": lease.record.sandbox_id,
+            "schedulerToken": token,
+            "state": lease.record.state.value,
+        }
+        self._remember(identity.subject, "schedulerStart", key, "schedulerStart", body)
+        return self._response(200, body, correlation_id)
+
     def _start(self, identity: Identity, key: str) -> dict[str, object]:
         replay = self._idempotent(identity.subject, "start", key, "start")
         if replay is not None:
@@ -496,6 +627,68 @@ class SandboxControlService:
         }
         self._remember(identity.subject, "start", key, "start", response)
         return response
+
+    def _scheduler_stop(
+        self, event: Mapping[str, object], correlation_id: str
+    ) -> dict[str, object]:
+        """Finish the teardown a scheduled wake started, on the owner's behalf.
+
+        Stopping is TWO steps and neither half works alone. The runtime commits a
+        final checkpoint and hands back a receipt, moving the record to STOPPING;
+        this call verifies that receipt against the committed generation, tears the
+        runtime session down, and finalizes STOPPED.
+
+        A wake that performed only the first half left the record stranded at
+        STOPPING -- the state `_stop_runtime` explicitly warns about -- with the
+        session never rotated, so the NEXT wake's `sandbox.prepare_stop` answered
+        "already prepared" with an empty event list and committed nothing. The
+        durability of every later cycle quietly depended on a periodic checkpoint
+        landing before idle reclaim.
+
+        Reuses `_stop` rather than reimplementing the lifecycle: the receipt
+        verification, the generation and digest cross-checks, and the STOPPED
+        transition are the same rules whether a browser or a schedule asks, and
+        having two copies of them is how they drift apart.
+        """
+        subject = event.get("cognitoSubject")
+        sandbox_id = event.get("sandboxId")
+        key = event.get("idempotencyKey")
+        receipt = event.get("checkpointReceipt")
+        if not isinstance(subject, str) or not subject:
+            raise ControlApiError(
+                400, "INVALID_MESSAGE", "LIFECYCLE", "Scheduler stop requires a subject."
+            )
+        if not isinstance(sandbox_id, str) or not sandbox_id:
+            raise ControlApiError(
+                400, "INVALID_MESSAGE", "LIFECYCLE", "Scheduler stop requires a sandbox id."
+            )
+        if not isinstance(key, str) or not key:
+            raise ControlApiError(
+                400, "INVALID_MESSAGE", "LIFECYCLE", "Scheduler stop requires an idempotency key."
+            )
+        if not isinstance(receipt, str) or not receipt:
+            raise ControlApiError(
+                400, "INVALID_MESSAGE", "PERSISTENCE", "Scheduler stop requires a receipt."
+            )
+        identity = Identity(subject=subject, issuer=self._claims.issuer, administrator=False)
+        # Same assertion as the wake: the subject alone would be enough to act, but
+        # then a stale configuration could tear down a sandbox the caller did not
+        # mean to name. The sandbox id is what turns that into an error.
+        try:
+            existing = self._registry.get(identity.subject)
+        except SandboxUnavailableError as error:
+            raise ControlApiError(
+                404, "SANDBOX_NOT_FOUND", "LIFECYCLE", "The named subject has no sandbox."
+            ) from error
+        if existing.sandbox_id != sandbox_id:
+            raise ControlApiError(
+                409,
+                "SANDBOX_MISMATCH",
+                "LIFECYCLE",
+                "The named sandbox does not belong to the named subject.",
+            )
+        body = self._stop(identity, key, {"checkpointReceipt": receipt})
+        return self._response(200, body, correlation_id)
 
     def _stop(self, identity: Identity, key: str, body: Mapping[str, object]) -> dict[str, object]:
         receipt = body.get("checkpointReceipt")

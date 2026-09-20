@@ -634,3 +634,116 @@ def test_authoritative_start_rotates_the_runtime_session_and_resume_does_not() -
     # While the lease is live, reconnects keep the same session.
     resumed = registry.acquire_start(SUBJECT, "owner-a", ttl=timedelta(seconds=90))
     assert resumed.record.runtime_session_id == lease.record.runtime_session_id
+
+
+def test_scheduler_wake_is_reachable_only_by_direct_invocation() -> None:
+    """The scheduler branch keys on the ABSENCE of a requestContext.
+
+    That is the whole access control: every API Gateway event carries one, so a
+    browser cannot reach this path even holding a valid user token, and the trust
+    boundary becomes lambda:InvokeFunction on the control plane rather than a
+    route somebody could call.
+    """
+    control, registry, _catalog, _tokens, _stopper, _sleeps = service()
+    registry.get_or_create(SUBJECT)
+    sandbox_id = registry.get_or_create(SUBJECT).sandbox_id
+
+    direct = control.handle(
+        {
+            "operation": "schedulerStart",
+            "cognitoSubject": SUBJECT,
+            "sandboxId": sandbox_id,
+            "idempotencyKey": "wake-1",
+        }
+    )
+    assert direct["statusCode"] == 200
+    body = json.loads(cast(str, direct["body"]))
+    assert body["sandboxId"] == sandbox_id
+    assert body["schedulerToken"]
+
+    # Presented over HTTP the same payload is just an unknown route: the branch is
+    # never consulted because a requestContext is present.
+    over_http = control.handle(
+        event(
+            "POST",
+            "/control/v1/sandbox/schedulerStart",
+            claim_values=claims(),
+            body={"operation": "schedulerStart", "cognitoSubject": SUBJECT},
+        )
+    )
+    assert over_http["statusCode"] == 404
+
+
+def test_scheduler_wake_mints_a_distinct_token_type_and_replays() -> None:
+    control, registry, _catalog, _tokens, _stopper, _sleeps = service()
+    sandbox_id = registry.get_or_create(SUBJECT).sandbox_id
+    request: dict[str, object] = {
+        "operation": "schedulerStart",
+        "cognitoSubject": SUBJECT,
+        "sandboxId": sandbox_id,
+        "idempotencyKey": "wake-1",
+    }
+
+    body = json.loads(cast(str, control.handle(request)["body"]))
+    payload, _, _signature = cast(str, body["schedulerToken"]).partition(".")
+    claims_value = json.loads(
+        base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)).decode()
+    )
+    # Claim-for-claim a binding token apart from the type: everything downstream
+    # must behave exactly as it does for a browser. The type only tells the
+    # adapter that no Authorization header will accompany it.
+    assert claims_value["type"] == "scheduler"
+    assert claims_value["sandboxId"] == sandbox_id
+    assert claims_value["subjectHash"] == Identity(SUBJECT, ISSUER, False).subject_hash
+    assert claims_value["runtimeSessionId"] == body["runtimeSessionId"]
+
+    # A retried wake must not acquire a second lease or mint a second token.
+    replayed = json.loads(cast(str, control.handle(request)["body"]))
+    assert replayed == body
+
+
+def test_scheduler_wake_refuses_a_subject_and_sandbox_that_disagree() -> None:
+    """A wrong subject must fail loudly rather than create a fresh sandbox.
+
+    get_or_create would happily mint one for an unknown subject, and a scheduled
+    job would then start writing into an empty workspace while looking healthy.
+    Naming the expected sandbox is what turns a stale config into an error.
+    """
+    control, registry, _catalog, _tokens, _stopper, _sleeps = service()
+    sandbox_id = registry.get_or_create(SUBJECT).sandbox_id
+
+    # An unknown subject must not have a sandbox created for it.
+    unknown = control.handle(
+        {
+            "operation": "schedulerStart",
+            "cognitoSubject": "somebody-else",
+            "sandboxId": sandbox_id,
+            "idempotencyKey": "wake-1",
+        }
+    )
+    assert unknown["statusCode"] == 404
+    assert "SANDBOX_NOT_FOUND" in cast(str, unknown["body"])
+
+    # A subject that DOES resolve, but not to the sandbox the caller named, means
+    # the caller's configuration and this deployment disagree about ownership.
+    registry.get_or_create("subject-b")
+    mismatch = control.handle(
+        {
+            "operation": "schedulerStart",
+            "cognitoSubject": SUBJECT,
+            "sandboxId": "sbx_01J99999999999999999999999",
+            "idempotencyKey": "wake-3",
+        }
+    )
+    assert mismatch["statusCode"] == 409
+    assert "SANDBOX_MISMATCH" in cast(str, mismatch["body"])
+
+    for missing in ("cognitoSubject", "sandboxId", "idempotencyKey"):
+        request: dict[str, object] = {
+            "operation": "schedulerStart",
+            "cognitoSubject": SUBJECT,
+            "sandboxId": sandbox_id,
+            "idempotencyKey": "wake-2",
+        }
+        del request[missing]
+        assert control.handle(request)["statusCode"] == 400

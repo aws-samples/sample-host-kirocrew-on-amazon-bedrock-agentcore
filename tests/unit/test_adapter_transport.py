@@ -1009,3 +1009,84 @@ def test_websocket_initialization_and_readiness_fail_closed() -> None:
             assert close.type in {WSMsgType.CLOSE, WSMsgType.CLOSED}
 
     asyncio.run(scenario())
+
+
+def test_scheduler_token_is_refused_unless_this_runtime_is_the_machine_door() -> None:
+    """The env-gated flag is the ONLY thing separating the two front doors.
+
+    Both runtimes run the same image, so nothing in the code can tell which door
+    served a request. If the browser-facing runtime accepted scheduler tokens, a
+    caller holding one could skip the Cognito subject cross-check entirely -- so
+    the default must be refusal, and this test is what keeps it that way.
+    """
+    clock = MutableClock()
+    signer = LocalAsymmetricKmsSigner.generate()
+    registry = InMemorySandboxRegistry(
+        sandbox_id_factory=lambda: "sbx_01J00000000000000000000000",
+        runtime_session_id_factory=lambda: "7c0a2b3e-7d94-4ce7-a41b-5888a53159f4",
+        clock=clock,
+    )
+    record = registry.get_or_create(SUBJECT)
+    tokens = SignedControlTokens(signer, AUDIENCE, clock=clock, nonce_factory=lambda: "n")
+    scheduler, _ = tokens.issue_scheduler(Identity(SUBJECT, ISSUER, False), record)
+    binding, _ = tokens.issue_binding(Identity(SUBJECT, ISSUER, False), record)
+
+    browser_door = KmsBindingVerifier(signer, AUDIENCE, ISSUER, clock=clock)
+    machine_door = KmsBindingVerifier(signer, AUDIENCE, ISSUER, clock=clock, accepts_scheduler=True)
+    assert browser_door.accepts_scheduler is False
+    assert machine_door.accepts_scheduler is True
+
+    # Refused on the browser door even though the signature is perfectly valid.
+    with pytest.raises(BindingVerificationError, match="not accepted on this runtime"):
+        browser_door.verify(scheduler, None)
+    with pytest.raises(BindingVerificationError, match="not accepted on this runtime"):
+        browser_door.verify(scheduler, SUBJECT)
+
+    # Accepted on the machine door, with the claims a binding token would carry.
+    claims = machine_door.verify(scheduler, None)
+    assert claims.sandbox_id == record.sandbox_id
+    assert claims.runtime_session_id == record.runtime_session_id
+
+    # Presenting a subject alongside a scheduler token is a contradiction: it
+    # means a browser reached the machine door, so refuse rather than guess.
+    with pytest.raises(BindingVerificationError, match="not accepted on this runtime"):
+        machine_door.verify(scheduler, SUBJECT)
+
+    # The machine door must not become a way to skip the cross-check for an
+    # ordinary binding token: those still require a subject, and still have to
+    # match it.
+    assert machine_door.verify(binding, SUBJECT).sandbox_id == record.sandbox_id
+    with pytest.raises(BindingVerificationError, match="missing"):
+        machine_door.verify(binding, None)
+    with pytest.raises(BindingVerificationError, match="does not match"):
+        machine_door.verify(binding, OTHER_SUBJECT)
+
+    # An unknown type is refused on both doors rather than falling through, and
+    # it has to be signed properly to prove the TYPE is what rejects it: a token
+    # cannot be forged by editing the string, since the claims are base64 and the
+    # signature covers them.
+    payload = (
+        base64.urlsafe_b64encode(
+            json.dumps(
+                {
+                    "aud": AUDIENCE,
+                    "exp": int(clock().timestamp()) + 600,
+                    "iat": int(clock().timestamp()),
+                    "sandboxId": record.sandbox_id,
+                    "runtimeSessionId": record.runtime_session_id,
+                    "subjectHash": Identity(SUBJECT, ISSUER, False).subject_hash,
+                    "type": "runtime-session",
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        )
+        .decode()
+        .rstrip("=")
+    )
+    signed = (
+        f"{payload}.{base64.urlsafe_b64encode(signer.sign(payload.encode())).decode().rstrip('=')}"
+    )
+    for door in (browser_door, machine_door):
+        with pytest.raises(BindingVerificationError, match="does not match"):
+            door.verify(signed, SUBJECT)

@@ -52,3 +52,17 @@ output "agentcore_runtime" {
     runtime_version    = module.runtime_microvm[0].runtime_version
   } : null
 }
+
+
+output "scheduled_wake" {
+  description = "Non-secret descriptors for the scheduled wake, or null when it is not enabled."
+  value = length(module.scheduler) > 0 ? {
+    function_name = module.scheduler[0].waker_function_name
+    schedule_name = module.scheduler[0].schedule_name
+    expression    = var.wake_schedule_expression
+    timezone      = var.wake_schedule_timezone
+    # Surfaced because it is the number to revisit once a real workspace restore
+    # has been timed. The only measurement so far was against an empty one.
+    lead_seconds = var.wake_lead_seconds
+  } : null
+}

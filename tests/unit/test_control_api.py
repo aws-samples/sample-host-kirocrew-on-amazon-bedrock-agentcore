@@ -747,3 +747,74 @@ def test_scheduler_wake_refuses_a_subject_and_sandbox_that_disagree() -> None:
         }
         del request[missing]
         assert control.handle(request)["statusCode"] == 400
+
+
+def test_scheduler_stop_finishes_a_teardown_on_the_owner_s_behalf() -> None:
+    """Stopping is two steps, and the first one alone strands the record.
+
+    The runtime commits a final checkpoint and hands back a receipt, moving the
+    record to STOPPING; this call verifies that receipt and finalizes STOPPED. A
+    wake that performed only the first half left the session unrotated, so the NEXT
+    wake's prepare_stop answered "already prepared" and committed nothing.
+
+    Reachable only by direct invocation, on the same rule as the wake: the branch
+    keys on the ABSENCE of a requestContext, which every API Gateway event carries.
+    """
+    control, registry, catalog, tokens, stopper, _sleeps = service()
+    receipt = prepare_stopping(registry, catalog, tokens)
+    sandbox_id = registry.get_or_create(SUBJECT).sandbox_id
+
+    response = control.handle(
+        {
+            "operation": "schedulerStop",
+            "cognitoSubject": SUBJECT,
+            "sandboxId": sandbox_id,
+            "checkpointReceipt": receipt,
+            "idempotencyKey": "sleep-00000001",
+        }
+    )
+
+    assert response["statusCode"] == 200
+    body = json.loads(cast(str, response["body"]))
+    assert body["state"] == "STOPPED"
+    # The runtime session is actually torn down, not merely marked.
+    assert len(stopper.calls) == 1
+
+
+def test_scheduler_stop_refuses_anything_it_cannot_fully_verify() -> None:
+    """Every field is asserted, because a wrong one tears down the wrong workspace.
+
+    The subject alone would be enough to act, which is exactly why it is not enough
+    to be trusted: a stale configuration naming a real subject and the wrong sandbox
+    would stop something the caller never meant to name.
+    """
+    control, registry, catalog, tokens, _stopper, _sleeps = service()
+    receipt = prepare_stopping(registry, catalog, tokens)
+    sandbox_id = registry.get_or_create(SUBJECT).sandbox_id
+
+    def stop(**overrides: object) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "operation": "schedulerStop",
+            "cognitoSubject": SUBJECT,
+            "sandboxId": sandbox_id,
+            "checkpointReceipt": receipt,
+            "idempotencyKey": "sleep-00000002",
+        }
+        payload.update(overrides)
+        return control.handle(payload)
+
+    # Each required field, absent.
+    assert stop(cognitoSubject="")["statusCode"] == 400
+    assert stop(sandboxId="")["statusCode"] == 400
+    assert stop(idempotencyKey="")["statusCode"] == 400
+    assert stop(checkpointReceipt="")["statusCode"] == 400
+
+    # A subject that resolves, to a DIFFERENT sandbox than the caller named. Not
+    # "not found": the pair disagrees, which means the caller's configuration and
+    # this deployment disagree about who owns what.
+    mismatch = stop(sandboxId="sbx_SOMETHINGELSE")
+    assert mismatch["statusCode"] == 409
+
+    # A subject with no sandbox at all.
+    unknown = stop(cognitoSubject="00000000-0000-7000-8000-0000000000ff")
+    assert unknown["statusCode"] == 404

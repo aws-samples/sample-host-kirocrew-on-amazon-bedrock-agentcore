@@ -179,6 +179,7 @@ class RuntimeFixture:
     backend: RuntimeBackend
     clock: MutableClock
     signer: LocalAsymmetricKmsSigner
+    scheduler: str
 
 
 async def no_sleep(_delay: float) -> None:
@@ -192,6 +193,7 @@ def runtime_fixture(
     session_initializer: SessionInitializer | None = None,
     heartbeat_timeout: float = 0.1,
     max_attempts: int = 3,
+    accepts_scheduler: bool = False,
 ) -> RuntimeFixture:
     clock = MutableClock()
     signer = LocalAsymmetricKmsSigner.generate()
@@ -208,6 +210,9 @@ def runtime_fixture(
         nonce_factory=lambda: "fixed-nonce",
     )
     binding, _ = tokens.issue_binding(Identity(SUBJECT, ISSUER, False), record)
+    # Minted unconditionally so a test can present it at either door and assert the
+    # difference; only the machine door is built to accept it.
+    scheduler, _ = tokens.issue_scheduler(Identity(SUBJECT, ISSUER, False), record)
     lease = FakeLeaseAuthorizer(SUBJECT, record.sandbox_id, record.runtime_session_id)
     selected_backend = backend or EchoRuntimeBackend()
     readiness = RuntimeReadiness(healthy, healthy, False)
@@ -215,7 +220,9 @@ def runtime_fixture(
         session_initializer.bind(readiness)
     adapter = AgentCoreAdapter(
         AdapterConfig(AUDIENCE, ISSUER, heartbeat_timeout, max_attempts),
-        KmsBindingVerifier(signer, AUDIENCE, ISSUER, clock=clock),
+        KmsBindingVerifier(
+            signer, AUDIENCE, ISSUER, clock=clock, accepts_scheduler=accepts_scheduler
+        ),
         lease,
         selected_backend,
         readiness,
@@ -224,7 +231,7 @@ def runtime_fixture(
         sleep=no_sleep,
         jitter=lambda cap: cap,
     )
-    return RuntimeFixture(adapter, binding, lease, selected_backend, clock, signer)
+    return RuntimeFixture(adapter, binding, lease, selected_backend, clock, signer, scheduler)
 
 
 @asynccontextmanager
@@ -1090,3 +1097,43 @@ def test_scheduler_token_is_refused_unless_this_runtime_is_the_machine_door() ->
     for door in (browser_door, machine_door):
         with pytest.raises(BindingVerificationError, match="does not match"):
             door.verify(signed, SUBJECT)
+
+
+def test_a_wake_with_no_authorization_header_is_served_only_at_the_machine_door() -> None:
+    """An unattended wake has no user token, because nobody is signed in.
+
+    Every other caller must present one, and a missing header has always been a hard
+    failure. The machine door tolerates its absence for exactly one case -- a
+    scheduler binding, which carries the sandbox and session itself and so has no
+    subject to cross-check. The browser door must keep refusing, or a caller could
+    present a scheduler binding there to skip the Cognito subject comparison
+    entirely.
+    """
+
+    async def scenario() -> None:
+        machine = runtime_fixture(accepts_scheduler=True)
+        # The scheduler path deliberately reaches the lease check with an EMPTY
+        # subject: the binding names the sandbox and session, and there is no signed-in
+        # user to name. Told to the fake so the assertion is about that contract rather
+        # than about the fixture's defaults.
+        machine.lease.expected = ("", *machine.lease.expected[1:])
+        async with socket_client(machine.adapter) as (session, base):
+            accepted = await session.post(
+                f"{base}/invocations",
+                json=invocation(machine.scheduler),
+            )
+            assert accepted.status == 200
+        assert machine.lease.calls == [("", *machine.lease.expected[1:])]
+
+        browser = runtime_fixture()
+        async with socket_client(browser.adapter) as (session, base):
+            refused = await session.post(
+                f"{base}/invocations",
+                json=invocation(browser.scheduler),
+            )
+            assert refused.status == 403
+            assert (await refused.json())["code"] == "BINDING_MISMATCH"
+        # Refused BEFORE the lease check: the door decides on the token type alone.
+        assert browser.lease.calls == []
+
+    asyncio.run(scenario())

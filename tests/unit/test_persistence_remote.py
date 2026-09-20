@@ -19,6 +19,7 @@ from kirocrew_agentcore_persistence.remote import LambdaBrokerClient, LambdaPers
 
 SANDBOX = "sbx_01J00000000000000000000000"
 SESSION = "7c0a2b3e-7d94-4ce7-a41b-5888a53159f4"
+CHUNK_DIGEST = "b" * 64
 
 
 class Payload:
@@ -128,6 +129,28 @@ def test_remote_broker_cipher_context_scope_and_listing() -> None:
         invalid_client, _ = client(invalid_value)
         with pytest.raises(BrokerAuthorizationError, match="listing is invalid"):
             LambdaPersistenceBroker(invalid_client, SANDBOX).internal_keys(SANDBOX, "commits")
+
+    # Existence is probed with a narrowed listing, not a presigned HeadObject: S3
+    # answers a permitted listing with an empty result for a missing key, where
+    # HeadObject answers 403 because it carries no `s3:prefix` context key for the
+    # broker's prefix-conditioned grant to match.
+    present_client, present_fake = client({"names": [f"{CHUNK_DIGEST}.bin"]})
+    assert (
+        LambdaPersistenceBroker(present_client, SANDBOX).chunk_exists(SANDBOX, CHUNK_DIGEST) is True
+    )
+    probe = json.loads(cast(bytes, present_fake.requests[-1]["Payload"]))
+    assert probe["category"] == "chunks"
+    assert probe["name"] == f"{CHUNK_DIGEST}.bin"
+    absent_client, _ = client({"names": []})
+    assert (
+        LambdaPersistenceBroker(absent_client, SANDBOX).chunk_exists(SANDBOX, CHUNK_DIGEST) is False
+    )
+    for invalid_value in ({}, {"names": [1]}):
+        invalid_client, _ = client(invalid_value)
+        with pytest.raises(BrokerAuthorizationError, match="listing is invalid"):
+            LambdaPersistenceBroker(invalid_client, SANDBOX).chunk_exists(SANDBOX, CHUNK_DIGEST)
+    with pytest.raises(BrokerAuthorizationError, match="Cross-sandbox"):
+        LambdaPersistenceBroker(present_client, SANDBOX).chunk_exists("other", CHUNK_DIGEST)
     with pytest.raises(BrokerAuthorizationError, match="deletion is not permitted"):
         broker.internal_delete(SANDBOX, "commits", "1.json")
 

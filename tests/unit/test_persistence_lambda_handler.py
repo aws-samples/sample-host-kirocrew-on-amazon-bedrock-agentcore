@@ -39,6 +39,7 @@ class FakeS3:
         self.put_requests: list[dict[str, object]] = []
         self.presign_requests: list[tuple[str, dict[str, object]]] = []
         self.pages: list[dict[str, object]] = []
+        self.paginate_requests: list[dict[str, object]] = []
 
     def get_object(self, **request: str) -> dict[str, Body]:
         key = request["Key"]
@@ -62,7 +63,8 @@ class FakeS3:
         assert name == "list_objects_v2"
         return self
 
-    def paginate(self, **_request: object) -> list[dict[str, object]]:
+    def paginate(self, **request: object) -> list[dict[str, object]]:
+        self.paginate_requests.append(request)
         return self.pages
 
 
@@ -328,6 +330,27 @@ def test_object_names_presigning_and_listing() -> None:
     assert broker._list(s3, SANDBOX, {"category": "commits"}) == {"names": ["2.json"]}
     with pytest.raises(ValueError, match="Invalid checkpoint category"):
         broker._list(s3, SANDBOX, {"category": "bad"})
+
+    # A narrowed listing is how existence is probed without a HeadObject. The
+    # scanned prefix MUST stay under `sandboxes/`, because that is what lets the
+    # broker's prefix-conditioned ListBucket grant authorize it -- widening the
+    # grant instead would let the role enumerate the whole bucket.
+    chunks = f"sandboxes/{SANDBOX}/chunks/"
+    s3.pages = [{"Contents": [{"Key": f"{chunks}{DIGEST}.bin"}]}]
+    assert broker._list(s3, SANDBOX, {"category": "chunks", "name": f"{DIGEST}.bin"}) == {
+        "names": [f"{DIGEST}.bin"]
+    }
+    assert s3.paginate_requests[-1]["Prefix"] == f"{chunks}{DIGEST}.bin"
+    # A missing object yields an empty listing rather than the 403 a HeadObject
+    # would answer, which is the whole point of probing this way.
+    s3.pages = [{}]
+    assert broker._list(s3, SANDBOX, {"category": "chunks", "name": f"{DIGEST}.bin"}) == {
+        "names": []
+    }
+    # The name is validated through _object_name, so it cannot escape the category.
+    for invalid_name in (1, "../escape.bin", "bad.bin"):
+        with pytest.raises(ValueError, match="Invalid checkpoint object name"):
+            broker._list(s3, SANDBOX, {"category": "chunks", "name": invalid_name})
 
 
 def test_checkpoint_receipt_validates_commit_catalogs_and_signs() -> None:

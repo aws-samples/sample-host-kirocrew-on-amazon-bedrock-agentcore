@@ -160,6 +160,8 @@ def test_broker_rejects_arbitrary_identity_prefix_and_invalid_configuration() ->
         broker.encryption_context("../another-sandbox")
     with pytest.raises(BrokerAuthorizationError, match="digest"):
         broker.presign_chunk(SANDBOX_ID, "bad", StorageOperation.GET)
+    with pytest.raises(BrokerAuthorizationError, match="digest"):
+        broker.chunk_exists(SANDBOX_ID, "bad")
     with pytest.raises(BrokerAuthorizationError, match="positive"):
         broker.presign_manifest(SANDBOX_ID, 0, StorageOperation.GET)
     with pytest.raises(BrokerAuthorizationError, match="category"):

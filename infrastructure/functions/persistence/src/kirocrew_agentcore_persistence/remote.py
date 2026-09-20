@@ -189,6 +189,15 @@ class LambdaPersistenceBroker:
         except urllib.error.URLError as error:
             raise BrokerAuthorizationError("Persistence object operation failed.") from error
 
+    def chunk_exists(self, sandbox_id: str, digest: str) -> bool:
+        self._validate_sandbox(sandbox_id)
+        name = f"{digest}.bin"
+        value = self._client.call("list", category="chunks", name=name)
+        names = value.get("names")
+        if not isinstance(names, list) or not all(isinstance(item, str) for item in names):
+            raise BrokerAuthorizationError("Persistence object listing is invalid.")
+        return name in cast(list[str], names)
+
     def internal_keys(self, sandbox_id: str, category: str) -> tuple[str, ...]:
         self._validate_sandbox(sandbox_id)
         value = self._client.call("list", category=category)

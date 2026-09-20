@@ -39,8 +39,8 @@ import time
 from typing import Any
 
 import boto3
-from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.config import Config  # type: ignore[import-untyped]
+from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 
 LOGGER = logging.getLogger()
 LOGGER.setLevel(logging.INFO)

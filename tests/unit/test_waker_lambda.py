@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 
 WAKER_SRC = Path(__file__).resolve().parents[2] / "infrastructure" / "functions" / "waker" / "src"
 if str(WAKER_SRC) not in sys.path:

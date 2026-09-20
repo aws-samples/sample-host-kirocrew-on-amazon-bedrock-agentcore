@@ -257,3 +257,56 @@ def test_panel_persisted_paths_mirror_the_persistence_policy() -> None:
         assert f'"/mnt/workspace/{root.as_posix()}",' in variables
     declared = re.findall(r'"(/mnt/workspace/[^"]+)",', variables)
     assert len(declared) == len(PersistencePolicy._roots)
+
+
+def test_broker_can_list_the_bucket_unconditionally_so_a_missing_chunk_is_404() -> None:
+    """HeadObject's 404-vs-403 answer depends on unconditioned ListBucket.
+
+    S3 tells a caller that may list the bucket "404" for a missing object and "403"
+    for one it may not see. HeadObject supplies no ``s3:prefix`` context key, so a
+    prefix-conditioned list grant cannot satisfy it -- and a MISSING object then
+    answers 403.
+
+    The checkpoint path HEADs every chunk before uploading it and treats only 404 as
+    absent, so with prefix-only listing the very FIRST checkpoint of a sandbox failed
+    and no checkpoint ever committed. Durable persistence, graceful stop (which needs
+    a final-checkpoint receipt) and the read-only guard were all disabled by that one
+    condition, presenting as four unrelated faults.
+
+    Pinned because the unconditioned statement reads like an oversight next to the
+    conditioned one beside it, and narrowing it looks like an improvement. It grants
+    no extra reach: the bucket holds nothing but ``sandboxes/``, which the conditioned
+    statement already allows enumerating.
+    """
+    persistence = terraform("modules/persistence/main.tf")
+    # Brace-matched rather than regex-matched: a statement block nests `condition`
+    # and `principals` blocks, and a regex that tries to allow for that silently
+    # matches nothing instead of failing loudly.
+    blocks = []
+    for match in re.finditer(r"\bstatement\s*\{", persistence):
+        # Start AT the brace the match ends on, so nesting is counted from the
+        # statement's own scope rather than from some earlier brace on the line.
+        depth = 0
+        cursor = match.end() - 1
+        for position in range(cursor, len(persistence)):
+            if persistence[position] == "{":
+                depth += 1
+            elif persistence[position] == "}":
+                depth -= 1
+                if depth == 0:
+                    cursor = position
+                    break
+        blocks.append(persistence[match.start() : cursor + 1])
+
+    listing = [block for block in blocks if '"s3:ListBucket"' in block]
+    assert listing, "the broker must be granted s3:ListBucket somewhere"
+    # A `condition {` BLOCK, not the bare word: the explanatory comment inside the
+    # statement says "prefix-conditioned", and a substring check read that prose as
+    # configuration -- reporting the fix missing while it was present.
+    unconditioned = [block for block in listing if not re.search(r"\bcondition\s*\{", block)]
+    assert unconditioned, (
+        "at least one s3:ListBucket grant must carry NO condition, or HeadObject "
+        "answers 403 for a missing chunk and no checkpoint can ever commit"
+    )
+    # Scoped to the bucket itself, never a wildcard across buckets.
+    assert all("aws_s3_bucket.snapshots.arn" in block for block in unconditioned)

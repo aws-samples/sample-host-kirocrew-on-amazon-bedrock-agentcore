@@ -183,6 +183,23 @@ data "aws_iam_policy_document" "broker" {
     }
   }
   statement {
+    # HeadObject decides 404-vs-403 on whether the caller can list the bucket,
+    # and it supplies no `s3:prefix` context key -- so the prefix-conditioned
+    # grant above cannot satisfy it and a MISSING object answers 403. The
+    # checkpoint path HEADs every chunk before uploading it (`has_chunk`), and
+    # treats only 404 as absent, so with prefix-only listing the very first
+    # checkpoint of a sandbox failed and no checkpoint ever committed: durable
+    # persistence, graceful stop (which needs a final-checkpoint receipt) and
+    # the read-only guard were all disabled by this one condition.
+    #
+    # Listing cannot be narrowed further for this purpose: the bucket holds
+    # nothing but `sandboxes/`, so an unconditioned list adds no reach beyond
+    # what the conditioned statement already allows enumerating.
+    sid       = "CheckpointHeadObjectNotFoundSemantics"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.snapshots.arn]
+  }
+  statement {
     sid       = "SnapshotCryptography"
     actions   = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"]
     resources = [aws_kms_key.snapshots.arn]

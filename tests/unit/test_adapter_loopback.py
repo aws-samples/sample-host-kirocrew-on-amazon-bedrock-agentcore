@@ -140,7 +140,7 @@ def test_route_rules_and_policy_are_closed_by_default() -> None:
     assert prefix.matches("GET", "/api/prefix/child")
 
     policy = KiroCrewRoutePolicy()
-    assert policy.VERSION == "0.3.0"
+    assert policy.VERSION == "0.5.0"
     assert policy.classify("get", "/api/auth/status") is RouteDisposition.SYNTHETIC
     assert policy.classify("POST", "/api/auth/logout") is RouteDisposition.SYNTHETIC
     assert policy.classify("GET", "/api/chat?q=1") is RouteDisposition.ALLOWED

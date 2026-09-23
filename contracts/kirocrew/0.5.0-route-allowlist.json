@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "kirocrewVersion": "0.3.0",
+  "kirocrewVersion": "0.5.0",
   "defaultDisposition": "allowed",
   "rationale": [
     "The sandbox is a single-tenant microVM. AgentCore validates the Cognito authorization header and the adapter verifies a binding token against the Cognito subject hash on every invocation, so tenancy is enforced by the transport, not by route filtering.",
@@ -38,12 +38,12 @@
     {
       "prefix": "/api/desktop",
       "registeredUpstream": false,
-      "reason": "Host-native desktop control; not registered by upstream 0.3.0 and impossible inside a microVM."
+      "reason": "Host-native desktop control; not registered by upstream 0.5.0 and impossible inside a microVM."
     },
     {
       "prefix": "/api/files/pick",
       "registeredUpstream": false,
-      "reason": "Native OS file picker; not registered by upstream 0.3.0 and impossible inside a microVM."
+      "reason": "Native OS file picker; not registered by upstream 0.5.0 and impossible inside a microVM."
     }
   ],
   "deniedPrefixes": [
@@ -81,7 +81,7 @@
       "prefix": "/api/restart",
       "registeredUpstream": true,
       "calledByBundle": true,
-      "reason": "Upstream 0.3.0 registers POST /api/restart (and the dev-fleet app's /api/restart-gateway). The supervisor owns gateway lifecycle: a browser-initiated restart races checkpoint/restore exactly like /api/shutdown."
+      "reason": "Upstream 0.5.0 registers POST /api/restart (and the dev-fleet app's /api/restart-gateway). The supervisor owns gateway lifecycle: a browser-initiated restart races checkpoint/restore exactly like /api/shutdown."
     }
   ]
 }

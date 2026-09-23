@@ -28,7 +28,7 @@ from kirocrew_agentcore_runtime.supervisor import (
 
 ROOT = Path(__file__).parents[2]
 ARTIFACT = json.loads((ROOT / "runtime" / "kirocrew-artifact.json").read_text())
-DIGEST = "30bd90fcf5e0adc87541f67162866dcc3b5b2d5a0a44418c6d42022c8c7abbb2"
+DIGEST = "48a722da4a1957b3962e42b675c83c19a4b898bca0d54af81a6305c4dd915d57"
 
 
 class StaticToken:
@@ -38,7 +38,7 @@ class StaticToken:
 
 
 def runtime_metadata() -> RuntimeMetadata:
-    return RuntimeMetadata("0.3.0", DIGEST, "kirocrew-agentcore.v1")
+    return RuntimeMetadata("0.5.0", DIGEST, "kirocrew-agentcore.v1")
 
 
 def process_state(pid: int) -> str | None:
@@ -71,11 +71,11 @@ def test_pinned_official_kirocrew_start_token_pause_resume_shutdown_and_crash(
     assert ARTIFACT == {
         "schemaVersion": 1,
         "distribution": "kirocrew",
-        "version": "0.3.0",
-        "wheel": "kirocrew-0.3.0-py3-none-any.whl",
+        "version": "0.5.0",
+        "wheel": "kirocrew-0.5.0-py3-none-any.whl",
         "sha256": DIGEST,
         "entrypoint": "kirocrew",
-        "source": "https://github.com/kirodotdev/KiroCrew/releases/tag/v0.3.0",
+        "source": "https://github.com/kirodotdev/KiroCrew/releases/tag/v0.5.0",
     }
     assert version("kirocrew") == ARTIFACT["version"]
 
@@ -257,10 +257,10 @@ def test_real_loopback_rest_sse_websocket_allowlist_and_secret_boundary() -> Non
 @pytest.mark.contract
 def test_route_allowlist_contract_matches_versioned_adapter_boundary() -> None:
     contract = json.loads(
-        (ROOT / "contracts" / "kirocrew" / "0.3.0-route-allowlist.json").read_text()
+        (ROOT / "contracts" / "kirocrew" / "0.5.0-route-allowlist.json").read_text()
     )
     assert contract["schemaVersion"] == 2
-    assert contract["kirocrewVersion"] == "0.3.0"
+    assert contract["kirocrewVersion"] == "0.5.0"
     assert KiroCrewRoutePolicy.VERSION == contract["kirocrewVersion"]
     # Default-forward: the product must work end to end, so the contract records
     # only the families that stay blocked and why.

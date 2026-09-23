@@ -38,16 +38,118 @@ class KiroIdentityError(RuntimeError):
     """Kiro identity could not be established without exposing credential details."""
 
 
+# `kiro-cli whoami --format json` prints one JSON object, then appends the
+# profile block as plain text ("Profile:", the profile name, and for an
+# Identity Center identity its codewhisperer ARN). Both halves are read.
+_WHOAMI_FIELDS: Final = (
+    ("accountType", "account_type"),
+    ("email", "email"),
+    ("region", "region"),
+    ("startUrl", "start_url"),
+)
+_IDENTITY_VALUE_LIMIT: Final = 200
+
+
+def _identity_value(value: object) -> str | None:
+    """Accept one short, printable single-line string; reject anything else.
+
+    The result is rendered in the browser panel, so a control character or an
+    unbounded blob from a future CLI release must not travel there.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or len(text) > _IDENTITY_VALUE_LIMIT:
+        return None
+    if any(character < " " or character == "\x7f" for character in text):
+        return None
+    return text
+
+
+@dataclass(frozen=True, slots=True)
+class KiroIdentity:
+    """Who the sandbox's Kiro CLI is signed in as, as the CLI itself reports it."""
+
+    account_type: str | None = None
+    email: str | None = None
+    region: str | None = None
+    start_url: str | None = None
+    profile_name: str | None = None
+    profile_arn: str | None = None
+
+    def payload(self) -> dict[str, object]:
+        values = {
+            "accountType": self.account_type,
+            "email": self.email,
+            "profileArn": self.profile_arn,
+            "profileName": self.profile_name,
+            "region": self.region,
+            "startUrl": self.start_url,
+        }
+        return {key: value for key, value in values.items() if value is not None}
+
+    @property
+    def empty(self) -> bool:
+        return not self.payload()
+
+    @classmethod
+    def parse(cls, output: str) -> KiroIdentity:
+        document: dict[str, object] = {}
+        match = re.search(r"\{.*?\}", output, re.DOTALL)
+        if match is not None:
+            try:
+                parsed = cast(object, json.loads(match.group(0)))
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                document = cast(dict[str, object], parsed)
+        fields = {
+            attribute: _identity_value(document.get(key)) for key, attribute in _WHOAMI_FIELDS
+        }
+        name, arn = _profile_block(output)
+        return cls(profile_name=name, profile_arn=arn, **fields)
+
+
+def _profile_block(output: str) -> tuple[str | None, str | None]:
+    """Read the profile name and ARN the CLI appends after the JSON document."""
+    name: str | None = None
+    arn: str | None = None
+    seen_header = False
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.lower().startswith("profile:"):
+            seen_header = True
+            remainder = line[len("profile:") :].strip()
+            if remainder:
+                name = name or _identity_value(remainder)
+            continue
+        if line.startswith("arn:"):
+            arn = arn or _identity_value(line)
+            continue
+        if seen_header and name is None and not line.startswith("{"):
+            name = _identity_value(line)
+    return name, arn
+
+
 @dataclass(frozen=True, slots=True)
 class KiroAuthStatus:
     state: KiroAuthState
     interactive_supported: bool
+    identity: KiroIdentity | None = None
 
     def payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "interactiveSupported": self.interactive_supported,
             "state": self.state.value,
         }
+        # Only a signed-in identity carries one, and only when the CLI
+        # reported something we recognise: the panel falls back to the plain
+        # "Signed in" label otherwise.
+        if self.identity is not None and not self.identity.empty:
+            payload["identity"] = self.identity.payload()
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,13 +368,17 @@ class KiroIdentityManager:
                     value = json.loads(embedded.group(0))
                 except json.JSONDecodeError:
                     value = None
+        identity = KiroIdentity.parse(result.stdout)
         if not isinstance(value, dict):
             # The exit code is the authoritative signal: whoami only succeeds
             # for a signed-in identity, however noisy its output.
-            return KiroAuthStatus(KiroAuthState.AUTHENTICATED, interactive_supported=True)
+            return KiroAuthStatus(
+                KiroAuthState.AUTHENTICATED, interactive_supported=True, identity=identity
+            )
         return KiroAuthStatus(
             KiroAuthState.AUTHENTICATED if value else KiroAuthState.REQUIRED,
             interactive_supported=True,
+            identity=identity if value else None,
         )
 
     async def device_flow_events(

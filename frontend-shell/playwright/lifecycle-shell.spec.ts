@@ -36,13 +36,32 @@ interface LifecycleFixture {
     readonly message: string;
     readonly retryable: boolean;
   };
-  readonly kiroAuth?: { readonly state: string };
+  readonly kiroAuth?: {
+    readonly state: string;
+    readonly identity?: {
+      readonly accountType?: string;
+      readonly email?: string;
+      readonly profileArn?: string;
+      readonly profileName?: string;
+      readonly region?: string;
+      readonly startUrl?: string;
+    };
+  };
   readonly deviceFlow?: {
     readonly verificationUri: string;
     readonly userCode: string;
     readonly expiresAt: string;
     readonly status: string;
   };
+}
+
+/** Expand the panel when it has collapsed into the pill, and leave it alone
+ *  when it is already open: a re-render does not always re-collapse it. */
+async function openPanel(page: Page): Promise<void> {
+  const pill = page.locator(".kcac-pill");
+  if (await pill.isVisible()) {
+    await pill.click();
+  }
 }
 
 async function installShell(page: Page): Promise<void> {
@@ -485,8 +504,25 @@ test("manages the Kiro account from the status panel", async ({ page }) => {
     page.getByRole("button", { name: "Sign out of Kiro" }),
   ).toBeHidden();
 
-  // SSO requires an https start URL before the action fires.
+  // No fields to fill in until an organization sign-in is actually asked for:
+  // the first click on the SSO button reveals them.
+  await expect(page.getByLabel("Identity Center start URL")).toBeHidden();
   const ssoButton = page.getByRole("button", { name: "Sign in with SSO" });
+  await ssoButton.click();
+  await expect(page.getByLabel("Identity Center start URL")).toBeVisible();
+  // Revealing them does not start a sign-in.
+  expect(
+    await page.evaluate(
+      () =>
+        (
+          globalThis as typeof globalThis & {
+            __task12Calls: { kiroLogins: unknown[] };
+          }
+        ).__task12Calls.kiroLogins.length,
+    ),
+  ).toBe(0);
+
+  // SSO requires an https start URL before the action fires.
   await ssoButton.click();
   await expect(page.getByLabel("Identity Center start URL")).toHaveAttribute(
     "aria-invalid",
@@ -559,6 +595,8 @@ test("manages the Kiro account from the status panel", async ({ page }) => {
   await expect(
     page.getByRole("button", { name: "Sign in with SSO" }),
   ).toBeHidden();
+  // Without a reported identity the panel says nothing more than the state.
+  await expect(page.locator(".kcac-kiro-who")).toBeHidden();
   await page.getByRole("button", { name: "Sign out of Kiro" }).click();
   const logoutCalls = await page.evaluate(
     () =>
@@ -569,6 +607,53 @@ test("manages the Kiro account from the status panel", async ({ page }) => {
       ).__task12Calls.kiroLogout,
   );
   expect(logoutCalls).toBe(1);
+
+  // The identity `kiro-cli whoami` reports is shown instead of a bare label,
+  // with the long start URL and profile ARN kept in the row's tooltip.
+  await render(page, {
+    view: "ready",
+    activeRequestAccepted: false,
+    kiroAuth: {
+      state: "authenticated",
+      identity: {
+        accountType: "IamIdentityCenter",
+        email: "user@example.com",
+        profileArn:
+          "arn:aws:codewhisperer:us-east-1:111122223333:profile/EXAMPLEPROFILE1",
+        profileName: "KiroProfile-example",
+        region: "us-east-1",
+        startUrl: "https://example.awsapps.com/start",
+      },
+    },
+  });
+  await openPanel(page);
+  await expect(page.locator(".kcac-kiro-who-primary")).toHaveText(
+    "user@example.com",
+  );
+  await expect(page.locator(".kcac-kiro-who-secondary")).toHaveText(
+    "IAM Identity Center \u00b7 KiroProfile-example \u00b7 us-east-1",
+  );
+  await expect(page.locator(".kcac-kiro-who")).toHaveAttribute(
+    "title",
+    "https://example.awsapps.com/start\narn:aws:codewhisperer:us-east-1:111122223333:profile/EXAMPLEPROFILE1",
+  );
+
+  // A Builder ID identity has no email in some releases: the row still names
+  // the account rather than collapsing to nothing.
+  await render(page, {
+    view: "ready",
+    activeRequestAccepted: false,
+    kiroAuth: {
+      state: "authenticated",
+      identity: { accountType: "BuilderId", profileName: "builder-id-name" },
+    },
+  });
+  await openPanel(page);
+  await expect(page.locator(".kcac-kiro-who-primary")).toHaveText(
+    "builder-id-name",
+  );
+  await expect(page.locator(".kcac-kiro-who-secondary")).toBeHidden();
+  await expect(page.locator(".kcac-kiro-who")).not.toHaveAttribute("title");
 });
 
 test("selecting panel text does not drag the panel", async ({ page }) => {

@@ -19,6 +19,7 @@ from kirocrew_agentcore_adapter.identity import (
     DeviceFlowParser,
     DeviceProcess,
     KiroAuthState,
+    KiroIdentity,
     KiroIdentityConfig,
     KiroIdentityError,
     KiroIdentityManager,
@@ -657,3 +658,93 @@ def test_pty_decode_oserror_and_kill_escalation(monkeypatch: pytest.MonkeyPatch)
         assert stream.closed
 
     asyncio.run(scenario())
+
+
+# The exact shape `kiro-cli whoami --format json` prints for an Identity Center
+# identity: one JSON object, then the profile block as trailing plain text.
+_IDENTITY_CENTER_WHOAMI = """{"accountType":"IamIdentityCenter","email":"user@example.com","region":"us-east-1","startUrl":"https://example.awsapps.com/start"}
+
+Profile:
+KiroProfile-example
+arn:aws:codewhisperer:us-east-1:111122223333:profile/EXAMPLEPROFILE1
+"""
+
+
+def test_identity_reads_both_halves_of_whoami_output() -> None:
+    identity = KiroIdentity.parse(_IDENTITY_CENTER_WHOAMI)
+    assert identity.payload() == {
+        "accountType": "IamIdentityCenter",
+        "email": "user@example.com",
+        "profileArn": ("arn:aws:codewhisperer:us-east-1:111122223333:profile/EXAMPLEPROFILE1"),
+        "profileName": "KiroProfile-example",
+        "region": "us-east-1",
+        "startUrl": "https://example.awsapps.com/start",
+    }
+    assert not identity.empty
+
+    # Builder ID reports no profile ARN, and the header may carry the name on
+    # its own line or inline after the colon.
+    builder = KiroIdentity.parse(
+        'Logged in with Builder ID\n{"accountType":"BuilderId","email":"dev@example.com"}\n'
+        "\nProfile:\nbuilder-id-name\n"
+    )
+    assert builder.payload() == {
+        "accountType": "BuilderId",
+        "email": "dev@example.com",
+        "profileName": "builder-id-name",
+    }
+    inline = KiroIdentity.parse("Profile: inline-name\n")
+    assert inline.profile_name == "inline-name"
+    assert inline.profile_arn is None
+    # The first profile name and ARN win; later lines cannot overwrite them.
+    repeated = KiroIdentity.parse("Profile:\nfirst\narn:aws:one\nsecond\narn:aws:two\n")
+    assert repeated.profile_name == "first"
+    assert repeated.profile_arn == "arn:aws:one"
+
+
+def test_identity_rejects_values_it_cannot_safely_render() -> None:
+    # Nothing recognisable: the panel keeps its plain "Signed in" label.
+    assert KiroIdentity.parse("signed in as somebody").empty
+    assert KiroIdentity.parse("").empty
+    assert KiroIdentity.parse("{not json}").empty
+
+    # Wrong types, blank strings, control characters and oversized blobs are
+    # dropped rather than travelling to the browser.
+    hostile = KiroIdentity.parse(
+        '{"accountType": 7, "email": "   ", "region": "us\u0000east", "startUrl": "%s"}'
+        % ("https://example.test/" + "a" * 300)
+    )
+    assert hostile.empty
+    assert KiroIdentity.parse('{"email": "a@b.test\u007f"}').empty
+    # A name of exactly the limit is kept; one character more is not.
+    assert KiroIdentity.parse('{"region": "%s"}' % ("r" * 200)).region is not None
+    assert KiroIdentity.parse('{"region": "%s"}' % ("r" * 201)).region is None
+
+
+def test_status_carries_the_identity_only_while_signed_in(tmp_path: Path) -> None:
+    manager = KiroIdentityManager(
+        config(tmp_path), FakeRunner([CommandResult(0, _IDENTITY_CENTER_WHOAMI)])
+    )
+    status = manager.status()
+    assert status.state is KiroAuthState.AUTHENTICATED
+    payload = status.payload()
+    identity = payload["identity"]
+    assert isinstance(identity, dict)
+    assert identity["email"] == "user@example.com"
+    assert identity["accountType"] == "IamIdentityCenter"
+
+    # Signed out: an empty document is REQUIRED and must not carry an identity
+    # the reader would take for a live sign-in.
+    signed_out = KiroIdentityManager(config(tmp_path), FakeRunner([CommandResult(0, "{}")]))
+    signed_out_status = signed_out.status()
+    assert signed_out_status.state is KiroAuthState.REQUIRED
+    assert "identity" not in signed_out_status.payload()
+
+    # Authenticated but unrecognised output: the state stands on the exit code
+    # and the payload simply omits the identity.
+    opaque = KiroIdentityManager(
+        config(tmp_path), FakeRunner([CommandResult(0, "signed in as somebody")])
+    )
+    opaque_status = opaque.status()
+    assert opaque_status.state is KiroAuthState.AUTHENTICATED
+    assert "identity" not in opaque_status.payload()

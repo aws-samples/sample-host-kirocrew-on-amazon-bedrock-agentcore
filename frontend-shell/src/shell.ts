@@ -1,4 +1,8 @@
-import type { LifecycleModel, LifecycleView } from "./lifecycle.js";
+import type {
+  KiroIdentityPresentation,
+  LifecycleModel,
+  LifecycleView,
+} from "./lifecycle.js";
 import { lifecyclePresentation } from "./lifecycle.js";
 
 const STYLE_ID = "kirocrew-agentcore-shell-style";
@@ -432,6 +436,22 @@ function installStyles(document: Document): void {
     .kcac-kiro-header { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
     .kcac-kiro-name { font-weight: 700; color: var(--text-strong, var(--text)); }
     .kcac-kiro-state { color: var(--muted); }
+    .kcac-kiro-who {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      margin-top: 2px;
+      min-width: 0;
+    }
+    .kcac-kiro-who[hidden] { display: none; }
+    .kcac-kiro-who-primary,
+    .kcac-kiro-who-secondary {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .kcac-kiro-who-primary { color: var(--text); }
+    .kcac-kiro-who-secondary { color: var(--muted); font-size: 11px; }
     .kcac-kiro-state[data-state="authenticated"] { color: var(--ok); font-weight: 650; }
     .kcac-kiro-state[data-state="required"],
     .kcac-kiro-state[data-state="expired"],
@@ -440,6 +460,10 @@ function installStyles(document: Document): void {
     .kcac-auth-hint,
     .kcac-kiro-hint { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
     .kcac-kiro-sso { display: flex; gap: 8px; flex-wrap: wrap; }
+    /* A display rule beats the UA's [hidden] { display: none }, so the row
+       stayed on screen even while the panel believed it was hidden - which is
+       how signed-in users kept seeing empty fields to fill in. */
+    .kcac-kiro-sso[hidden] { display: none; }
     .kcac-input {
       flex: 1 1 180px;
       min-height: 34px;
@@ -764,6 +788,22 @@ export function mountBrowserShell(
   kiroName.textContent = "Kiro account";
   const kiroState = createElement(document, "span", "kcac-kiro-state");
   kiroHeader.append(kiroName, kiroState);
+  // Who the CLI says it is signed in as. Reported by `kiro-cli whoami`, so the
+  // panel shows the live identity instead of asking the reader to trust a
+  // bare "Signed in".
+  const kiroWho = createElement(document, "div", "kcac-kiro-who");
+  const kiroWhoPrimary = createElement(
+    document,
+    "span",
+    "kcac-kiro-who-primary",
+  );
+  const kiroWhoSecondary = createElement(
+    document,
+    "span",
+    "kcac-kiro-who-secondary",
+  );
+  kiroWho.append(kiroWhoPrimary, kiroWhoSecondary);
+  kiroWho.hidden = true;
   const kiroSso = createElement(document, "div", "kcac-kiro-sso");
   const ssoUrl = createElement(document, "input", "kcac-input");
   ssoUrl.type = "url";
@@ -774,6 +814,7 @@ export function mountBrowserShell(
   ssoRegion.placeholder = "us-east-1";
   ssoRegion.setAttribute("aria-label", "Identity Center region");
   kiroSso.append(ssoUrl, ssoRegion);
+  kiroSso.hidden = true;
   const kiroActions = createElement(document, "div", "kcac-kiro-actions");
   const kiroSsoLogin = createElement(document, "button", "kcac-button");
   kiroSsoLogin.type = "button";
@@ -795,7 +836,7 @@ export function mountBrowserShell(
   kiroActions.append(kiroSsoLogin, kiroFreeLogin, kiroLogout, kiroCheck);
   const kiroHint = createElement(document, "p", "kcac-kiro-hint");
   kiroHint.hidden = true;
-  kiro.append(kiroHeader, kiroSso, kiroActions, kiroHint);
+  kiro.append(kiroHeader, kiroWho, kiroSso, kiroActions, kiroHint);
 
   // Remember the last used Identity Center settings across visits.
   const storage = ((): Storage | undefined => {
@@ -1190,6 +1231,13 @@ export function mountBrowserShell(
     invoke(() => actions.kiroLogin()),
   );
   kiroSsoLogin.addEventListener("click", () => {
+    if (kiroSso.hidden) {
+      // Progressive disclosure: an organization sign-in is the exception, so
+      // the default view carries no fields to fill in.
+      kiroSso.hidden = false;
+      ssoUrl.focus();
+      return;
+    }
     const startUrl = ssoUrl.value.trim();
     const region = ssoRegion.value.trim() || "us-east-1";
     if (!startUrl.startsWith("https://")) {
@@ -1206,6 +1254,52 @@ export function mountBrowserShell(
     }
     invoke(() => actions.kiroLogin({ method: "sso", startUrl, region }));
   });
+
+  const ACCOUNT_TYPES: Readonly<Record<string, string>> = {
+    BuilderId: "Builder ID",
+    IamIdentityCenter: "IAM Identity Center",
+    Social: "Social login",
+  };
+
+  /** Show the signed-in identity, or nothing when the CLI reported none. */
+  const renderKiroIdentity = (
+    identity: KiroIdentityPresentation | undefined,
+    authenticated: boolean,
+  ): void => {
+    if (!authenticated || identity === undefined) {
+      kiroWho.hidden = true;
+      kiroWhoPrimary.textContent = "";
+      kiroWhoSecondary.textContent = "";
+      kiroWho.removeAttribute("title");
+      return;
+    }
+    const method =
+      identity.accountType === undefined
+        ? undefined
+        : (ACCOUNT_TYPES[identity.accountType] ?? identity.accountType);
+    // The email is the line a reader looks for; fall back to whatever else
+    // names the identity so the row is never a lone label.
+    kiroWhoPrimary.textContent =
+      identity.email ?? identity.profileName ?? method ?? "";
+    const secondary = [
+      identity.email === undefined ? undefined : method,
+      identity.email === undefined ? undefined : identity.profileName,
+      identity.region,
+    ].filter((part): part is string => part !== undefined && part !== "");
+    kiroWhoSecondary.textContent = secondary.join(" \u00b7 ");
+    kiroWhoSecondary.hidden = secondary.length === 0;
+    // The start URL and the profile ARN are long; keep them reachable without
+    // letting them dominate a panel that has to stay small.
+    const detail = [identity.startUrl, identity.profileArn].filter(
+      (part): part is string => part !== undefined && part !== "",
+    );
+    if (detail.length > 0) {
+      kiroWho.title = detail.join("\n");
+    } else {
+      kiroWho.removeAttribute("title");
+    }
+    kiroWho.hidden = false;
+  };
 
   let previousView: LifecycleView | undefined;
   let elapsedTimer: number | undefined;
@@ -1443,8 +1537,11 @@ export function mountBrowserShell(
       const authenticated = kiroAuth.state === "authenticated";
       kiroSsoLogin.hidden = authenticated;
       kiroFreeLogin.hidden = authenticated;
-      kiroSso.hidden = authenticated;
+      if (authenticated) {
+        kiroSso.hidden = true;
+      }
       kiroLogout.hidden = !authenticated;
+      renderKiroIdentity(kiroAuth.identity, authenticated);
       for (const button of [
         kiroSsoLogin,
         kiroFreeLogin,

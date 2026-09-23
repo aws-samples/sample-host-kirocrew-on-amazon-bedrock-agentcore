@@ -190,3 +190,84 @@ variable "allowed_email_patterns" {
     error_message = "Email patterns must be non-empty regular expressions."
   }
 }
+
+variable "enable_machine_runtime" {
+  description = "Create a second microVM runtime with IAM inbound auth, for scheduled wakes that have no browser and therefore no Cognito user token."
+  type        = bool
+  default     = false
+}
+
+variable "machine_runtime_idle_session_timeout_seconds" {
+  description = "Idle timeout for the machine-auth runtime. Memory bills for the whole session including its idle tail, so an unattended wake wants this near the 60s floor; the browser runtime keeps a long timeout to avoid cold starts for a human."
+  type        = number
+  default     = 120
+
+  validation {
+    condition     = var.machine_runtime_idle_session_timeout_seconds >= 60 && var.machine_runtime_idle_session_timeout_seconds <= 28800
+    error_message = "AgentCore accepts 60-28800 seconds for a microVM idle session timeout."
+  }
+}
+
+variable "enable_scheduled_wake" {
+  description = "Create an EventBridge schedule that wakes the sandbox so its in-sandbox cron jobs can fire with nobody watching. Requires enable_machine_runtime, because a browser-fronted runtime cannot be invoked by a machine at all."
+  type        = bool
+  default     = false
+}
+
+variable "wake_schedule_expression" {
+  description = "EventBridge Scheduler expression for the wake, e.g. cron(50 8 * * ? *) or rate(6 hours). Fire EARLY of the moment the in-sandbox job cares about: the sandbox has to be claimed and restored before its scheduler exists to notice the time."
+  type        = string
+  default     = "cron(50 8 * * ? *)"
+}
+
+variable "wake_schedule_enabled" {
+  description = "Whether the wake schedule actually fires. Set false to silence it during an investigation without destroying the waker, its role or its log group -- the logs are usually the evidence you need when a wake is misbehaving."
+  type        = bool
+  default     = true
+}
+
+variable "wake_schedule_timezone" {
+  description = "IANA timezone the wake expression is read in. Naming it explicitly is what makes a wall-clock schedule survive daylight saving; UTC would drift an hour against the user's day."
+  type        = string
+  default     = "Asia/Singapore"
+}
+
+variable "wake_lead_seconds" {
+  description = "How far ahead of the in-sandbox job the wake fires, in seconds. Keep this CLOSE to the restore time: the container is reclaimed after the machine runtime's idle timeout, so waking far too early guarantees the sandbox is asleep again before the job's minute arrives. Six observed restores took 46-65 seconds."
+  type        = number
+  default     = 90
+
+  validation {
+    condition     = var.wake_lead_seconds >= 0 && var.wake_lead_seconds <= 3600
+    error_message = "Lead time must be between 0 and 3600 seconds."
+  }
+}
+
+variable "wake_dwell_seconds" {
+  description = "How long the waker holds the sandbox awake after the gateway answers, so a due job actually fires before the checkpoint is taken. Set 0 to skip both the dwell and the explicit checkpoint, which persists nothing unless the container happens to outlive the periodic checkpoint interval."
+  type        = number
+  default     = 120
+
+  validation {
+    condition     = var.wake_dwell_seconds >= 0 && var.wake_dwell_seconds <= 600
+    error_message = "Dwell must be between 0 and 600 seconds, and must leave room inside the waker's own timeout."
+  }
+}
+
+variable "wake_cognito_subject" {
+  description = "Cognito subject whose sandbox the schedule wakes. It has to be configured rather than discovered: the record stores only a one-way owner hash, so nothing in the deployment can recover whose sandbox it is. Supporting several owners needs the subject stored encrypted per record, which this deployment does not yet do."
+  type        = string
+  default     = ""
+}
+
+variable "wake_sandbox_id" {
+  description = "Sandbox id the schedule expects to wake. Asserted against the subject's actual sandbox and refused on mismatch, so a stale or mistyped subject fails loudly instead of quietly waking the wrong workspace."
+  type        = string
+  default     = ""
+}
+
+variable "wake_path" {
+  description = "Gateway path the wake requests once the sandbox is restored. Reading status is enough: the request exists to prove KiroCrew itself came up, since the container starting is NOT the same as the gateway that owns the cron scheduler starting."
+  type        = string
+  default     = "/api/status"
+}

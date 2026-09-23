@@ -10,6 +10,29 @@ variable "max_lifetime_seconds" { type = number }
 variable "environment_variables" { type = map(string) }
 variable "tags" { type = map(string) }
 
+# A runtime supports exactly ONE inbound auth method, so a deployment that needs
+# both a browser front door and a machine one needs two runtimes -- which is what
+# the AgentCore security guidance prescribes ("A runtime can support one method at
+# a time; create separate versions for different authentication types").
+#
+#   jwt  Browser callers present a Cognito user access token. The subject the
+#        adapter authorizes against comes from that token's claims.
+#   iam  SigV4 callers. No authorizer block at all; the caller must hold
+#        bedrock-agentcore:InvokeAgentRuntime, and user identity travels in the
+#        X-Amzn-Bedrock-AgentCore-Runtime-User-Id header.
+#
+# The IAM path's user id is an OPAQUE string with no IdP verification, so it is
+# only safe where the caller is trusted to resolve identity upstream and the
+# invoke permission is narrow. Grant InvokeAgentRuntimeForUser to the scheduler
+# role alone, and deny it everywhere a JWT is available.
+variable "inbound_auth" {
+  type = string
+  validation {
+    condition     = contains(["jwt", "iam"], var.inbound_auth)
+    error_message = "inbound_auth must be jwt or iam."
+  }
+}
+
 data "aws_cloudformation_type" "runtime" {
   type      = "RESOURCE"
   type_name = "AWS::BedrockAgentCore::Runtime"
@@ -23,46 +46,69 @@ data "aws_cloudformation_type" "endpoint" {
 locals {
   runtime_name  = "${replace(var.prefix, "-", "_")}_runtime"
   endpoint_name = "${replace(var.prefix, "-", "_")}_live"
+  # `Authorization` is only accepted in the allowlist when a customJWTAuthorizer
+  # is configured -- the control plane rejects the runtime outright otherwise
+  # ("Authorization header can be specified in requestHeaderAllowlist only when
+  # runtime is set up with customJWTAuthorizer for OAuth based authorization").
+  # That coupling is enforced, not advisory, so an IAM runtime drops the header
+  # rather than carrying one it could never receive.
+  header_allowlist = var.inbound_auth == "jwt" ? var.request_header_allowlist : [
+    for header in var.request_header_allowlist :
+    header if lower(header) != "authorization"
+  ]
+  # Omitted entirely for `iam`: AgentCore reads the ABSENCE of an authorizer as
+  # SigV4 inbound auth, so an empty or partial block is not the same thing.
+  authorizer_properties = var.inbound_auth == "jwt" ? {
+    AuthorizerConfiguration = {
+      CustomJWTAuthorizer = {
+        DiscoveryUrl   = "${var.cognito_issuer}/.well-known/openid-configuration"
+        AllowedClients = [var.cognito_app_client_id]
+        AllowedScopes  = var.allowed_scopes
+      }
+    }
+  } : {}
+  runtime_properties = merge(local.authorizer_properties, {
+    AgentRuntimeName = local.runtime_name
+    AgentRuntimeArtifact = {
+      ContainerConfiguration = {
+        ContainerUri = var.runtime_image_uri
+      }
+    }
+    EnvironmentVariables = var.environment_variables
+    # No filesystem configuration blocks: the workspace lives on the
+    # microVM's own container disk, and durability comes exclusively
+    # from the encrypted S3 checkpoints. Managed per-session storage
+    # (1GB quota, 14-day retention) was dropped after its quota and
+    # validation semantics caused repeated incidents.
+    LifecycleConfiguration = {
+      IdleRuntimeSessionTimeout = var.idle_session_timeout_seconds
+      MaxLifetime               = var.max_lifetime_seconds
+    }
+    NetworkConfiguration = {
+      NetworkMode = "PUBLIC"
+    }
+    ProtocolConfiguration = "HTTP"
+    RequestHeaderConfiguration = {
+      RequestHeaderAllowlist = local.header_allowlist
+    }
+    RoleArn = var.runtime_role_arn
+    Tags    = var.tags
+  })
   template = {
     AWSTemplateFormatVersion = "2010-09-09"
-    Description              = "AgentCore microVM runtime and live endpoint for ${var.prefix}"
+    # The `jwt` wording is preserved verbatim from before this module gained a
+    # second auth mode. A description is cosmetic, but it is part of the template
+    # body, so changing it would rewrite the existing stack and mint a new runtime
+    # VERSION for nothing.
+    Description = var.inbound_auth == "jwt" ? (
+      "AgentCore microVM runtime and live endpoint for ${var.prefix}"
+      ) : (
+      "AgentCore microVM runtime and live endpoint for ${var.prefix} (IAM inbound auth)"
+    )
     Resources = {
       Runtime = {
-        Type = "AWS::BedrockAgentCore::Runtime"
-        Properties = {
-          AgentRuntimeName = local.runtime_name
-          AgentRuntimeArtifact = {
-            ContainerConfiguration = {
-              ContainerUri = var.runtime_image_uri
-            }
-          }
-          AuthorizerConfiguration = {
-            CustomJWTAuthorizer = {
-              DiscoveryUrl   = "${var.cognito_issuer}/.well-known/openid-configuration"
-              AllowedClients = [var.cognito_app_client_id]
-              AllowedScopes  = var.allowed_scopes
-            }
-          }
-          EnvironmentVariables = var.environment_variables
-          # No filesystem configuration blocks: the workspace lives on the
-          # microVM's own container disk, and durability comes exclusively
-          # from the encrypted S3 checkpoints. Managed per-session storage
-          # (1GB quota, 14-day retention) was dropped after its quota and
-          # validation semantics caused repeated incidents.
-          LifecycleConfiguration = {
-            IdleRuntimeSessionTimeout = var.idle_session_timeout_seconds
-            MaxLifetime               = var.max_lifetime_seconds
-          }
-          NetworkConfiguration = {
-            NetworkMode = "PUBLIC"
-          }
-          ProtocolConfiguration = "HTTP"
-          RequestHeaderConfiguration = {
-            RequestHeaderAllowlist = var.request_header_allowlist
-          }
-          RoleArn = var.runtime_role_arn
-          Tags    = var.tags
-        }
+        Type       = "AWS::BedrockAgentCore::Runtime"
+        Properties = local.runtime_properties
       }
       LiveEndpoint = {
         Type = "AWS::BedrockAgentCore::RuntimeEndpoint"
@@ -109,7 +155,7 @@ resource "aws_cloudformation_stack" "runtime" {
       error_message = "The microVM runtime image must use an immutable ECR @sha256 digest URI."
     }
     precondition {
-      condition     = length(var.request_header_allowlist) > 0 && length(var.request_header_allowlist) <= 20
+      condition     = length(local.header_allowlist) > 0 && length(local.header_allowlist) <= 20
       error_message = "AgentCore request header allowlist must contain 1-20 headers."
     }
     precondition {

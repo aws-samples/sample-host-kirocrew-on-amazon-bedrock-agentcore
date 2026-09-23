@@ -60,6 +60,7 @@ module "runtime_microvm" {
   source = "./modules/runtime-microvm"
 
   prefix                       = module.naming.prefix
+  inbound_auth                 = "jwt"
   runtime_image_uri            = local.runtime_image_uri
   runtime_role_arn             = module.runtime_common.runtime_role_arn
   cognito_issuer               = module.identity.issuer
@@ -76,6 +77,54 @@ module "runtime_microvm" {
     DEPLOYMENT_MODE  = "microvm"
     # The platform's stdout pipeline has proven unreliable; the runtime
     # ships its own log records directly to this dedicated group.
+    KIROCREW_LOG_GROUP     = module.runtime_common.runtime_log_group
+    PERSISTENCE_BROKER_ARN = module.persistence.broker_function_arn
+  }
+  tags = module.naming.tags
+}
+
+# A SECOND front door, for callers that have no browser and therefore no Cognito
+# user token -- specifically the scheduled-job waker. A runtime supports exactly
+# one inbound auth method, so this cannot be a flag on the runtime above; the
+# AgentCore security guidance says to create a separate one, and this is that.
+#
+# Same image, same execution role, same broker, and the SAME sandbox: a sandbox is
+# keyed by owner_hash derived from the Cognito subject, not by which runtime
+# served the request. So a job woken through here lands in the user's own
+# workspace rather than a parallel one.
+#
+# The idle timeout is deliberately far shorter than the browser runtime's. Memory
+# is billed for every second of a session including its idle tail, so at the 900s
+# default the tail is roughly 70% of a wake's bill -- while for a human that same
+# 900s is what avoids a cold start every time they look away. One runtime cannot
+# hold both profiles, and splitting the door is what makes each one right.
+module "runtime_microvm_machine" {
+  count  = var.deployment_mode == "microvm" && var.enable_machine_runtime ? 1 : 0
+  source = "./modules/runtime-microvm"
+
+  prefix       = "${module.naming.prefix}-machine"
+  inbound_auth = "iam"
+  # Unused for iam inbound auth, but the module's contract still requires them.
+  cognito_issuer               = module.identity.issuer
+  cognito_app_client_id        = module.identity.app_client_id
+  allowed_scopes               = var.runtime_allowed_scopes
+  runtime_image_uri            = local.runtime_image_uri
+  runtime_role_arn             = module.runtime_common.runtime_role_arn
+  request_header_allowlist     = var.runtime_request_header_allowlist
+  idle_session_timeout_seconds = var.machine_runtime_idle_session_timeout_seconds
+  max_lifetime_seconds         = var.runtime_max_lifetime_seconds
+  environment_variables = {
+    AWS_REGION       = local.region
+    BINDING_AUDIENCE = local.binding_audience
+    BINDING_KEY_ARN  = module.persistence.binding_key_arn
+    COGNITO_ISSUER   = module.identity.issuer
+    DEPLOYMENT_MODE  = "microvm"
+    # The image is identical on both runtimes, so this variable is the ONLY
+    # thing that tells the adapter which front door it is serving. It is what
+    # makes a scheduler token acceptable here and refused on the browser
+    # runtime, where a caller could otherwise use one to skip the Cognito
+    # subject cross-check.
+    INBOUND_AUTH           = "iam"
     KIROCREW_LOG_GROUP     = module.runtime_common.runtime_log_group
     PERSISTENCE_BROKER_ARN = module.persistence.broker_function_arn
   }
@@ -109,6 +158,41 @@ module "control_api" {
   allowed_email_patterns         = var.allowed_email_patterns
   persisted_paths                = var.persisted_paths
   tags                           = module.naming.tags
+}
+
+module "scheduler" {
+  # Three conditions, all necessary. Without the machine runtime there is no door
+  # a scheduler can knock on at all, and without a subject AND a sandbox id the
+  # control plane cannot mint a binding -- it stores only a one-way owner hash, so
+  # it can verify the pair but never derive it.
+  count = (
+    var.deployment_mode == "microvm"
+    && var.enable_machine_runtime
+    && var.enable_scheduled_wake
+    && var.wake_cognito_subject != ""
+    && var.wake_sandbox_id != ""
+  ) ? 1 : 0
+  source = "./modules/scheduler"
+
+  prefix                     = module.naming.prefix
+  schedule_expression        = var.wake_schedule_expression
+  schedule_enabled           = var.wake_schedule_enabled
+  schedule_timezone          = var.wake_schedule_timezone
+  wake_lead_seconds          = var.wake_lead_seconds
+  wake_dwell_seconds         = var.wake_dwell_seconds
+  cognito_subject            = var.wake_cognito_subject
+  sandbox_id                 = var.wake_sandbox_id
+  sandbox_table_name         = module.persistence.sandbox_table_name
+  sandbox_table_arn          = module.persistence.sandbox_table_arn
+  sandbox_key_arn            = module.persistence.snapshot_key_arn
+  control_function_arn       = module.control_api.function_arn
+  control_function_name      = module.control_api.function_name
+  machine_runtime_arn        = module.runtime_microvm_machine[0].runtime_arn
+  machine_endpoint_qualifier = module.runtime_microvm_machine[0].endpoint_qualifier
+  wake_path                  = var.wake_path
+  log_retention_days         = var.log_retention_days
+  source_directory           = "${path.module}/functions/waker/src"
+  tags                       = module.naming.tags
 }
 
 module "frontend" {

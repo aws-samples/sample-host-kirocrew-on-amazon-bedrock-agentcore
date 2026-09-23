@@ -24,10 +24,13 @@ _LIVE_STATES: Final = frozenset(
     {"STARTING", "RESTORING", "READY", "BUSY", "CHECKPOINTING", "STOPPING"}
 )
 # Tokens the broker honours under ``bindingToken``: the control plane's
-# browser-scoped binding token, and the runtime-session token this broker mints
-# for a container that won its sandbox's initialization. Both carry the same
-# sandbox/session/subject claims; only the lifetime and the issuer differ.
-_TOKEN_TYPES: Final = frozenset({"binding", "runtime-session"})
+# browser-scoped binding token, the runtime-session token this broker mints for a
+# container that won its sandbox's initialization, and the scheduler token the
+# control plane mints for an unattended wake. All three carry the same
+# sandbox/session/subject claims; only the lifetime and the issuer differ, and
+# every call still checks the record names this session -- so a token for a
+# superseded session is refused regardless of type.
+_TOKEN_TYPES: Final = frozenset({"binding", "runtime-session", "scheduler"})
 
 
 def _required(name: str) -> str:

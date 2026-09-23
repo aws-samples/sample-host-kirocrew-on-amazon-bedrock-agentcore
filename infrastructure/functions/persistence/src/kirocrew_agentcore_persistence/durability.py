@@ -197,6 +197,12 @@ class PersistenceBroker:
     ) -> bytes | bool:
         return self._objects.request(grant, operation, body=body, headers=grant.headers)
 
+    def chunk_exists(self, sandbox_id: str, digest: str) -> bool:
+        sandbox = self._validate_sandbox(sandbox_id)
+        if _DIGEST_PATTERN.fullmatch(digest) is None:
+            raise BrokerAuthorizationError("Invalid storage object digest.")
+        return bool(self._objects.internal_list(f"snapshots/{sandbox}/chunks/{digest}.bin"))
+
     def internal_keys(self, sandbox_id: str, category: str) -> tuple[str, ...]:
         sandbox = self._validate_sandbox(sandbox_id)
         if category not in {"chunks", "manifests", "commits"}:
@@ -277,6 +283,8 @@ class CheckpointBroker(Protocol):
         body: bytes | None = None,
     ) -> bytes | bool: ...
 
+    def chunk_exists(self, sandbox_id: str, digest: str) -> bool: ...
+
     def internal_keys(self, sandbox_id: str, category: str) -> tuple[str, ...]: ...
 
     def internal_delete(self, sandbox_id: str, category: str, name: str) -> None: ...
@@ -298,8 +306,14 @@ class BrokeredCheckpointStore:
         broker.encryption_context(sandbox_id)
 
     def has_chunk(self, digest: str) -> bool:
-        grant = self._broker.presign_chunk(self._sandbox_id, digest, StorageOperation.HEAD)
-        return cast(bool, self._broker.request(grant, StorageOperation.HEAD))
+        # Existence is asked of the broker, which answers it with a prefix-scoped
+        # listing rather than a presigned HeadObject: HeadObject supplies no
+        # `s3:prefix` context key, so the broker's prefix-conditioned ListBucket
+        # grant cannot authorize it and S3 answers 403 -- not 404 -- for an object
+        # that merely does not exist yet. Reading that 403 as an error aborted the
+        # first checkpoint of every sandbox. Listing also halves the round trips:
+        # one broker call instead of a presign call plus a direct HTTPS HEAD.
+        return self._broker.chunk_exists(self._sandbox_id, digest)
 
     def upload_chunk(self, digest: str, ciphertext: bytes) -> None:
         if self.has_chunk(digest):

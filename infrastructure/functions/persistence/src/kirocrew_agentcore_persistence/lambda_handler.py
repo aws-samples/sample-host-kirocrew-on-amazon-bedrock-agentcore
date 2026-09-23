@@ -573,12 +573,25 @@ def _presign(s3: Any, sandbox_id: str, event: Mapping[str, object]) -> dict[str,
 
 def _list(s3: Any, sandbox_id: str, event: Mapping[str, object]) -> dict[str, object]:
     category = event.get("category")
-    if category not in {"chunks", "manifests", "commits"}:
+    if not isinstance(category, str) or category not in {"chunks", "manifests", "commits"}:
         raise ValueError("Invalid checkpoint category.")
     prefix = f"sandboxes/{sandbox_id}/{category}/"
+    # An optional object name narrows the listing to that one key, which is how a
+    # caller asks "does this object exist?" without a HeadObject: S3 answers a
+    # permitted listing with an empty result for a missing key, where HeadObject
+    # would answer 403 (it carries no `s3:prefix` context key, so the broker's
+    # prefix-conditioned ListBucket grant cannot authorize it, and S3 hides the
+    # 404 from a caller it believes may not list). Narrowing keeps `s3:prefix`
+    # under `sandboxes/`, so the existing conditioned grant already allows it.
+    name = event.get("name")
+    scan = prefix
+    if name is not None:
+        if not isinstance(name, str):
+            raise ValueError("Invalid checkpoint object name.")
+        scan = f"sandboxes/{sandbox_id}/{_object_name(category, name)}"
     paginator = s3.get_paginator("list_objects_v2")
     names: list[str] = []
-    for page in paginator.paginate(Bucket=_required("CHECKPOINT_BUCKET"), Prefix=prefix):
+    for page in paginator.paginate(Bucket=_required("CHECKPOINT_BUCKET"), Prefix=scan):
         for item in page.get("Contents", []):
             key = item.get("Key")
             if isinstance(key, str) and key.startswith(prefix):

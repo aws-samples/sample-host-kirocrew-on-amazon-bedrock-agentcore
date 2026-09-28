@@ -83,6 +83,11 @@ def log(message: str) -> None:
 
 class SigningForwarder:
     def __init__(self, endpoint: str, service: str, region: str, profile: str = "") -> None:
+        # Signed credentials must never travel over plain HTTP or to a file:/custom
+        # scheme, so anything but https with a host is refused before any request.
+        parts = urlsplit(endpoint)
+        if parts.scheme != "https" or not parts.hostname:
+            raise ValueError(f"Endpoint must be an https URL with a host: {endpoint!r}")
         self._endpoint = endpoint
         self._service = service
         self._region = region
@@ -115,7 +120,7 @@ class SigningForwarder:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(http, timeout=120) as response:  # noqa: S310
+            with urllib.request.urlopen(http, timeout=120) as response:  # noqa: S310  # nosec B310 - https enforced in __init__.
                 return bytes(response.read())
         except urllib.error.HTTPError as error:
             body = error.read().decode("utf-8", "replace")[:400]

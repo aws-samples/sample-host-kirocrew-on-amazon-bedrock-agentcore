@@ -161,3 +161,12 @@ def test_main_forwards_lines_and_answers_failures(monkeypatch: pytest.MonkeyPatc
     assert len(lines) == 3
     assert "signing as agent-registry in us-east-1" in stderr
     assert stderr.count("boom") == 2
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    ["http://agent-registry.us-east-1.api.aws/mcp", "file:///etc/passwd", "https:///no-host"],
+)
+def test_forwarder_refuses_non_https_endpoints(endpoint: str) -> None:
+    with pytest.raises(ValueError, match="https URL"):
+        proxy.SigningForwarder(endpoint, "agent-registry", "us-east-1")

@@ -42,6 +42,7 @@ _READY_LINE_GRACE_SECONDS: Final = 3.0
 # hashing, so the sandbox pins the budget at the upstream maximum.
 _LOOP_STALL_EXIT_AFTER_SECONDS: Final = 300
 _LOCAL_CONFIG_FILENAME: Final = "config.local.json"
+_MCP_STORE_FILENAME: Final = "mcp.json"
 _OUTPUT_TAIL_LINES: Final = 20
 
 
@@ -311,6 +312,7 @@ class KiroCrewSupervisor:
         self._state_home = self._resolve_state_home()
         self._scrub_runtime_residue(self._state_home)
         self._pin_loop_stall_budget(self._state_home)
+        self._pin_agent_registry_mcp(self._state_home)
         self._output_tail.clear()
         self._exit_reported = False
         environment = self._build_environment()
@@ -346,6 +348,55 @@ class KiroCrewSupervisor:
         self._token = DashboardToken(token, self._monotonic() + _DEFAULT_TOKEN_TTL_SECONDS)
         self._ready = True
         return ready
+
+    @staticmethod
+    def _pin_agent_registry_mcp(state_home: Path) -> None:
+        """Register the SigV4 Agent Registry bridge in KiroCrew's own MCP store.
+
+        KiroCrew reads user MCP servers from ``$KIROCREW_HOME/mcp.json`` (not
+        from ``config.local.json``), so the entry must live there for Kiro
+        sessions to see it. Other servers in the file are left untouched.
+        """
+        endpoint = os.environ.get("AGENT_REGISTRY_MCP_ENDPOINT", "").strip()
+        if not endpoint:
+            return
+        path = state_home / _MCP_STORE_FILENAME
+        document: dict[str, object] = {}
+        if path.is_file():
+            try:
+                loaded = cast(object, json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                _LOGGER.warning("KiroCrew MCP store is unreadable; leaving it as is.")
+                return
+            if not isinstance(loaded, dict):
+                _LOGGER.warning("KiroCrew MCP store is not an object; leaving it as is.")
+                return
+            document = cast(dict[str, object], loaded)
+        servers = document.get("mcpServers")
+        if not isinstance(servers, dict):
+            servers = {}
+        server_section = cast(dict[str, object], servers)
+        server_section["agent-registry"] = {
+            "args": [
+                "-m",
+                "kirocrew_agentcore_runtime.sigv4_mcp_proxy",
+                "--endpoint",
+                endpoint,
+                "--service",
+                "agent-registry",
+                "--region",
+                os.environ.get("AGENT_REGISTRY_REGION", "us-east-1"),
+            ],
+            "command": "/usr/local/bin/python",
+            "disabled": False,
+        }
+        document["mcpServers"] = server_section
+        rendered = json.dumps(document, indent=2, sort_keys=True) + "\n"
+        if path.is_file() and path.read_text(encoding="utf-8") == rendered:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(rendered, encoding="utf-8")
+        path.chmod(0o600)
 
     @staticmethod
     def _pin_loop_stall_budget(state_home: Path) -> None:

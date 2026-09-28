@@ -18,6 +18,7 @@ frontend-shell/upstream/
 **/.terraform/
 *.tfstate
 *.tfstate.*
+*.auto.tfvars
 crash.log
 
 # Build and local environment

@@ -3,6 +3,23 @@ variable "aws_region" {
   type        = string
 }
 
+
+variable "agent_registry_id" {
+  description = "Optional AWS Agent Registry ID exposed to KiroCrew as a managed MCP server."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.agent_registry_id == "" || can(regex("^[A-Za-z0-9_-]+$", var.agent_registry_id))
+    error_message = "agent_registry_id must be empty or an Agent Registry identifier."
+  }
+}
+
+variable "agent_registry_region" {
+  description = "AWS region containing agent_registry_id."
+  type        = string
+  default     = "us-east-1"
+}
 variable "name_prefix" {
   description = "Lowercase deployment name used to derive resource names."
   type        = string

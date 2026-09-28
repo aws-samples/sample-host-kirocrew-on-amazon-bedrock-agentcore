@@ -24,6 +24,27 @@ failure noted next to it.
 5. Live regression: register → sign in → Start → ready → Stop safely →
    restart. `tests/e2e/` covers this when `DEPLOYMENT_MODE` is set.
 
+## Optional: AWS Agent Registry as an MCP server
+
+Set `agent_registry_id` (and `agent_registry_region`, default `us-east-1`) to
+expose one Agent Registry to every sandbox as the `agent-registry` MCP server.
+
+- The Registry MCP endpoint authenticates with SigV4, which the Kiro CLI MCP
+  client cannot produce. The supervisor therefore registers
+  `kirocrew_agentcore_runtime.sigv4_mcp_proxy` as a stdio server; it signs each
+  request with the runtime execution role, so no user credential enters the
+  image or the sandbox.
+- The entry is written to `$KIROCREW_HOME/mcp.json`, the file KiroCrew reads
+  MCP servers from (not `config.local.json`). Other servers in that file are
+  preserved. KiroCrew reads it when the gateway starts, so a running sandbox
+  picks it up after Stop safely → Start.
+- The execution role gets four read-only actions scoped to that one Registry
+  ARN: `InvokeRegistryMcp`, `SearchDiscoverableRegistryRecords`,
+  `ListDiscoverableRegistryRecords`, `BatchGetDiscoverableRegistryRecord`.
+  `InvokeRegistryMcp` alone is enough for `tools/list` but not for a tool call.
+- The Registry may live in another region than the runtime; it stores
+  records, it does not proxy traffic.
+
 ## Where the logs are
 
 | What | Where |

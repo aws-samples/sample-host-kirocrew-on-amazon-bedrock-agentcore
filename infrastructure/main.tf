@@ -10,12 +10,14 @@ module "naming" {
 }
 
 locals {
-  binding_audience      = "urn:kirocrew:agentcore:${local.account_id}:${local.region}:${module.naming.prefix}"
-  cognito_domain_prefix = "${module.naming.prefix}-${local.account_id}-${local.region}"
-  cognito_domain        = "https://${local.cognito_domain_prefix}.auth.${local.region}.amazoncognito.com"
-  runtime_image_uri     = "${module.runtime_common.ecr_repository_url}@${var.runtime_image_digest}"
-  runtime_arn           = var.deployment_mode == "microvm" ? module.runtime_microvm[0].runtime_arn : "arn:${local.partition}:bedrock-agentcore:${local.region}:${local.account_id}:runtime/${module.naming.prefix}*"
-  runtime_qualifier     = var.deployment_mode == "microvm" ? module.runtime_microvm[0].endpoint_qualifier : "DEFAULT"
+  binding_audience            = "urn:kirocrew:agentcore:${local.account_id}:${local.region}:${module.naming.prefix}"
+  cognito_domain_prefix       = "${module.naming.prefix}-${local.account_id}-${local.region}"
+  cognito_domain              = "https://${local.cognito_domain_prefix}.auth.${local.region}.amazoncognito.com"
+  runtime_image_uri           = "${module.runtime_common.ecr_repository_url}@${var.runtime_image_digest}"
+  agent_registry_arn          = var.agent_registry_id == "" ? "" : "arn:${local.partition}:agent-registry:${var.agent_registry_region}:${local.account_id}:registry/${var.agent_registry_id}"
+  agent_registry_mcp_endpoint = var.agent_registry_id == "" ? "" : "https://agent-registry.${var.agent_registry_region}.api.aws/registry/${var.agent_registry_id}/mcp"
+  runtime_arn                 = var.deployment_mode == "microvm" ? module.runtime_microvm[0].runtime_arn : "arn:${local.partition}:bedrock-agentcore:${local.region}:${local.account_id}:runtime/${module.naming.prefix}*"
+  runtime_qualifier           = var.deployment_mode == "microvm" ? module.runtime_microvm[0].endpoint_qualifier : "DEFAULT"
 }
 
 module "persistence" {
@@ -40,6 +42,7 @@ module "runtime_common" {
   prefix              = module.naming.prefix
   binding_key_arn     = module.persistence.binding_key_arn
   broker_function_arn = module.persistence.broker_function_arn
+  agent_registry_arn  = local.agent_registry_arn
   log_retention_days  = var.log_retention_days
   tags                = module.naming.tags
 }
@@ -70,11 +73,13 @@ module "runtime_microvm" {
   idle_session_timeout_seconds = var.runtime_idle_session_timeout_seconds
   max_lifetime_seconds         = var.runtime_max_lifetime_seconds
   environment_variables = {
-    AWS_REGION       = local.region
-    BINDING_AUDIENCE = local.binding_audience
-    BINDING_KEY_ARN  = module.persistence.binding_key_arn
-    COGNITO_ISSUER   = module.identity.issuer
-    DEPLOYMENT_MODE  = "microvm"
+    AGENT_REGISTRY_MCP_ENDPOINT = local.agent_registry_mcp_endpoint
+    AGENT_REGISTRY_REGION       = var.agent_registry_region
+    AWS_REGION                  = local.region
+    BINDING_AUDIENCE            = local.binding_audience
+    BINDING_KEY_ARN             = module.persistence.binding_key_arn
+    COGNITO_ISSUER              = module.identity.issuer
+    DEPLOYMENT_MODE             = "microvm"
     # The platform's stdout pipeline has proven unreliable; the runtime
     # ships its own log records directly to this dedicated group.
     KIROCREW_LOG_GROUP     = module.runtime_common.runtime_log_group
@@ -114,11 +119,13 @@ module "runtime_microvm_machine" {
   idle_session_timeout_seconds = var.machine_runtime_idle_session_timeout_seconds
   max_lifetime_seconds         = var.runtime_max_lifetime_seconds
   environment_variables = {
-    AWS_REGION       = local.region
-    BINDING_AUDIENCE = local.binding_audience
-    BINDING_KEY_ARN  = module.persistence.binding_key_arn
-    COGNITO_ISSUER   = module.identity.issuer
-    DEPLOYMENT_MODE  = "microvm"
+    AGENT_REGISTRY_MCP_ENDPOINT = local.agent_registry_mcp_endpoint
+    AGENT_REGISTRY_REGION       = var.agent_registry_region
+    AWS_REGION                  = local.region
+    BINDING_AUDIENCE            = local.binding_audience
+    BINDING_KEY_ARN             = module.persistence.binding_key_arn
+    COGNITO_ISSUER              = module.identity.issuer
+    DEPLOYMENT_MODE             = "microvm"
     # The image is identical on both runtimes, so this variable is the ONLY
     # thing that tells the adapter which front door it is serving. It is what
     # makes a scheduler token acceptable here and refused on the browser

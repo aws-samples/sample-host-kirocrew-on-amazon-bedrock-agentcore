@@ -2,6 +2,11 @@ variable "prefix" { type = string }
 variable "binding_key_arn" { type = string }
 variable "broker_function_arn" { type = string }
 variable "log_retention_days" { type = number }
+variable "agent_registry_arn" {
+  description = "Optional Agent Registry ARN that the runtime may query through its MCP endpoint."
+  type        = string
+  default     = ""
+}
 variable "tags" { type = map(string) }
 
 resource "aws_ecr_repository" "runtime" {
@@ -84,6 +89,19 @@ data "aws_iam_policy_document" "runtime" {
       test     = "StringEquals"
       variable = "cloudwatch:namespace"
       values   = ["KiroCrew/AgentCore"]
+    }
+  }
+  dynamic "statement" {
+    for_each = var.agent_registry_arn == "" ? [] : [var.agent_registry_arn]
+    content {
+      sid = "QueryAgentRegistry"
+      actions = [
+        "agent-registry:InvokeRegistryMcp",
+        "agent-registry:SearchDiscoverableRegistryRecords",
+        "agent-registry:ListDiscoverableRegistryRecords",
+        "agent-registry:BatchGetDiscoverableRegistryRecord",
+      ]
+      resources = [statement.value]
     }
   }
   statement {

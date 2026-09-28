@@ -1035,3 +1035,87 @@ def test_gateway_exit_is_reported_once_with_output_tail_and_restart_is_possible(
     assert is_ready()
     assert supervisor.token() == "internal-ready-token"
     assert "fatal: loop stalled" not in supervisor.output_tail
+
+
+def test_start_pins_agent_registry_mcp_without_replacing_user_servers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    layout = WorkspaceLayout(tmp_path / "workspace")
+    monkeypatch.setattr(os, "killpg", lambda _pid, _signal: None)
+    monkeypatch.setenv(
+        "AGENT_REGISTRY_MCP_ENDPOINT",
+        "https://agent-registry.us-east-1.api.aws/registry/example/mcp",
+    )
+    monkeypatch.setenv("AGENT_REGISTRY_REGION", "us-east-1")
+    layout.create(metadata())
+    store = layout.kirocrew_home / "mcp.json"
+    store.write_text(
+        json.dumps({"mcpServers": {"user-server": {"command": "user-mcp"}}}),
+        encoding="utf-8",
+    )
+    supervisor = KiroCrewSupervisor(
+        layout,
+        metadata(),
+        process_factory=factory_for(FakeProcess(ready_line(layout))),
+        effective_uid=lambda: 10001,
+        sleep=lambda _delay: None,
+    )
+
+    supervisor.start(timeout_seconds=2)
+
+    overlay = json.loads((layout.kirocrew_home / "config.local.json").read_text(encoding="utf-8"))
+    assert "mcpServers" not in overlay
+    written = json.loads(store.read_text(encoding="utf-8"))
+    assert written["mcpServers"]["user-server"] == {"command": "user-mcp"}
+    assert written["mcpServers"]["agent-registry"] == {
+        "args": [
+            "-m",
+            "kirocrew_agentcore_runtime.sigv4_mcp_proxy",
+            "--endpoint",
+            "https://agent-registry.us-east-1.api.aws/registry/example/mcp",
+            "--service",
+            "agent-registry",
+            "--region",
+            "us-east-1",
+        ],
+        "command": "/usr/local/bin/python",
+        "disabled": False,
+    }
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [None, "{not json", "[]", json.dumps({"mcpServers": []})],
+)
+def test_agent_registry_mcp_pin_handles_store_shapes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing: str | None
+) -> None:
+    store = tmp_path / "mcp.json"
+    if existing is not None:
+        store.write_text(existing, encoding="utf-8")
+    monkeypatch.setenv(
+        "AGENT_REGISTRY_MCP_ENDPOINT",
+        "https://agent-registry.us-east-1.api.aws/registry/example/mcp",
+    )
+    monkeypatch.delenv("AGENT_REGISTRY_REGION", raising=False)
+
+    KiroCrewSupervisor._pin_agent_registry_mcp(tmp_path)
+
+    if existing in ("{not json", "[]"):
+        assert store.read_text(encoding="utf-8") == existing
+        return
+    first = store.read_text(encoding="utf-8")
+    assert json.loads(first)["mcpServers"]["agent-registry"]["args"][-1] == "us-east-1"
+    assert store.stat().st_mode & 0o777 == 0o600
+    KiroCrewSupervisor._pin_agent_registry_mcp(tmp_path)
+    assert store.read_text(encoding="utf-8") == first
+
+
+def test_agent_registry_mcp_pin_is_skipped_without_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("AGENT_REGISTRY_MCP_ENDPOINT", raising=False)
+
+    KiroCrewSupervisor._pin_agent_registry_mcp(tmp_path)
+
+    assert not (tmp_path / "mcp.json").exists()

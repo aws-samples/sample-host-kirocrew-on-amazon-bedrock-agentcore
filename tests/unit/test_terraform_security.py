@@ -242,6 +242,26 @@ def test_microvm_profile_has_no_customer_capacity_or_shared_filesystem() -> None
     assert "module.runtime_microvm[0].runtime_arn" in root
 
 
+def test_runtime_registry_access_is_optional_scoped_and_read_only() -> None:
+    runtime = terraform("modules/runtime-common/main.tf")
+    root = terraform("main.tf")
+    variables = terraform("variables.tf")
+
+    assert 'var.agent_registry_arn == "" ? [] : [var.agent_registry_arn]' in runtime
+    assert 'sid = "QueryAgentRegistry"' in runtime
+    assert "resources = [statement.value]" in runtime
+    for action in (
+        "agent-registry:InvokeRegistryMcp",
+        "agent-registry:SearchDiscoverableRegistryRecords",
+        "agent-registry:ListDiscoverableRegistryRecords",
+        "agent-registry:BatchGetDiscoverableRegistryRecord",
+    ):
+        assert f'"{action}"' in runtime
+    assert "agent-registry:*" not in runtime
+    assert re.search(r"agent_registry_arn\s*=\s*local\.agent_registry_arn", root)
+    assert 'default     = ""' in variables
+
+
 def test_microvm_is_default_and_commands_are_profile_and_state_aware() -> None:
     versions = terraform("versions.tf")
     assert 'default     = "microvm"' in versions

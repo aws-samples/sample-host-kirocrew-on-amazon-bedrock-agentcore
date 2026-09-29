@@ -60,7 +60,7 @@ KiroCrew 原本面向本地运行：浏览器中的 SPA 通过 HTTP、服务器�
 
 一次请求会依次经过以下环节：
 
-1. **登录与沙箱控制。** 悬浮面板使用 Cognito PKCE 登录。控制 Lambda 创建或恢复用户的沙箱
+1. **登录与沙箱控制。** 悬浮面板经部署自带的门禁认证 API 登录 Cognito。控制 Lambda 创建或恢复用户的沙箱
    记录，管理租约，并签发短期绑定令牌。
 2. **拦截 Gateway 调用。** 前端 Shell 拦截原版 SPA 发往本地回环地址的 HTTP、SSE 和
    WebSocket 请求，并编码成协议信封。
@@ -71,11 +71,18 @@ KiroCrew 原本面向本地运行：浏览器中的 SPA 通过 HTTP、服务器�
 5. **创建检查点与恢复。** 持久化引擎切分并加密工作区，以版本（generation）形式提交到 S3：
    在 **Stop safely** 时、Kiro 登录/登出后、工作区有变化的周期性间隔、后台任务由忙转闲时，
    以及收到 SIGTERM 时都会提交。再次启动时先恢复最新版本，再启动 Gateway。
+6. **定时唤醒。** EventBridge Scheduler 触发只持有 IAM 角色的 Waker Lambda，由它为沙箱所有者调用
+   单独的 IAM 鉴权 Runtime 端点，没开浏览器时 KiroCrew 定时任务也能执行。详见
+   [docs/design-scheduled-jobs.md](docs/design-scheduled-jobs.md)。
+7. **工具发现（可选）。** 设置 `agent_registry_id` 后，VM 内的 SigV4 MCP 桥用 Runtime 执行角色签名，
+   把一个 AWS Agent Registry 提供给 KiroCrew。详见 [docs/operations.md](docs/operations.md)。
 
 图中 **蓝色** 表示协议与聊天流，**红色** 表示沙箱生命周期控制，**绿色** 表示持久化，
-**紫色** 表示用户认证。
+**紫色** 表示用户认证，**青色** 表示工具发现。
 
 ## 安全与持久化模型
+
+凭证清单、已知差距和加固档位等完整说明见 [docs/security.zh-CN.md](docs/security.zh-CN.md)。
 
 - **租户隔离由传输层保证，而不是靠路由过滤。** AgentCore 对每次调用校验 Cognito JWT，
   Adapter 再把绑定令牌与 Cognito subject 比对。沙箱是单租户 microVM。
@@ -91,8 +98,8 @@ KiroCrew 原本面向本地运行：浏览器中的 SPA 通过 HTTP、服务器�
   共享这个角色，所以它只能验签绑定令牌、调用持久化 Broker、写自己的日志和指标。沙箱表与
   检查点存储桶只能经由 Broker Lambda 访问；Broker 在每次读写前验证调用方令牌，并确认记录
   仍归属该会话。即便沙箱用户提取出角色凭证，也拿不到本沙箱以外的任何东西。
-- **检查点** 使用每个沙箱独立的 KMS 数据密钥，以版本（generation）形式提交到 S3。保留最近
-  两个版本，并由离线审计任务校验完整性。
+- **检查点** 使用每个沙箱独立的 KMS 数据密钥，以版本（generation）形式提交到 S3。旧版本的
+  清理尚未生效，见 [docs/security.zh-CN.md](docs/security.zh-CN.md#已知差距与边界)。
 - **恢复** 在 microVM 容器盘上工作区内部的 `.agentcore/` 下暂存，并行预取数据块，逐项换入
   目标位置，支持失败回滚。工作区所在的容器盘是临时的：加密的 S3 检查点是唯一的持久层。
 - **Kiro 登录** 以设备码流程在沙箱 PTY 中完成。Kiro CLI 把登录态保存在
@@ -258,7 +265,7 @@ TypeScript Shell（`frontend-shell/src/remote-transport.ts`）以及 `contracts/
 
 | 路径 | 职责 |
 |---|---|
-| `frontend-shell/` | Cognito PKCE、生命周期界面、Gateway 调用拦截、远程传输及上游 SPA 契约固定 |
+| `frontend-shell/` | Cognito 登录、生命周期界面、Gateway 调用拦截、远程传输及上游 SPA 契约固定 |
 | `adapter/` | 协议校验、回环路由策略、HTTP/SSE/WebSocket 隧道及 Kiro 身份操作 |
 | `runtime/` | AgentCore 入口、会话初始化、Gateway 监管与自动重启、请求处理及检查点调度 |
 | `infrastructure/` | CloudFront、S3、Cognito、Lambda、DynamoDB、KMS、ECR 和 AgentCore 的 Terraform 配置 |
@@ -267,12 +274,12 @@ TypeScript Shell（`frontend-shell/src/remote-transport.ts`）以及 `contracts/
 | `contracts/` | JSON Schema、OpenAPI/AsyncAPI、路由策略和上游兼容性固定信息 |
 | `tests/` | 单元测试、跨语言契约测试、已部署环境端到端测试和浏览器 UI 测试 |
 | `tools/` | 协议代码生成、上游 SPA 提取、Terraform 包装脚本和镜像工具 |
-| `docs/` | 架构图源文件、截图、持久化契约和最终用户使用手册 |
+| `docs/` | 架构图源文件、截图、持久化契约、安全模型和最终用户使用手册 |
 | `CLAUDE.md`（`AGENTS.md`） | 编码 Agent 上手指南：构建/验证/部署命令与承重不变量 |
 
 ## 安全
 
-如何报告安全问题，请参阅 [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications)。
+安全模型及已知差距见 [docs/security.zh-CN.md](docs/security.zh-CN.md)。如何报告安全问题，请参阅 [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications)。
 
 ## 许可证
 

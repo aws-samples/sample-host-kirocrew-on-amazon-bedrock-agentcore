@@ -72,8 +72,8 @@ At a glance:
 
 A request makes the following journey:
 
-1. **Sign-in and sandbox control.** The floating panel signs the user in with Cognito
-   PKCE. The control Lambda creates or resumes the user's sandbox record, manages
+1. **Sign-in and sandbox control.** The floating panel signs the user in to Cognito
+   through the deployment's gated auth API. The control Lambda creates or resumes the user's sandbox record, manages
    leases, and issues a short-lived binding token.
 2. **Gateway interception.** The frontend shell intercepts the unmodified SPA's
    loopback HTTP, SSE, and WebSocket calls and encodes them as protocol envelopes.
@@ -88,11 +88,22 @@ A request makes the following journey:
    sign-in or sign-out, on a periodic interval when the workspace changed, when
    background work goes idle, and on SIGTERM. On start, it restores the latest
    generation before launching the gateway.
+6. **Scheduled wake.** EventBridge Scheduler triggers a waker Lambda that holds
+   only an IAM role. It invokes a separate IAM-authorized runtime endpoint for
+   the sandbox's owner, so KiroCrew cron jobs fire with no browser open. See
+   [docs/design-scheduled-jobs.md](docs/design-scheduled-jobs.md).
+7. **Tool discovery (optional).** When `agent_registry_id` is set, a SigV4 MCP
+   bridge inside the VM exposes one AWS Agent Registry to KiroCrew, signed with
+   the runtime execution role. See [docs/operations.md](docs/operations.md).
 
 The diagram uses **blue** for protocol and chat streaming, **red** for sandbox
-lifecycle, **green** for persistence, and **purple** for user authentication.
+lifecycle, **green** for persistence, **purple** for user authentication, and
+**teal** for tool discovery.
 
 ## Security and persistence model
+
+A fuller treatment, including the credential inventory, known gaps, and
+hardening profiles, is in [docs/security.md](docs/security.md).
 
 - **Tenancy is enforced by the transport, not by route filtering.** AgentCore
   validates the Cognito JWT on every invocation, and the adapter verifies a binding
@@ -117,7 +128,8 @@ lifecycle, **green** for persistence, and **purple** for user authentication.
   record still names that session before every read or write. A sandbox user
   who extracts the role's credentials gains nothing beyond their own sandbox.
 - **Checkpoints** use per-sandbox KMS data keys and are committed as generations in
-  S3. The latest two generations are retained; an offline auditor verifies them.
+  S3. Pruning of older generations is not enforced yet; see
+  [docs/security.md](docs/security.md#known-gaps-and-boundaries).
 - **Restore** stages under `.agentcore/` inside the workspace on the microVM's
   container disk, prefetches chunks in parallel, and swaps entries into place with
   rollback support. The workspace disk is ephemeral: encrypted S3 checkpoints are
@@ -310,7 +322,7 @@ classified.
 
 | Path | Responsibility |
 |---|---|
-| `frontend-shell/` | Cognito PKCE, lifecycle UI, gateway interception, remote transport, and upstream SPA contract pins |
+| `frontend-shell/` | Cognito sign-in, lifecycle UI, gateway interception, remote transport, and upstream SPA contract pins |
 | `adapter/` | Protocol validation, loopback route policy, HTTP/SSE/WebSocket tunneling, and Kiro identity operations |
 | `runtime/` | AgentCore entrypoint, session initialization, gateway supervision and restart, invocation handling, and checkpoint scheduling |
 | `infrastructure/` | Terraform for CloudFront, S3, Cognito, Lambdas, DynamoDB, KMS, ECR, and AgentCore wiring |
@@ -319,12 +331,14 @@ classified.
 | `contracts/` | JSON Schema, OpenAPI/AsyncAPI definitions, route policy, and upstream compatibility pins |
 | `tests/` | Unit, cross-language contract, deployed-stack end-to-end, and browser UI tests |
 | `tools/` | Protocol code generation, upstream SPA extraction, Terraform wrapper, and image tooling |
-| `docs/` | Architecture source, screenshots, the persistence contract, and the end-user guide |
+| `docs/` | Architecture source, screenshots, the persistence contract, the security model, and the end-user guide |
 | `CLAUDE.md` (`AGENTS.md`) | Coding-agent onboarding: build/verify/deploy commands and load-bearing invariants |
 
 ## Security
 
-See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for how to report
+The security model and its known gaps are described in
+[docs/security.md](docs/security.md). See
+[CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for how to report
 security issues.
 
 ## License

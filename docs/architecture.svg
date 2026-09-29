@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1480 870" width="1480" height="870">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1480 910" width="1480" height="910">
   <style>
     text { font-family: 'Helvetica Neue', Helvetica, Arial, 'PingFang SC', 'Microsoft YaHei', 'Microsoft JhengHei', 'SimHei', sans-serif; }
     .zone-title { font-size: 15px; font-weight: 600; fill: #111827; }
@@ -22,22 +22,25 @@
     <marker id="arrow-purple" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
       <polygon points="0 0, 10 3.5, 0 7" fill="#9333ea"/>
     </marker>
+    <marker id="arrow-teal" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#0d9488"/>
+    </marker>
   </defs>
 
-  <rect width="1480" height="870" fill="#ffffff"/>
+  <rect width="1480" height="910" fill="#ffffff"/>
 
   <!-- Title -->
   <text x="60" y="50" font-size="22" font-weight="600" fill="#111827">KiroCrew on Amazon Bedrock AgentCore</text>
-  <text x="60" y="76" font-size="13" fill="#6b7280">Unmodified SPA + gateway, bridged over the AgentCore data plane &#183; one microVM sandbox per user &#183; state survives stop/start</text>
+  <text x="60" y="76" font-size="13" fill="#6b7280">Unmodified SPA + gateway, bridged over the AgentCore data plane &#183; one microVM sandbox per user &#183; state survives stop/start &#183; scheduled wake</text>
 
   <!-- ================= Containers ================= -->
-  <rect data-graph-role="container" x="40" y="100" width="380" height="660" rx="12" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
+  <rect data-graph-role="container" x="40" y="100" width="380" height="700" rx="12" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
   <text x="60" y="128" class="zone-title">User's browser</text>
 
-  <rect data-graph-role="container" x="480" y="100" width="440" height="660" rx="12" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
-  <text x="500" y="128" class="zone-title">AWS (us-east-2)</text>
+  <rect data-graph-role="container" x="480" y="100" width="440" height="700" rx="12" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
+  <text x="500" y="128" class="zone-title">AWS (your Region)</text>
 
-  <rect data-graph-role="container" x="980" y="100" width="460" height="660" rx="12" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
+  <rect data-graph-role="container" x="980" y="100" width="460" height="700" rx="12" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
   <text x="1000" y="128" class="zone-title">AgentCore microVM (per-user sandbox)</text>
 
   <!-- ================= Browser nodes ================= -->
@@ -51,7 +54,7 @@
 
   <rect x="70" y="470" width="320" height="90" rx="8" fill="#ffffff" stroke="#d1d5db" stroke-width="1.5"/>
   <text x="90" y="502" class="node-title">Floating panel + sign-in</text>
-  <text x="90" y="524" class="node-sub">Cognito PKCE &#183; sandbox controls</text>
+  <text x="90" y="524" class="node-sub">Cognito sign-in via gated auth API &#183; sandbox controls</text>
   <text x="90" y="542" class="node-sub-s">Kiro account: device code &#183; SSO</text>
 
   <!-- ================= AWS nodes ================= -->
@@ -61,7 +64,7 @@
 
   <rect x="500" y="240" width="400" height="70" rx="8" fill="#eff6ff" stroke="#bfdbfe" stroke-width="1.5"/>
   <text x="520" y="268" class="node-title">AgentCore runtime endpoint</text>
-  <text x="520" y="288" class="node-sub">invoke + SSE streaming, JWT authorizer</text>
+  <text x="520" y="288" class="node-sub">browser: JWT authorizer &#183; waker: IAM endpoint</text>
 
   <rect x="500" y="340" width="400" height="70" rx="8" fill="#faf5ff" stroke="#ede9fe" stroke-width="1.5"/>
   <text x="520" y="368" class="node-title">Cognito user pool</text>
@@ -121,7 +124,7 @@
 
   <!-- A3 -> B2: OAuth -->
   <path d="M 390 500 L 455 500 L 455 375 L 494 375" stroke="#9333ea" stroke-width="1.5" fill="none" marker-end="url(#arrow-purple)"/>
-  <text x="452" y="365" text-anchor="middle" class="edge-label">OAuth &#183; JWT</text>
+  <text x="452" y="365" text-anchor="middle" class="edge-label">sign-in &#183; JWT</text>
 
   <!-- A3 -> B4: lifecycle -->
   <path d="M 390 530 L 470 530 L 470 475 L 494 475" stroke="#dc2626" stroke-width="1.5" fill="none" marker-end="url(#arrow-red)"/>
@@ -156,8 +159,31 @@
   <!-- B4 -> B5: records -->
   <path d="M 595 510 L 595 554" stroke="#dc2626" stroke-width="1.5" fill="none" marker-end="url(#arrow-red)"/>
 
+  <!-- ================= Added: scheduled wake + Agent Registry ================= -->
+  <rect x="500" y="660" width="190" height="70" rx="8" fill="#f0fdfa" stroke="#ccfbf1" stroke-width="1.5"/>
+  <text x="516" y="686" class="node-title">Agent Registry</text>
+  <text x="516" y="704" class="node-sub-s">optional &#183; any Region</text>
+  <text x="516" y="719" class="node-sub-s">read-only tool discovery</text>
+
+  <rect x="710" y="660" width="190" height="70" rx="8" fill="#fef2f2" stroke="#fee2e2" stroke-width="1.5"/>
+  <text x="726" y="686" class="node-title">Scheduler + Waker</text>
+  <text x="726" y="704" class="node-sub-s">EventBridge cron</text>
+  <text x="726" y="719" class="node-sub-s">IAM role, no user secret</text>
+
+  <rect x="1010" y="680" width="400" height="70" rx="8" fill="#f0fdfa" stroke="#ccfbf1" stroke-width="1.5"/>
+  <text x="1030" y="708" class="node-title">SigV4 MCP bridge</text>
+  <text x="1030" y="728" class="node-sub">stdio MCP server &#183; https only &#183; signs with execution role</text>
+
+  <!-- Waker -> runtime endpoint (right corridor) -->
+  <path d="M 900 695 L 912 695 L 912 300 L 906 300" stroke="#dc2626" stroke-width="1.5" fill="none" marker-end="url(#arrow-red)"/>
+  <text x="905" y="650" text-anchor="end" class="edge-label">IAM invoke on schedule</text>
+
+  <!-- Bridge -> Registry (bottom corridor) -->
+  <path d="M 1010 715 L 965 715 L 965 770 L 595 770 L 595 736" stroke="#0d9488" stroke-width="1.5" fill="none" marker-end="url(#arrow-teal)"/>
+  <text x="780" y="788" text-anchor="middle" class="edge-label">SigV4 &#183; runtime execution role</text>
+
   <!-- ================= Legend ================= -->
-  <g data-graph-role="legend" transform="translate(60, 800)">
+  <g data-graph-role="legend" transform="translate(60, 840)">
     <line x1="0" y1="8" x2="30" y2="8" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arrow-blue)"/>
     <text x="38" y="12" class="legend-text">Protocol / chat streaming (SSE, WS)</text>
     <line x1="290" y1="8" x2="320" y2="8" stroke="#dc2626" stroke-width="1.5" marker-end="url(#arrow-red)"/>
@@ -166,5 +192,7 @@
     <text x="568" y="12" class="legend-text">Persistence &#8212; encrypted checkpoints</text>
     <line x1="830" y1="8" x2="860" y2="8" stroke="#9333ea" stroke-width="1.5" marker-end="url(#arrow-purple)"/>
     <text x="868" y="12" class="legend-text">User authentication (Cognito / Kiro device flow)</text>
+    <line x1="1170" y1="8" x2="1200" y2="8" stroke="#0d9488" stroke-width="1.5" marker-end="url(#arrow-teal)"/>
+    <text x="1208" y="12" class="legend-text">Tool discovery</text>
   </g>
 </svg>

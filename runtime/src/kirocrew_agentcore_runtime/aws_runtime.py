@@ -982,7 +982,7 @@ class AwsSessionInitializer:
             session_token,
         )
         broker = LambdaPersistenceBroker(client, claims.sandbox_id)
-        store = BrokeredCheckpointStore(broker, claims.sandbox_id)
+        store = BrokeredCheckpointStore(broker, claims.sandbox_id, index_chunks=True)
         cipher = broker.cipher(claims.sandbox_id)
         committed = store.committed_generations()
         expected = metadata.last_checkpoint_generation

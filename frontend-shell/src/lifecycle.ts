@@ -189,6 +189,27 @@ const SANDBOX_FATAL_CODES: ReadonlySet<string> = new Set([
   "UNSUPPORTED_PROTOCOL",
 ]);
 
+/**
+ * Whether a fresh connection must finish a stop someone else started.
+ *
+ * Stop safely is two steps: the runtime commits a final checkpoint (record ->
+ * STOPPING) and hands the receipt back over the WebSocket; the page then posts
+ * that receipt to the control plane, which finalizes STOPPED. The receipt only
+ * lives in the page that asked for it, so a reload, a reconnect, or a Retry in
+ * between loses it and the record strands at STOPPING -- the panel then says
+ * "Saving and stopping" forever, periodic checkpoints are refused, and the
+ * stopping view offers no button to try again. A page that sees STOPPING on
+ * connect without a stop of its own in flight therefore re-requests the final
+ * checkpoint: STOPPING accepts a newer final generation, which yields a fresh
+ * receipt this page can finalize.
+ */
+export function needsStopResume(
+  state: SandboxState | undefined,
+  pendingStop: boolean,
+): boolean {
+  return state === "STOPPING" && !pendingStop;
+}
+
 export function classifyRuntimeError(
   requestId: string | null | undefined,
   code: string,

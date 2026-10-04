@@ -6,6 +6,7 @@ import type { BootstrapTarget } from "./bootstrap.js";
 import {
   LifecycleStore,
   classifyRuntimeError,
+  needsStopResume,
   type SandboxDetails,
   type SandboxHistoryEvent,
   type SandboxSnapshot,
@@ -847,6 +848,7 @@ export class BrowserApplication {
         this.#reconnectTimer = undefined;
       }
       this.kiroCheck();
+      void this.#resumeStrandedStop();
     } else if (envelope.operation === "sandbox.state") {
       void this.#refreshStatus(false);
     } else if (
@@ -945,6 +947,25 @@ export class BrowserApplication {
       // EventSource in the upstream page receives that failure and recovers
       // the way it would locally; the sandbox is not in trouble.
     }
+  }
+
+  async #resumeStrandedStop(): Promise<void> {
+    if (this.#pendingStop || this.#stopQueued) {
+      return;
+    }
+    let state: SandboxState;
+    try {
+      state = (await this.#control.status()).state;
+    } catch {
+      // The status poll surfaces control-plane failures; nothing to resume.
+      return;
+    }
+    if (!needsStopResume(state, this.#pendingStop || this.#stopQueued)) {
+      return;
+    }
+    // connection.ready can land before openWebSocket resolves; stop() already
+    // queues in that case and #connect flushes the queue once the duplex is up.
+    this.stop();
   }
 
   async #completeStop(receipt: string): Promise<void> {

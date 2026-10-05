@@ -324,3 +324,92 @@ def test_offline_integrity_audit_records_success_and_failure_metrics() -> None:
     malformed_plaintext = auditor.run()
     assert malformed_plaintext.failures == ("generation 1: manifest integrity failure",)
     assert len(sink.results) == 4
+
+
+class CountingBroker:
+    """Wrap a broker and count the existence questions and listings it answers."""
+
+    def __init__(self, inner: PersistenceBroker, *, fail_listing: int = 0) -> None:
+        self._inner = inner
+        self.exists_calls = 0
+        self.list_calls = 0
+        self.puts = 0
+        self._fail_listing = fail_listing
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+    def chunk_exists(self, sandbox_id: str, digest: str) -> bool:
+        self.exists_calls += 1
+        return self._inner.chunk_exists(sandbox_id, digest)
+
+    def internal_keys(self, sandbox_id: str, category: str) -> tuple[str, ...]:
+        self.list_calls += 1
+        if self._fail_listing > 0:
+            self._fail_listing -= 1
+            raise BrokerAuthorizationError("listing unavailable")
+        return self._inner.internal_keys(sandbox_id, category)
+
+    def presign_chunk(self, sandbox_id: str, digest: str, operation: StorageOperation) -> object:
+        if operation is StorageOperation.PUT:
+            self.puts += 1
+        return self._inner.presign_chunk(sandbox_id, digest, operation)
+
+
+def test_brokered_store_lists_chunks_once_instead_of_asking_per_chunk() -> None:
+    _clock, objects, broker, seed_store = components()
+    # A stray non-chunk object under the prefix is not mistaken for a chunk.
+    objects.objects[f"snapshots/{SANDBOX_ID}/chunks/{'a' * 64}.partial"] = b""
+    cipher = broker.cipher(SANDBOX_ID)
+    stored = {
+        cipher.encrypt(f"old-{index}".encode()).digest: f"old-{index}".encode()
+        for index in range(50)
+    }
+    for digest, plaintext in stored.items():
+        seed_store.upload_chunk(digest, cipher.encrypt(plaintext).ciphertext)
+
+    counting = CountingBroker(broker)
+    store = BrokeredCheckpointStore(counting, SANDBOX_ID, index_chunks=True)  # type: ignore[arg-type]
+    assert all(store.has_chunk(digest) for digest in stored)
+    new = cipher.encrypt(b"new-content")
+    assert store.has_chunk(new.digest) is False
+    store.upload_chunk(new.digest, new.ciphertext)
+    assert store.has_chunk(new.digest) is True
+    store.upload_chunk(new.digest, new.ciphertext)
+
+    assert counting.list_calls == 1
+    assert counting.exists_calls == 0
+    assert counting.puts == 1
+    assert store.has_chunk("a" * 64) is False
+    # The uploaded chunk really reached the object store, not only the cache.
+    assert broker.chunk_exists(SANDBOX_ID, new.digest) is True
+
+
+def test_brokered_store_falls_back_per_chunk_when_listing_fails_then_retries() -> None:
+    _clock, _objects, broker, _store = components()
+    cipher = broker.cipher(SANDBOX_ID)
+    blob = cipher.encrypt(b"payload")
+    counting = CountingBroker(broker, fail_listing=1)
+    store = BrokeredCheckpointStore(counting, SANDBOX_ID, index_chunks=True)  # type: ignore[arg-type]
+
+    assert store.has_chunk(blob.digest) is False
+    assert counting.exists_calls == 1
+    store.upload_chunk(blob.digest, blob.ciphertext)
+    assert counting.list_calls == 2
+    assert store.has_chunk(blob.digest) is True
+    assert counting.exists_calls == 1
+
+
+def test_brokered_store_without_index_keeps_asking_per_chunk() -> None:
+    # The integrity auditor relies on this: a cached "present" would hide a
+    # chunk that vanished from the object store.
+    _clock, objects, broker, _store = components()
+    cipher = broker.cipher(SANDBOX_ID)
+    blob = cipher.encrypt(b"payload")
+    counting = CountingBroker(broker)
+    store = BrokeredCheckpointStore(counting, SANDBOX_ID)  # type: ignore[arg-type]
+    store.upload_chunk(blob.digest, blob.ciphertext)
+    assert store.has_chunk(blob.digest) is True
+    objects.internal_delete(f"snapshots/{SANDBOX_ID}/chunks/{blob.digest}.bin")
+    assert store.has_chunk(blob.digest) is False
+    assert counting.list_calls == 0

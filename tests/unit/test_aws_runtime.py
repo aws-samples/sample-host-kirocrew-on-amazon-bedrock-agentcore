@@ -1073,9 +1073,11 @@ def test_initialize_sync_restore_composition(monkeypatch: pytest.MonkeyPatch) ->
         def cipher(self, _sandbox: str) -> object:
             return object()
 
+    indexed: list[bool] = []
+
     class Store:
-        def __init__(self, _broker: object, _sandbox: str) -> None:
-            pass
+        def __init__(self, _broker: object, _sandbox: str, *, index_chunks: bool = False) -> None:
+            indexed.append(index_chunks)
 
         def committed_generations(self) -> tuple[object, ...]:
             return (SimpleNamespace(generation=3),)
@@ -1100,6 +1102,7 @@ def test_initialize_sync_restore_composition(monkeypatch: pytest.MonkeyPatch) ->
     assert client.binding_token == "session-token"  # noqa: S105 - opaque fixture
     assert actual_report is report
     assert isinstance(store, Store)
+    assert indexed == [True]  # the checkpoint writer must not ask S3 per chunk
     assert engine is sentinel_engine
     assert state.restoring == [("sandbox", "session")]
     assert state.ready == [("sandbox", "session", report)]

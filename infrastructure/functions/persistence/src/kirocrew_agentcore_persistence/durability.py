@@ -299,10 +299,24 @@ class BrokeredCheckpointStore:
         sandbox_id: str,
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        index_chunks: bool = False,
     ) -> None:
         self._broker = broker
         self._sandbox_id = sandbox_id
         self._clock = clock
+        # ``index_chunks`` is for the checkpoint writer only. An integrity
+        # auditor must keep asking the store per chunk: its whole purpose is to
+        # notice a chunk that vanished, which a cache would hide.
+        self._index_chunks = index_chunks
+        # Digests known to be durable in this sandbox's chunk prefix. ``None``
+        # until the first existence question, which loads the whole prefix with
+        # one listing. A set entry is only ever added for a chunk the broker
+        # listed or this store uploaded, and chunks are content-addressed and
+        # never deleted from a sandbox that is running (the broker exposes no
+        # delete operation, see docs/persistence.md), so a cached "present" can
+        # not go stale. A cached "absent" can -- another container may upload
+        # the same content -- and costs at most an idempotent re-upload.
+        self._known_chunks: set[str] | None = None
         broker.encryption_context(sandbox_id)
 
     def has_chunk(self, digest: str) -> bool:
@@ -311,15 +325,49 @@ class BrokeredCheckpointStore:
         # `s3:prefix` context key, so the broker's prefix-conditioned ListBucket
         # grant cannot authorize it and S3 answers 403 -- not 404 -- for an object
         # that merely does not exist yet. Reading that 403 as an error aborted the
-        # first checkpoint of every sandbox. Listing also halves the round trips:
-        # one broker call instead of a presign call plus a direct HTTPS HEAD.
-        return self._broker.chunk_exists(self._sandbox_id, digest)
+        # first checkpoint of every sandbox.
+        #
+        # The prefix is listed once and cached rather than asked per chunk: a
+        # checkpoint walks every chunk of the workspace, and one broker round
+        # trip per chunk made a 5,000-chunk workspace spend 14-17 minutes
+        # confirming chunks it had already stored -- long enough that an
+        # idle-reclaimed sandbox lost edits a periodic checkpoint never finished
+        # committing, and that "Stop safely" froze the gateway for the whole walk.
+        known = self._load_known_chunks()
+        if known is None:
+            return self._broker.chunk_exists(self._sandbox_id, digest)
+        return digest in known
 
     def upload_chunk(self, digest: str, ciphertext: bytes) -> None:
         if self.has_chunk(digest):
             return
         grant = self._broker.presign_chunk(self._sandbox_id, digest, StorageOperation.PUT)
         self._broker.request(grant, StorageOperation.PUT, body=ciphertext)
+        if self._known_chunks is not None:
+            self._known_chunks.add(digest)
+
+    def _load_known_chunks(self) -> set[str] | None:
+        """Return the cached chunk index, listing the prefix on first use.
+
+        A failed listing is not cached: the caller falls back to the per-chunk
+        question for this call and the next call tries the listing again, so a
+        transient broker error degrades to the old speed rather than failing.
+        """
+        if not self._index_chunks:
+            return None
+        if self._known_chunks is not None:
+            return self._known_chunks
+        try:
+            keys = self._broker.internal_keys(self._sandbox_id, "chunks")
+        except BrokerAuthorizationError:
+            return None
+        known: set[str] = set()
+        for key in keys:
+            name = key.rsplit("/", 1)[-1]
+            if name.endswith(".bin"):
+                known.add(name.removesuffix(".bin"))
+        self._known_chunks = known
+        return known
 
     def upload_manifest(self, generation: int, blob: EncryptedBlob) -> None:
         payload = json.dumps(

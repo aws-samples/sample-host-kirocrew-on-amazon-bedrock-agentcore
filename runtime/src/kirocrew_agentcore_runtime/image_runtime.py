@@ -108,7 +108,7 @@ def _restore_smoke_workspace(
         LocalObjectStore(),
         LocalKmsAdapter(b"image-smoke-local-kms-key-32bytes"),
     )
-    store = BrokeredCheckpointStore(broker, sandbox_id)
+    store = BrokeredCheckpointStore(broker, sandbox_id, index_chunks=True)
     cipher = broker.cipher(sandbox_id)
     built = ManifestBuilder(source).build(
         1,

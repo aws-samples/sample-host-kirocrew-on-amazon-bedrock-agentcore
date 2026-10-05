@@ -341,6 +341,7 @@ export class BrowserApplication {
   #connectionGeneration = 0;
   #pendingStop = false;
   #stopQueued = false;
+  #stopCompleting = false;
   #destroyed = false;
 
   public constructor(
@@ -487,7 +488,7 @@ export class BrowserApplication {
     }
     this.#pendingStop = true;
     this.#store.dispatch({ type: "stop-requested" });
-    this.#send("sandbox.prepare_stop", {}, ulid(this.#crypto, this.#now()));
+    void this.#requestStop();
   }
 
   #flushQueuedStop(): void {
@@ -496,7 +497,67 @@ export class BrowserApplication {
     }
     this.#stopQueued = false;
     this.#pendingStop = true;
-    this.#send("sandbox.prepare_stop", {}, ulid(this.#crypto, this.#now()));
+    void this.#requestStop();
+  }
+
+  async #requestStop(): Promise<void> {
+    // Ask for the terminal checkpoint over HTTP, not the WebSocket. AgentCore
+    // routes each HTTP invocation to the container that currently serves the
+    // session, while a WebSocket stays pinned to whichever container accepted
+    // its handshake. When several containers race a start, that can be one
+    // that lost the init lease and exits: a Stop sent down that socket reaches
+    // nobody and the panel waits on "Saving and stopping" forever, even though
+    // every HTTP request still works. The scheduled waker already stops the
+    // sandbox this way. The receipt arrives through onEnvelope either way.
+    const channel = this.#kiroChannel;
+    const descriptor = this.#kiroDescriptor;
+    const requestId = ulid(this.#crypto, this.#now());
+    if (channel === undefined || descriptor === undefined) {
+      this.#sendStopOverSocket(requestId);
+      return;
+    }
+    const invocation: AgentCoreInvocation = {
+      version: PROTOCOL_VERSION,
+      requestId,
+      bindingToken: this.#activeBindingToken ?? descriptor.bindingToken,
+      operation: "sandbox.prepare_stop",
+      payload: {},
+    };
+    try {
+      for await (const event of channel.invoke(invocation)) {
+        void event;
+      }
+    } catch (error: unknown) {
+      if (this.#pendingStop && !this.#stopCompleting) {
+        // Surface the failure with a retry rather than falling back to the
+        // socket: a socket pinned to a dead container is the hang this path
+        // exists to avoid.
+        this.#pendingStop = false;
+        this.#terminal(error);
+      }
+      return;
+    }
+    if (this.#pendingStop && !this.#stopCompleting) {
+      // The stream ended without a receipt, so nothing can finalize STOPPED.
+      // Say so instead of spinning; a retry re-requests the checkpoint.
+      this.#pendingStop = false;
+      this.#terminal(
+        new BrowserApplicationError(
+          "TRANSPORT_FAILED",
+          "The sandbox did not confirm the stop. Try again.",
+          true,
+        ),
+      );
+    }
+  }
+
+  #sendStopOverSocket(requestId: string): void {
+    try {
+      this.#send("sandbox.prepare_stop", {}, requestId);
+    } catch (error: unknown) {
+      this.#pendingStop = false;
+      this.#terminal(error);
+    }
   }
 
   #scheduleReconnect(): void {
@@ -918,7 +979,12 @@ export class BrowserApplication {
       }
     } else if (envelope.operation === "checkpoint.committed") {
       const receipt = envelope.payload.checkpointReceipt;
-      if (this.#pendingStop && typeof receipt === "string") {
+      if (
+        this.#pendingStop &&
+        !this.#stopCompleting &&
+        typeof receipt === "string"
+      ) {
+        this.#stopCompleting = true;
         void this.#completeStop(receipt);
       }
     } else if (envelope.operation === "error") {
@@ -978,6 +1044,7 @@ export class BrowserApplication {
     } finally {
       this.#pendingStop = false;
       this.#stopQueued = false;
+      this.#stopCompleting = false;
     }
   }
 

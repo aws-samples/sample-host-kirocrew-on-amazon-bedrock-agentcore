@@ -66,7 +66,8 @@ export interface AgentCoreInvocation {
     | "kirocrew.ws.close"
     | "kiro.login.start"
     | "kiro.status"
-    | "kiro.logout";
+    | "kiro.logout"
+    | "sandbox.prepare_stop";
   readonly payload: Readonly<Record<string, unknown>>;
 }
 

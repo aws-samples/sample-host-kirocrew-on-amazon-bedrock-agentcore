@@ -4,6 +4,7 @@ import {
   LifecycleStore,
   START_RESTORE_TOLERANCE_MS,
   classifyRuntimeError,
+  needsStopResume,
   reduceLifecycle,
   type LifecycleModel,
   type SandboxSnapshot,
@@ -270,4 +271,27 @@ it("records sandbox details for the panel", () => {
   const model = store.snapshot();
   expect(model.details?.events[0]?.state).toBe("READY");
   expect(model.details?.persistedPaths).toEqual(["/mnt/workspace/projects"]);
+});
+
+describe("needsStopResume", () => {
+  it("resumes a stop stranded at STOPPING when this page holds no receipt", () => {
+    expect(needsStopResume("STOPPING", false)).toBe(true);
+  });
+
+  it("leaves a stop this page already has in flight alone", () => {
+    expect(needsStopResume("STOPPING", true)).toBe(false);
+  });
+
+  it.each([
+    "STOPPED",
+    "STARTING",
+    "RESTORING",
+    "READY",
+    "BUSY",
+    "CHECKPOINTING",
+    "ERROR",
+    undefined,
+  ] as const)("never stops a sandbox that is %s", (state) => {
+    expect(needsStopResume(state, false)).toBe(false);
+  });
 });

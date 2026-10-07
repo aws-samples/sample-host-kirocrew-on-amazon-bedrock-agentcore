@@ -1210,6 +1210,9 @@ def test_build_runtime_application_cleanup_and_serve(monkeypatch: pytest.MonkeyP
     async def scenario() -> None:
         application = await module.build_runtime_application(environment)
         assert captured["kwargs"]
+        # The browser front door (no INBOUND_AUTH) must refuse scheduler tokens.
+        browser_verifier = cast(tuple[Any, ...], captured["args"])[1]
+        assert browser_verifier.accepts_scheduler is False
         for startup in application.on_startup:
             await startup(application)
         # A live lifetime lease heartbeat is cancelled cleanly on shutdown.
@@ -1236,6 +1239,16 @@ def test_build_runtime_application_cleanup_and_serve(monkeypatch: pytest.MonkeyP
             await shutdown(disabled)
         for cleanup in disabled.on_cleanup:
             await cleanup(disabled)
+
+        # The machine front door (INBOUND_AUTH=iam) must accept scheduler tokens;
+        # this wiring was once lost in a merge and silently broke every scheduled wake.
+        machine = await module.build_runtime_application(
+            {**environment, "INBOUND_AUTH": "iam", "KIROCREW_CHECKPOINT_INTERVAL_SECONDS": "0"}
+        )
+        machine_verifier = cast(tuple[Any, ...], captured["args"])[1]
+        assert machine_verifier.accepts_scheduler is True
+        for cleanup in machine.on_cleanup:
+            await cleanup(machine)
 
     asyncio.run(scenario())
 
@@ -1893,3 +1906,14 @@ def test_supersession_check_stays_put_in_every_other_case(
         assert initializer.supervisor.terminated == 0
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("iam", True), (" IAM ", True), ("", False), ("jwt", False), ("iam2", False)],
+)
+def test_accepts_scheduler_tokens_only_on_iam_front_door(value: str, expected: bool) -> None:
+    import kirocrew_agentcore_runtime.aws_runtime as module
+
+    assert module.accepts_scheduler_tokens({"INBOUND_AUTH": value}) is expected
+    assert module.accepts_scheduler_tokens({}) is False

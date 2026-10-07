@@ -1043,6 +1043,17 @@ def _required(environment: Mapping[str, str], name: str) -> str:
     return value
 
 
+def accepts_scheduler_tokens(environment: Mapping[str, str]) -> bool:
+    """Whether this runtime is the machine front door that may accept scheduler tokens.
+
+    Both runtimes run the same image, so only configuration can tell them apart:
+    terraform sets INBOUND_AUTH=iam on the machine runtime alone. A browser-facing
+    runtime that accepted scheduler tokens would let a caller there skip the Cognito
+    subject cross-check, so anything other than an explicit "iam" keeps it off.
+    """
+    return environment.get("INBOUND_AUTH", "").strip().lower() == "iam"
+
+
 async def build_runtime_application(
     environment: Mapping[str, str] = os.environ,
 ) -> web.Application:
@@ -1063,6 +1074,7 @@ async def build_runtime_application(
         AwsKmsSignatureVerifier(kms, _required(environment, "BINDING_KEY_ARN")),
         _required(environment, "BINDING_AUDIENCE"),
         _required(environment, "COGNITO_ISSUER"),
+        accepts_scheduler=accepts_scheduler_tokens(environment),
     )
     # The microVM never touches the sandbox table: every record operation goes
     # through the persistence broker, which verifies the caller's token first.

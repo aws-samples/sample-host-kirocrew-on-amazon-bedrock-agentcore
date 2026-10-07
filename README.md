@@ -100,6 +100,27 @@ The diagram uses **blue** for protocol and chat streaming, **red** for sandbox
 lifecycle, **green** for persistence, **purple** for user authentication, and
 **teal** for tool discovery.
 
+### Sandbox, session, and microVM
+
+Three things live for very different lengths of time, and most startup behavior
+follows from keeping them apart:
+
+- The **sandbox** is per user and long-lived: one DynamoDB record plus the
+  encrypted workspace generations in S3.
+- The **AgentCore runtime session** is new on every start. The control Lambda
+  mints a fresh session ID each time, so a session left broken by a crashed
+  container is never reused, and the sandbox lease follows the new session.
+- The **microVM** belongs to that session. The platform boots it for the
+  session and reclaims it after the idle timeout; nothing inside it outlives
+  the last committed generation.
+
+![What happens when a user clicks Start](docs/startup-sequence.png)
+
+[Open the SVG version](docs/startup-sequence.svg)
+
+Most of the start time is step 7: the bigger the workspace, the longer the
+restore.
+
 ## Security and persistence model
 
 A fuller treatment, including the credential inventory, known gaps, and

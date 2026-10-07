@@ -80,6 +80,21 @@ KiroCrew 原本面向本地运行：浏览器中的 SPA 通过 HTTP、服务器�
 图中 **蓝色** 表示协议与聊天流，**红色** 表示沙箱生命周期控制，**绿色** 表示持久化，
 **紫色** 表示用户认证，**青色** 表示工具发现。
 
+### 沙箱、Session 与 microVM
+
+这三样东西的寿命差别很大，启动阶段的大部分行为都要靠区分它们来理解：
+
+- **沙箱**一人一个、长期存在：DynamoDB 里一条记录，加上 S3 里一代代加密的工作区存档。
+- **AgentCore Runtime Session** 每次启动都是新的。控制 Lambda 每次都生成新的 Session ID，
+  避免复用被异常退出的容器弄坏的旧 Session；沙箱的租约也随之归新 Session 所有。
+- **microVM** 属于这个 Session：平台为它启动，空闲超时后回收；里面的内容只有已提交的存档会保留下来。
+
+![点 Start 之后发生了什么](docs/startup-sequence.zh-CN.png)
+
+[打开 SVG 矢量图](docs/startup-sequence.zh-CN.svg)
+
+启动耗时大多花在第 7 步：工作区越大，恢复越慢。
+
 ## 安全与持久化模型
 
 凭证清单、已知差距和加固档位等完整说明见 [docs/security.zh-CN.md](docs/security.zh-CN.md)。

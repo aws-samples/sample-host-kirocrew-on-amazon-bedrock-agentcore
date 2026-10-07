@@ -72,6 +72,13 @@ def test_lambda_client_validates_binding_calls_and_receipts() -> None:
     assert broker_client.checkpoint_receipt(4, "b" * 64, final=False) == "receipt"
     session_request = json.loads(cast(bytes, fake.requests[1]["Payload"]))
     assert session_request["final"] is False
+    # Until a restore sets it the client sends no base, then each committed
+    # receipt becomes the base the next one must descend from.
+    assert broker_client.base_generation == 4
+    assert broker_client.checkpoint_receipt(5, "c" * 64) == "receipt"
+    based = json.loads(cast(bytes, fake.requests[2]["Payload"]))
+    assert based["baseGeneration"] == 4
+    assert broker_client.base_generation == 5
 
     for value in ({}, {"checkpointReceipt": 1}):
         broken, _ = client(value)

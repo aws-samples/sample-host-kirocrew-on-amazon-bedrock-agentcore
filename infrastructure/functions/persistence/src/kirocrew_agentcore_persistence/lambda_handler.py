@@ -561,6 +561,13 @@ def _presign(s3: Any, sandbox_id: str, event: Mapping[str, object]) -> dict[str,
             "x-amz-server-side-encryption-aws-kms-key-id": _required("KMS_KEY_ARN"),
             "x-amz-server-side-encryption-context": encoded_context,
         }
+        if category in {"commits", "manifests"}:
+            # A generation's manifest and commit record are write-once. Two
+            # containers that both believe they serve the sandbox compute the
+            # same next generation; without this the slower one silently
+            # replaces the faster one's committed generation in S3.
+            params["IfNoneMatch"] = "*"
+            headers["If-None-Match"] = "*"
     return {
         "expiresAt": (datetime.now(UTC) + _URL_TTL).isoformat().replace("+00:00", "Z"),
         "headers": headers,
@@ -618,9 +625,20 @@ def _checkpoint_receipt(
     # STOPPING; a mid-session durability checkpoint records the generation
     # pointer while the sandbox keeps serving.
     final = event.get("final", True)
+    # The generation this container's working copy descends from: the one it
+    # restored, then each one it committed. Absent only for older runtimes.
+    base_generation = event.get("baseGeneration")
     if (
         type(generation) is not int
         or generation <= 0
+        or (
+            base_generation is not None
+            and (
+                type(base_generation) is not int
+                or base_generation < 0
+                or base_generation >= generation
+            )
+        )
         or not isinstance(manifest_digest, str)
         or not _DIGEST.fullmatch(manifest_digest)
         or not isinstance(runtime_session_id, str)
@@ -648,6 +666,16 @@ def _checkpoint_receipt(
         raise ValueError("Committed checkpoint timestamp is invalid.")
     now = datetime.now(UTC)
     table_name = _required("SANDBOX_TABLE")
+    # Without a base the pointer only has to move forward. With one, it must
+    # not have moved past the base: a pointer ahead of it means another
+    # container committed generations this working copy never saw, and
+    # accepting would fork the chain and drop that container's work.
+    if base_generation is None:
+        advance = "lastCheckpointGeneration < :generation OR "
+        base_values: dict[str, dict[str, str]] = {}
+    else:
+        advance = "lastCheckpointGeneration <= :base OR "
+        base_values = {":base": {"N": str(base_generation)}}
     if final:
         update_expression = (
             "SET #state = :stopping, lastCheckpointGeneration = :generation, "
@@ -658,8 +686,8 @@ def _checkpoint_receipt(
             "runtimeSessionId = :session AND "
             "#state IN (:ready, :checkpointing, :stopping) AND "
             "(attribute_not_exists(lastCheckpointGeneration) OR "
-            "lastCheckpointGeneration < :generation OR "
-            "(lastCheckpointGeneration = :generation AND "
+            + advance
+            + "(lastCheckpointGeneration = :generation AND "
             "lastCheckpointManifestDigest = :digest))"
         )
         state_values: dict[str, dict[str, str]] = {
@@ -677,8 +705,8 @@ def _checkpoint_receipt(
             "runtimeSessionId = :session AND "
             "#state IN (:ready, :busy, :checkpointing) AND "
             "(attribute_not_exists(lastCheckpointGeneration) OR "
-            "lastCheckpointGeneration < :generation OR "
-            "(lastCheckpointGeneration = :generation AND "
+            + advance
+            + "(lastCheckpointGeneration = :generation AND "
             "lastCheckpointManifestDigest = :digest))"
         )
         state_values = {
@@ -705,6 +733,7 @@ def _checkpoint_receipt(
                         ":session": {"S": runtime_session_id},
                         ":updated": {"S": now.isoformat().replace("+00:00", "Z")},
                         **state_values,
+                        **base_values,
                     },
                 }
             },

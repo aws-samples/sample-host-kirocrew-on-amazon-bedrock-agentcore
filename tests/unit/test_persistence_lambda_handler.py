@@ -724,3 +724,61 @@ def test_acquire_init_names_the_clause_that_rejected_the_claim() -> None:
     )
     assert plain == {"applied": False}
     assert "ReturnValuesOnConditionCheckFailure" not in dynamo.updates[-1]
+
+
+def test_generation_objects_are_write_once_but_chunks_are_not() -> None:
+    # Two containers serving one sandbox compute the same next generation; a
+    # write-once commit record makes the slower one fail in S3 instead of
+    # silently replacing the generation the faster one already committed.
+    s3 = FakeS3()
+    for category, name in (("commits", "2.json"), ("manifests", "2.json.enc")):
+        put = broker._presign(s3, SANDBOX, {"category": category, "name": name, "method": "PUT"})
+        assert put["headers"]["If-None-Match"] == "*"  # type: ignore[index]
+        assert s3.presign_requests[-1][1]["Params"]["IfNoneMatch"] == "*"  # type: ignore[index]
+    chunk = broker._presign(
+        s3, SANDBOX, {"category": "chunks", "name": f"{DIGEST}.bin", "method": "PUT"}
+    )
+    assert "If-None-Match" not in chunk["headers"]  # type: ignore[operator]
+    assert "IfNoneMatch" not in s3.presign_requests[-1][1]["Params"]  # type: ignore[operator]
+
+
+def test_checkpoint_receipt_refuses_a_pointer_that_moved_past_the_base() -> None:
+    s3, kms, dynamo = FakeS3(), FakeKms(), FakeDynamo()
+    s3.objects[f"sandboxes/{SANDBOX}/commits/378.json"] = json.dumps(
+        {"committedAt": "2026-10-07T13:52:37Z", "generation": 378, "manifestDigest": DIGEST}
+    ).encode()
+    claims = broker._binding(kms, token())
+    request = {
+        "final": False,
+        "generation": 378,
+        "manifestDigest": DIGEST,
+        "runtimeSessionId": SESSION,
+    }
+    # With a base, the pointer may not be ahead of it: a container restored
+    # from 375 must not land 378 over 376/377 that another container wrote.
+    broker._checkpoint_receipt(s3, kms, dynamo, SANDBOX, claims, {**request, "baseGeneration": 375})
+    update = dynamo.transactions[-1]["TransactItems"][0]["Update"]  # type: ignore[index]
+    assert "lastCheckpointGeneration <= :base" in update["ConditionExpression"]
+    assert "lastCheckpointGeneration < :generation" not in update["ConditionExpression"]
+    assert update["ExpressionAttributeValues"][":base"] == {"N": "375"}
+    # The idempotent replay of an already-recorded generation still passes.
+    assert "lastCheckpointGeneration = :generation AND" in update["ConditionExpression"]
+
+    # A final receipt carries the same guard.
+    broker._checkpoint_receipt(
+        s3, kms, dynamo, SANDBOX, claims, {**request, "final": True, "baseGeneration": 0}
+    )
+    final = dynamo.transactions[-1]["TransactItems"][0]["Update"]  # type: ignore[index]
+    assert "lastCheckpointGeneration <= :base" in final["ConditionExpression"]
+
+    # Older runtimes send no base and keep the forward-only rule.
+    broker._checkpoint_receipt(s3, kms, dynamo, SANDBOX, claims, request)
+    legacy = dynamo.transactions[-1]["TransactItems"][0]["Update"]  # type: ignore[index]
+    assert "lastCheckpointGeneration < :generation" in legacy["ConditionExpression"]
+    assert ":base" not in legacy["ExpressionAttributeValues"]
+
+    for base in (-1, 378, 379, "375", True):
+        with pytest.raises(ValueError, match="Invalid checkpoint receipt request"):
+            broker._checkpoint_receipt(
+                s3, kms, dynamo, SANDBOX, claims, {**request, "baseGeneration": base}
+            )

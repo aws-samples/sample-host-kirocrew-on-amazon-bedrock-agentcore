@@ -1383,6 +1383,16 @@ def test_next_due_is_the_earliest_enabled_job_or_active_loop() -> None:
         await backend._publish_next_due(hints)
         assert (hints.next_due_at, hints.next_due_job) == (1_800_000_900, "daily9")
 
+        # A due time already gone is not the next wake: the real one after it is.
+        loopback.responses["/api/crons"] = {
+            "jobs": [
+                {"id": "stale1", "enabled": True, "next_run_ts": 1_000},
+                {"id": "daily9", "enabled": True, "next_run_ts": 1_800_000_900},
+            ]
+        }
+        await backend._publish_next_due(hints)
+        assert (hints.next_due_at, hints.next_due_job) == (1_800_000_900, "daily9")
+
         # A job id the broker would refuse is published without the id.
         loopback.responses["/api/crons"] = {
             "jobs": [{"id": "bad id!", "enabled": True, "next_run_ts": 1_800_000_000}]

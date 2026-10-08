@@ -535,6 +535,12 @@ class ProductionRuntimeBackend:
         finds nothing to do.
         """
         candidates: list[tuple[float, str]] = []
+        # A due time already in the past is not a wake to plan: the scheduler
+        # either runs it now, while this container is up, or it is a stale
+        # value a job never advanced. Publishing it made the earliest
+        # candidate a moment that had already gone, so the waker saw "already
+        # handled" and slept through the real job that came after it.
+        now = time.time()
         try:
             crons = await asyncio.wait_for(self._loopback.fetch_json("/api/crons"), 5)
             loops = await asyncio.wait_for(self._loopback.fetch_json("/api/autonudge"), 5)
@@ -546,7 +552,7 @@ class ProductionRuntimeBackend:
             if not isinstance(job, Mapping) or not job.get("enabled"):
                 continue
             due = job.get("next_run_ts")
-            if isinstance(due, int | float) and due > 0:
+            if isinstance(due, int | float) and due > now:
                 job_id = job.get("id")
                 candidates.append((float(due), job_id if isinstance(job_id, str) else ""))
         armed = loops.get("loops") if isinstance(loops, Mapping) else None
@@ -554,7 +560,7 @@ class ProductionRuntimeBackend:
             if not isinstance(loop, Mapping) or not loop.get("active"):
                 continue
             due = loop.get("next_due_ts")
-            if isinstance(due, int | float) and due > 0:
+            if isinstance(due, int | float) and due > now:
                 candidates.append((float(due), ""))
         if candidates:
             due_at, job_id = min(candidates)

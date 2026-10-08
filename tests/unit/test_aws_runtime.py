@@ -1445,6 +1445,19 @@ def test_background_busy_detects_each_activity_source_and_tolerates_failures() -
     asyncio.run(scenario())
 
 
+def test_background_busy_holds_the_sandbox_while_a_checkpoint_is_in_flight() -> None:
+    """A terminal checkpoint outlasting the idle timeout was reclaimed mid-upload."""
+
+    async def scenario() -> None:
+        backend = probe_backend(ProbeLoopback())
+        assert await backend.background_busy() is False
+        async with backend._checkpoint_lock:
+            assert await backend.background_busy() is True
+        assert await backend.background_busy() is False
+
+    asyncio.run(scenario())
+
+
 def test_background_busy_caches_probes_and_honours_disable() -> None:
     async def scenario() -> None:
         loopback = ProbeLoopback()

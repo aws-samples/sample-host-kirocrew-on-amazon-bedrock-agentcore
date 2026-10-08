@@ -654,6 +654,15 @@ class ProductionRuntimeBackend:
         Probe failures count as idle: a broken gateway must be reclaimable,
         never immortal.
         """
+        # A checkpoint in flight is work the platform must not cut off. The
+        # platform's idle clock runs from the START of the last invocation, so a
+        # terminal checkpoint of a large workspace (sandbox.prepare_stop) that
+        # outlasts the machine endpoint's idle timeout was reclaimed mid-upload:
+        # the commit never landed, the record was left READY, and everything the
+        # wake's jobs produced was lost. Checked before the probe-TTL switch so
+        # it holds even when background probing is disabled.
+        if self._checkpoint_lock.locked():
+            return True
         if self._busy_probe_ttl <= 0:
             return False
         # The platform polls /ping even when no browser is connected, which

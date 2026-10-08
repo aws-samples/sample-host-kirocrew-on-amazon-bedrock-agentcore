@@ -398,21 +398,35 @@ def _mark_ready(
         raise ValueError("Invalid restore outcome.")
     # Ownership, not the state value, authorizes publishing READY: a lease
     # reclaim may have flipped the state to STARTING mid-flight.
+    #
+    # READY must be published together with a LIVE start lease. The lease was
+    # last written by the control plane when the start began, 90 seconds of
+    # validity, and a large workspace takes longer than that to restore (a
+    # 950 MB one measured 142 s). Publishing READY without renewing it left the
+    # record READY with an expired lease until the owner's first lease beat 30 s
+    # later -- exactly the "gone container" shape acquireInit treats as
+    # claimable -- so a second container routed to the same session claimed and
+    # restored the sandbox while the first was still serving it: two live
+    # owners, one of whose checkpoints is then refused forever.
+    now = datetime.now(UTC)
+    session = str(claims["runtimeSessionId"])
     return _conditional_update(
         dynamodb,
         sandbox_id,
         (
-            "SET #state = :ready, lastRestore = :restore, updatedAt = :updated "
+            "SET #state = :ready, lastRestore = :restore, updatedAt = :updated, "
+            "leaseOwner = :session, leaseExpiresAt = :lease "
             "ADD stateVersion :one REMOVE initOwner, initExpiresAt"
         ),
         "runtimeSessionId = :session AND initOwner = :owner",
         {
+            ":lease": {"S": _iso(now + timedelta(seconds=90))},
             ":one": {"N": "1"},
             ":owner": {"S": owner},
             ":ready": {"S": "READY"},
             ":restore": {"S": outcome.upper()},
-            ":session": {"S": str(claims["runtimeSessionId"])},
-            ":updated": {"S": _iso(datetime.now(UTC))},
+            ":session": {"S": session},
+            ":updated": {"S": _iso(now)},
         },
     )
 

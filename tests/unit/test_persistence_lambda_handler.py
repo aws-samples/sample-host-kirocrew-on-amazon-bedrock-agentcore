@@ -610,6 +610,12 @@ def test_lifecycle_updates_are_server_defined_and_validate_their_inputs() -> Non
     )
     assert "REMOVE initOwner, initExpiresAt" in str(ready_update["UpdateExpression"])
     assert ready_update["ExpressionAttributeValues"][":restore"] == {"S": "RESTORED"}  # type: ignore[index]
+    # READY goes out with a live lease owned by this session: a restore longer
+    # than the start lease must not publish a claimable READY.
+    assert "leaseOwner = :session, leaseExpiresAt = :lease" in str(ready_update["UpdateExpression"])
+    lease = ready_update["ExpressionAttributeValues"][":lease"]["S"]  # type: ignore[index]
+    lease_at = datetime.fromisoformat(lease.replace("Z", "+00:00"))
+    assert 80 <= (lease_at - datetime.now(UTC)).total_seconds() <= 91
     for outcome in ("", "Restored!", 3, "x" * 40):
         with pytest.raises(ValueError, match="Invalid restore outcome"):
             broker._mark_ready(

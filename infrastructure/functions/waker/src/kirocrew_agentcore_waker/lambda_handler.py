@@ -36,6 +36,7 @@ import os
 import re
 import secrets
 import time
+from datetime import datetime
 from typing import Any
 
 import boto3
@@ -93,6 +94,21 @@ def handler(event: Any, _context: Any) -> dict[str, object]:
     table_name = os.environ.get("SANDBOX_TABLE_NAME", "")
 
     session = boto3.Session()
+    # The schedule fires every minute; most of those ticks must cost nothing.
+    # Decide from the record whether THIS tick is the one to wake on.
+    # A relay is already mid-work, and a manual invoke with {"force": true}
+    # (a smoke test) asks for a wake regardless.
+    gated = os.environ.get("WAKE_GATE", "") == "on"
+    forced = isinstance(event, dict) and event.get("force") is True
+    plan = (
+        _wake_plan(session, table_name, sandbox_id, time.time())
+        if gated
+        else {"wake": True, "reason": "ungated", "due_at": None, "job": ""}
+    )
+    if gated and not relay and not forced and not plan["wake"]:
+        LOGGER.info("No wake for %s: %s", sandbox_id, plan["reason"])
+        return {"sandboxId": sandbox_id, "outcome": "not-due", "reason": plan["reason"]}
+    LOGGER.info("Waking %s: %s", sandbox_id, plan["reason"] if not relay else "relay")
     # Read BEFORE claiming anything, so the comparison afterwards answers "did
     # this wake persist something" rather than "is there any state at all".
     inherited = event.get("generationBefore") if isinstance(event, dict) and relay else None
@@ -241,6 +257,9 @@ def handler(event: Any, _context: Any) -> dict[str, object]:
     def gateway_get(path: str) -> object:
         return _gateway_get(runtime, runtime_arn, qualifier, runtime_session_id, binding, path)
 
+    if not relay:
+        _catch_up(runtime, runtime_arn, qualifier, runtime_session_id, binding, plan)
+
     held = _hold_while_busy(gateway_get, _context, poll_seconds, stop_reserve)
     if held == "deadline":
         if relay < max_relays:
@@ -301,6 +320,173 @@ def handler(event: Any, _context: Any) -> dict[str, object]:
     }
 
 
+#: How long after its due time a missed occurrence is still worth running. Past
+#: this, a late "9 o'clock report" is noise, and the next occurrence is the plan.
+_CATCH_UP_GRACE_SECONDS = 1800
+#: A record not touched for this long, with no published schedule (an older
+#: runtime), still gets the old periodic wake so its interval jobs catch up.
+_LEGACY_WAKE_SECONDS = 6 * 3600
+#: A sandbox held by something else is left alone -- unless the hold is this old,
+#: which is a stale record (a container that died mid-start), not a live user.
+_STALE_HOLD_SECONDS = 1200
+
+
+def _wake_lead(restore_seconds: int | None) -> int:
+    """Wake this far before the due time: the sandbox's own cold start, padded.
+
+    Measured per sandbox and published on every receipt, so a 950 MB workspace
+    that takes two minutes to restore is woken earlier than an empty one, with
+    nobody configuring it. Bounded both ways: too little and the job's minute
+    passes during the restore, too much and the machine endpoint's idle timeout
+    reclaims the sandbox before the minute arrives.
+    """
+    if restore_seconds is None:
+        return 180
+    return max(90, min(600, int(restore_seconds * 1.5) + 30))
+
+
+def _iso_epoch(value: object) -> float | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _wake_plan(session: Any, table_name: str, sandbox_id: str, now: float) -> dict[str, Any]:
+    """Decide from the sandbox record whether this tick should wake it, and why."""
+    plan: dict[str, Any] = {"wake": False, "reason": "", "due_at": None, "job": ""}
+    if not table_name:
+        plan.update(wake=True, reason="no record to consult")
+        return plan
+    try:
+        item = (
+            session.client("dynamodb")
+            .get_item(
+                TableName=table_name,
+                Key={"pk": {"S": f"SANDBOX#{sandbox_id}"}, "sk": {"S": "METADATA"}},
+                ProjectionExpression="#s, updatedAt, nextDueAt, nextDueJob, restoreSeconds",
+                ExpressionAttributeNames={"#s": "state"},
+            )
+            .get("Item")
+        )
+    except (ClientError, KeyError) as error:
+        # Unable to look: waking costs one cycle, a missed job costs a promise.
+        plan.update(wake=True, reason=f"record unreadable ({error})")
+        return plan
+    if not item:
+        plan["reason"] = "no such sandbox"
+        return plan
+    state = item.get("state", {}).get("S", "")
+    updated = _iso_epoch(item.get("updatedAt", {}).get("S"))
+    held_for = now - updated if updated is not None else None
+    if state != "STOPPED" and held_for is not None and held_for < _STALE_HOLD_SECONDS:
+        # Somebody is using it, or a wake is already in progress: the scheduler
+        # inside the sandbox is running, so there is nothing to wake.
+        plan["reason"] = f"sandbox is {state}"
+        return plan
+    raw_due = item.get("nextDueAt", {}).get("N")
+    if raw_due is None:
+        if held_for is None or held_for >= _LEGACY_WAKE_SECONDS:
+            plan.update(wake=True, reason="no published schedule; periodic wake")
+        else:
+            plan["reason"] = "no published schedule; periodic wake not yet due"
+        return plan
+    due_at = int(raw_due)
+    raw_restore = item.get("restoreSeconds", {}).get("N")
+    lead = _wake_lead(int(raw_restore) if raw_restore is not None else None)
+    plan.update(due_at=due_at, job=item.get("nextDueJob", {}).get("S", ""))
+    if due_at == 0:
+        plan["reason"] = "nothing scheduled"
+    elif now < due_at - lead:
+        plan["reason"] = f"due in {int(due_at - now)}s, lead {lead}s"
+    elif updated is not None and updated >= due_at:
+        # Already woken (and stopped) for this occurrence; a fresh due time
+        # arrives with that wake's final receipt.
+        plan["reason"] = "already handled this occurrence"
+    elif now - due_at > _CATCH_UP_GRACE_SECONDS:
+        plan["reason"] = "occurrence too old to catch up"
+    else:
+        plan.update(wake=True, reason=f"due at {due_at}, lead {lead}s")
+    return plan
+
+
+def _catch_up(
+    runtime: Any,
+    runtime_arn: str,
+    qualifier: str,
+    runtime_session_id: str,
+    binding: str,
+    plan: dict[str, Any],
+) -> None:
+    """Run a cron-expression job whose minute passed while the sandbox restored.
+
+    An interval job stays due and fires on its own; an expression job is only
+    due DURING its minute, and a slow restore can land after it. So once the
+    gateway is up, a job the record says was due -- and has not run since --
+    is triggered once. Best effort: logged, never raised.
+    """
+    due_at, job = plan.get("due_at"), plan.get("job")
+    if not job or not isinstance(due_at, int) or due_at > time.time():
+        return
+    crons = _gateway_get(runtime, runtime_arn, qualifier, runtime_session_id, binding, "/api/crons")
+    jobs = crons.get("jobs") if isinstance(crons, dict) else None
+    match = (
+        next(
+            (j for j in jobs if isinstance(j, dict) and j.get("id") == job),
+            None,
+        )
+        if isinstance(jobs, list)
+        else None
+    )
+    if match is None:
+        LOGGER.info("Catch-up: job %s no longer exists.", job)
+        return
+    last_run = match.get("last_run_ts")
+    if isinstance(last_run, int | float) and last_run >= due_at:
+        return
+    _gateway_request(
+        runtime,
+        runtime_arn,
+        qualifier,
+        runtime_session_id,
+        binding,
+        "POST",
+        f"/api/crons/{job}/run",
+    )
+    LOGGER.info("Catch-up: triggered job %s, due at %s.", job, due_at)
+
+
+def _gateway_request(
+    runtime: Any,
+    runtime_arn: str,
+    qualifier: str,
+    runtime_session_id: str,
+    binding: str,
+    method: str,
+    path: str,
+) -> object:
+    envelope = {
+        "version": "kirocrew-agentcore.v1",
+        "requestId": _ulid(),
+        "bindingToken": binding,
+        "operation": "kirocrew.http",
+        "payload": {"method": method, "path": path, "transport": "http", "headers": {}, "body": ""},
+    }
+    try:
+        answer = runtime.invoke_agent_runtime(
+            agentRuntimeArn=runtime_arn,
+            qualifier=qualifier,
+            runtimeSessionId=runtime_session_id,
+            payload=json.dumps(envelope).encode(),
+        )
+        return _gateway_body(answer["response"].read())
+    except (ClientError, ValueError, KeyError, AttributeError) as error:
+        LOGGER.warning("Gateway %s %s failed: %s", method, path, error)
+        return None
+
+
 def _gateway_get(
     runtime: Any,
     runtime_arn: str,
@@ -315,24 +501,9 @@ def _gateway_get(
     count as idle -- otherwise a broken gateway would keep its sandbox (and its
     bill) alive for the whole relay budget.
     """
-    envelope = {
-        "version": "kirocrew-agentcore.v1",
-        "requestId": _ulid(),
-        "bindingToken": binding,
-        "operation": "kirocrew.http",
-        "payload": {"method": "GET", "path": path, "transport": "http", "headers": {}, "body": ""},
-    }
-    try:
-        answer = runtime.invoke_agent_runtime(
-            agentRuntimeArn=runtime_arn,
-            qualifier=qualifier,
-            runtimeSessionId=runtime_session_id,
-            payload=json.dumps(envelope).encode(),
-        )
-        return _gateway_body(answer["response"].read())
-    except (ClientError, ValueError, KeyError, AttributeError) as error:
-        LOGGER.warning("Busy probe %s failed: %s", path, error)
-        return None
+    return _gateway_request(
+        runtime, runtime_arn, qualifier, runtime_session_id, binding, "GET", path
+    )
 
 
 def _gateway_body(raw: bytes) -> object:

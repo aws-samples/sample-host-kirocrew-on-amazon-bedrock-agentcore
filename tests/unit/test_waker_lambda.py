@@ -14,6 +14,7 @@ import importlib
 import json
 import re
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -868,3 +869,198 @@ def test_a_relay_needs_to_know_its_own_name(waker: Any, monkeypatch: pytest.Monk
     monkeypatch.delenv("AWS_LAMBDA_FUNCTION_NAME", raising=False)
     with pytest.raises(RuntimeError):
         waker._relay(_StubLambda(), None, 1, None)
+
+
+# --- Waking at the job's time rather than every six hours ---------------------
+
+
+class _PlanDynamo:
+    """A sandbox record carrying the published wake hints."""
+
+    def __init__(self, item: dict[str, Any] | None, error: bool = False) -> None:
+        self.item = item
+        self.error = error
+
+    def get_item(self, **kwargs: Any) -> dict[str, Any]:
+        if self.error:
+            raise ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, "GetItem")
+        if "ExpressionAttributeNames" not in kwargs:
+            # The generation read, which does not concern the plan.
+            return {"Item": {"lastCheckpointGeneration": {"N": "5"}}}
+        return {} if self.item is None else {"Item": self.item}
+
+
+def _record(
+    state: str = "STOPPED",
+    updated: float | None = None,
+    due: int | None = None,
+    job: str = "",
+    restore: int | None = None,
+) -> dict[str, Any]:
+    item: dict[str, Any] = {"state": {"S": state}}
+    if updated is not None:
+        stamp = datetime.fromtimestamp(updated, tz=UTC).isoformat()
+        item["updatedAt"] = {"S": stamp.replace("+00:00", "Z")}
+    if due is not None:
+        item["nextDueAt"] = {"N": str(due)}
+        item["nextDueJob"] = {"S": job}
+    if restore is not None:
+        item["restoreSeconds"] = {"N": str(restore)}
+    return item
+
+
+NOW = 1_800_000_000.0
+
+
+def _plan(waker: Any, item: dict[str, Any] | None, error: bool = False) -> dict[str, Any]:
+    class _S:
+        def client(self, name: str) -> Any:
+            del name
+            return _PlanDynamo(item, error)
+
+    return waker._wake_plan(_S(), "table", "sbx_TEST", NOW)
+
+
+def test_the_lead_follows_each_sandboxs_own_restore_time(waker: Any) -> None:
+    assert waker._wake_lead(None) == 180
+    assert waker._wake_lead(10) == 90  # floor: never closer than the restore needs
+    assert waker._wake_lead(100) == 180  # 100 * 1.5 + 30
+    assert waker._wake_lead(10_000) == 600  # ceiling: idle reclaim would win
+
+
+def test_a_plan_wakes_only_inside_the_lead_window(waker: Any) -> None:
+    due = int(NOW) + 1000
+    assert _plan(waker, _record(due=due, restore=100))["wake"] is False
+    assert "due in" in _plan(waker, _record(due=due, restore=100))["reason"]
+    inside = _plan(waker, _record(updated=NOW - 3600, due=int(NOW) + 100, job="j1", restore=100))
+    assert inside["wake"] is True
+    assert inside["job"] == "j1"
+    assert inside["due_at"] == int(NOW) + 100
+
+
+def test_a_plan_never_wakes_a_sandbox_with_nothing_scheduled(waker: Any) -> None:
+    assert _plan(waker, _record(due=0))["reason"] == "nothing scheduled"
+
+
+def test_a_plan_leaves_a_sandbox_in_use_alone(waker: Any) -> None:
+    held = _plan(waker, _record(state="READY", updated=NOW - 60, due=int(NOW)))
+    assert held["wake"] is False
+    assert "READY" in held["reason"]
+    # A hold this old is a dead container's leftover, not a live user.
+    stale = _plan(waker, _record(state="STARTING", updated=NOW - 7200, due=int(NOW) + 30))
+    assert stale["wake"] is True
+
+
+def test_a_plan_does_not_wake_twice_for_one_occurrence(waker: Any) -> None:
+    due = int(NOW) - 60
+    assert _plan(waker, _record(updated=NOW - 30, due=due))["reason"] == (
+        "already handled this occurrence"
+    )
+
+
+def test_a_plan_catches_up_a_recent_miss_but_not_an_old_one(waker: Any) -> None:
+    recent = _plan(waker, _record(updated=NOW - 7200, due=int(NOW) - 600, job="daily9"))
+    assert recent["wake"] is True
+    old = _plan(waker, _record(updated=NOW - 7200, due=int(NOW) - 3600))
+    assert old["reason"] == "occurrence too old to catch up"
+
+
+def test_an_older_runtime_keeps_the_periodic_wake(waker: Any) -> None:
+    assert _plan(waker, _record(updated=NOW - 7 * 3600))["wake"] is True
+    assert _plan(waker, _record(updated=NOW - 600))["wake"] is False
+    assert _plan(waker, _record())["wake"] is True  # no timestamp at all
+
+
+def test_a_plan_errs_toward_waking_when_it_cannot_look(waker: Any) -> None:
+    assert _plan(waker, None)["reason"] == "no such sandbox"
+    assert _plan(waker, None, error=True)["wake"] is True
+    assert waker._wake_plan(None, "", "sbx_TEST", NOW)["wake"] is True
+    assert waker._iso_epoch("not a time") is None
+    assert waker._iso_epoch(None) is None
+
+
+def test_a_gated_tick_that_is_not_due_costs_one_read(
+    waker: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lambda_client, runtime = _StubLambda(), _StubRuntime()
+    _wire(waker, monkeypatch, lambda_client, runtime, _PlanDynamo(_record(due=0)))
+    monkeypatch.setenv("WAKE_GATE", "on")
+
+    result = waker.handler({}, None)
+
+    assert result["outcome"] == "not-due"
+    assert lambda_client.calls == []
+    assert runtime.calls == []
+
+
+def test_force_wakes_regardless_of_the_plan(waker: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    lambda_client, runtime = _StubLambda(), _StubRuntime()
+    _wire(waker, monkeypatch, lambda_client, runtime, _PlanDynamo(_record(due=0)))
+    monkeypatch.setenv("WAKE_GATE", "on")
+    monkeypatch.setenv("WAKE_DWELL_SECONDS", "0")
+
+    result = waker.handler({"force": True}, None)
+
+    assert "outcome" not in result or result["outcome"] != "not-due"
+    assert _operations(runtime)[-1] == "sandbox.prepare_stop"
+
+
+class _CronRuntime(_StubRuntime):
+    def __init__(self, jobs: object) -> None:
+        super().__init__()
+        self.jobs = jobs
+
+    def invoke_agent_runtime(self, **kwargs: Any) -> dict[str, Any]:
+        envelope = json.loads(kwargs["payload"])
+        if envelope["payload"].get("path", "").startswith("/api/crons"):
+            self.calls.append(kwargs)
+            body = json.dumps({"jobs": self.jobs})
+            events = {"events": [{"operation": "output.delta", "payload": {"body": body}}]}
+            return {"statusCode": 200, "response": _StubPayload(json.dumps(events).encode())}
+        return super().invoke_agent_runtime(**kwargs)
+
+
+def _posted(runtime: Any) -> list[str]:
+    return [
+        json.loads(call["payload"])["payload"]["path"]
+        for call in runtime.calls
+        if json.loads(call["payload"])["payload"].get("method") == "POST"
+    ]
+
+
+def test_a_missed_cron_minute_is_run_once_after_restore(waker: Any) -> None:
+    due = int(waker.time.time()) - 60
+    runtime = _CronRuntime([{"id": "daily9", "last_run_ts": due - 86400}])
+    plan = {"due_at": due, "job": "daily9"}
+    waker._catch_up(runtime, "arn", "q", "s", "b", plan)
+    assert _posted(runtime) == ["/api/crons/daily9/run"]
+
+
+def test_catch_up_skips_a_job_that_already_ran_or_is_gone(waker: Any) -> None:
+    due = int(waker.time.time()) - 60
+    ran = _CronRuntime([{"id": "daily9", "last_run_ts": due + 5}])
+    waker._catch_up(ran, "arn", "q", "s", "b", {"due_at": due, "job": "daily9"})
+    assert _posted(ran) == []
+    gone = _CronRuntime([{"id": "other"}])
+    waker._catch_up(gone, "arn", "q", "s", "b", {"due_at": due, "job": "daily9"})
+    assert _posted(gone) == []
+    broken = _CronRuntime("nope")
+    waker._catch_up(broken, "arn", "q", "s", "b", {"due_at": due, "job": "daily9"})
+    assert _posted(broken) == []
+
+
+def test_catch_up_ignores_loops_and_future_times(waker: Any) -> None:
+    runtime = _CronRuntime([])
+    waker._catch_up(runtime, "arn", "q", "s", "b", {"due_at": NOW, "job": ""})
+    waker._catch_up(runtime, "arn", "q", "s", "b", {"due_at": 9_999_999_999, "job": "x"})
+    waker._catch_up(runtime, "arn", "q", "s", "b", {"due_at": None, "job": "x"})
+    assert runtime.calls == []
+
+
+def test_a_gateway_request_that_fails_is_reported_not_raised(waker: Any) -> None:
+    class _Broken:
+        def invoke_agent_runtime(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            raise ClientError({"Error": {"Code": "X", "Message": "down"}}, "Invoke")
+
+    assert waker._gateway_request(_Broken(), "a", "q", "s", "b", "POST", "/x") is None

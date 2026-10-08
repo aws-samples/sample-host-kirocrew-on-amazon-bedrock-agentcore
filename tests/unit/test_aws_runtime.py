@@ -1334,6 +1334,61 @@ def probe_backend(
     )
 
 
+def test_next_due_is_the_earliest_enabled_job_or_active_loop() -> None:
+    class Hints:
+        next_due_at: int | None = None
+        next_due_job = ""
+
+    async def scenario() -> None:
+        loopback = ProbeLoopback()
+        backend = probe_backend(loopback)
+        hints = Hints()
+
+        # A failed read keeps whatever was published before.
+        hints.next_due_at = 123
+        await backend._publish_next_due(hints)
+        assert hints.next_due_at == 123
+
+        loopback.responses["/api/crons"] = {
+            "jobs": [
+                {"id": "daily9", "enabled": True, "next_run_ts": 1_800_000_900.5},
+                {"id": "paused", "enabled": False, "next_run_ts": 1_800_000_000},
+                {"id": "never", "enabled": True, "next_run_ts": None},
+                "not-a-job",
+            ]
+        }
+        loopback.responses["/api/autonudge"] = {
+            "loops": [
+                {"active": True, "next_due_ts": 1_800_000_500},
+                {"active": False, "next_due_ts": 1_800_000_100},
+                {"active": True, "next_due_ts": None},
+                ["not", "a", "loop"],
+            ]
+        }
+        await backend._publish_next_due(hints)
+        # The Issue Radar-style loop wakes first, and a loop names no cron job.
+        assert (hints.next_due_at, hints.next_due_job) == (1_800_000_500, "")
+
+        loopback.responses["/api/autonudge"] = {"loops": []}
+        await backend._publish_next_due(hints)
+        assert (hints.next_due_at, hints.next_due_job) == (1_800_000_900, "daily9")
+
+        # A job id the broker would refuse is published without the id.
+        loopback.responses["/api/crons"] = {
+            "jobs": [{"id": "bad id!", "enabled": True, "next_run_ts": 1_800_000_000}]
+        }
+        await backend._publish_next_due(hints)
+        assert (hints.next_due_at, hints.next_due_job) == (1_800_000_000, "")
+
+        # Nothing scheduled is published as 0, so the scheduler does not wake.
+        loopback.responses["/api/crons"] = {"jobs": "nope"}
+        loopback.responses["/api/autonudge"] = ["nope"]
+        await backend._publish_next_due(hints)
+        assert (hints.next_due_at, hints.next_due_job) == (0, "")
+
+    asyncio.run(scenario())
+
+
 def test_background_busy_detects_each_activity_source_and_tolerates_failures() -> None:
     async def scenario() -> None:
         loopback = ProbeLoopback()

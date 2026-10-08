@@ -609,6 +609,44 @@ def _list(s3: Any, sandbox_id: str, event: Mapping[str, object]) -> dict[str, ob
     return {"names": sorted(names)}
 
 
+_JOB_ID = re.compile(r"^[A-Za-z0-9_.:-]{0,128}$")
+# A wake scheduled years out is a corrupt clock, not a plan; cap what is stored.
+_MAX_DUE_AHEAD = timedelta(days=400)
+
+
+def _schedule_hints(event: Mapping[str, object]) -> tuple[str, dict[str, dict[str, str]]]:
+    """Validate the optional wake hints a receipt carries; return SET clause + values.
+
+    ``nextDueAt`` (epoch seconds, 0 = nothing scheduled), ``nextDueJob`` (the
+    cron job id due then, empty for a loop) and ``restoreSeconds`` (how long the
+    last restore took). They ride on the receipt because a receipt is the one
+    write a container already makes that a scheduler outside can read, and they
+    are written in the same conditional update, so a stale container -- whose
+    receipt is refused -- cannot publish a schedule either. All optional: an
+    older runtime sends none and its record keeps whatever it had.
+    """
+    clauses: list[str] = []
+    values: dict[str, dict[str, str]] = {}
+    due = event.get("nextDueAt")
+    if due is not None:
+        horizon = int((datetime.now(UTC) + _MAX_DUE_AHEAD).timestamp())
+        if type(due) is not int or due < 0 or due > horizon:
+            raise ValueError("Invalid checkpoint receipt request.")
+        job = event.get("nextDueJob", "")
+        if not isinstance(job, str) or not _JOB_ID.fullmatch(job):
+            raise ValueError("Invalid checkpoint receipt request.")
+        clauses.append("nextDueAt = :nextDueAt, nextDueJob = :nextDueJob")
+        values[":nextDueAt"] = {"N": str(due)}
+        values[":nextDueJob"] = {"S": job}
+    restore = event.get("restoreSeconds")
+    if restore is not None:
+        if type(restore) is not int or restore < 0 or restore > 3600:
+            raise ValueError("Invalid checkpoint receipt request.")
+        clauses.append("restoreSeconds = :restoreSeconds")
+        values[":restoreSeconds"] = {"N": str(restore)}
+    return ("".join(", " + clause for clause in clauses), values)
+
+
 def _checkpoint_receipt(
     s3: Any,
     kms: Any,
@@ -666,6 +704,7 @@ def _checkpoint_receipt(
         raise ValueError("Committed checkpoint timestamp is invalid.")
     now = datetime.now(UTC)
     table_name = _required("SANDBOX_TABLE")
+    schedule_set, schedule_values = _schedule_hints(event)
     # Without a base the pointer only has to move forward. With one, it must
     # not have moved past the base: a pointer ahead of it means another
     # container committed generations this working copy never saw, and
@@ -679,8 +718,9 @@ def _checkpoint_receipt(
     if final:
         update_expression = (
             "SET #state = :stopping, lastCheckpointGeneration = :generation, "
-            "lastCheckpointManifestDigest = :digest, updatedAt = :updated "
-            "ADD stateVersion :one"
+            "lastCheckpointManifestDigest = :digest, updatedAt = :updated"
+            + schedule_set
+            + " ADD stateVersion :one"
         )
         condition_expression = (
             "runtimeSessionId = :session AND "
@@ -698,8 +738,9 @@ def _checkpoint_receipt(
     else:
         update_expression = (
             "SET lastCheckpointGeneration = :generation, "
-            "lastCheckpointManifestDigest = :digest, updatedAt = :updated "
-            "ADD stateVersion :one"
+            "lastCheckpointManifestDigest = :digest, updatedAt = :updated"
+            + schedule_set
+            + " ADD stateVersion :one"
         )
         condition_expression = (
             "runtimeSessionId = :session AND "
@@ -734,6 +775,7 @@ def _checkpoint_receipt(
                         ":updated": {"S": now.isoformat().replace("+00:00", "Z")},
                         **state_values,
                         **base_values,
+                        **schedule_values,
                     },
                 }
             },

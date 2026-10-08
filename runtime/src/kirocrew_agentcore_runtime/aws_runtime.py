@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 import shutil
 import signal
 import time
@@ -64,6 +65,10 @@ from kirocrew_agentcore_runtime.supervisor import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+# When this container process started; restore timing is measured from here.
+_PROCESS_STARTED = time.monotonic()
+# Same shape the broker accepts for nextDueJob; anything else is published empty.
+_CRON_JOB_ID = re.compile(r"^[A-Za-z0-9_.:-]{0,128}$")
 
 
 class AwsKmsSignatureVerifier:
@@ -505,6 +510,7 @@ class ProductionRuntimeBackend:
     async def _commit_checkpoint(self, *, final: bool) -> tuple[CheckpointReceipt, str]:
         async with self._checkpoint_lock:
             engine, store, broker_client = self._checkpoint_context()
+            await self._publish_next_due(broker_client)
             generation = (store.latest_committed() or 0) + 1
             receipt = await asyncio.to_thread(engine.checkpoint, generation, final=final)
             checkpoint_receipt = await asyncio.to_thread(
@@ -514,6 +520,49 @@ class ProductionRuntimeBackend:
                 final=final,
             )
             return receipt, checkpoint_receipt
+
+    async def _publish_next_due(self, broker_client: Any) -> None:
+        """Tell the receipt when this sandbox next needs to be awake.
+
+        The earliest of: every enabled cron job's ``next_run_ts``, and every
+        active auto-nudge loop's ``next_due_ts`` (an app crew such as Issue
+        Radar works in cycles driven by such a loop, so the gap between two
+        cycles is a wake the scheduler has to plan for too). 0 means nothing is
+        scheduled, which tells the scheduler outside not to wake at all.
+
+        A failed read leaves the previous value alone rather than publishing
+        "nothing scheduled": wrongly silencing a job is worse than one wake that
+        finds nothing to do.
+        """
+        candidates: list[tuple[float, str]] = []
+        try:
+            crons = await asyncio.wait_for(self._loopback.fetch_json("/api/crons"), 5)
+            loops = await asyncio.wait_for(self._loopback.fetch_json("/api/autonudge"), 5)
+        except Exception:
+            _LOGGER.warning("Could not read the schedule; keeping the published wake time.")
+            return
+        jobs = crons.get("jobs") if isinstance(crons, Mapping) else None
+        for job in jobs if isinstance(jobs, list) else []:
+            if not isinstance(job, Mapping) or not job.get("enabled"):
+                continue
+            due = job.get("next_run_ts")
+            if isinstance(due, int | float) and due > 0:
+                job_id = job.get("id")
+                candidates.append((float(due), job_id if isinstance(job_id, str) else ""))
+        armed = loops.get("loops") if isinstance(loops, Mapping) else None
+        for loop in armed if isinstance(armed, list) else []:
+            if not isinstance(loop, Mapping) or not loop.get("active"):
+                continue
+            due = loop.get("next_due_ts")
+            if isinstance(due, int | float) and due > 0:
+                candidates.append((float(due), ""))
+        if candidates:
+            due_at, job_id = min(candidates)
+            broker_client.next_due_at = int(due_at)
+            broker_client.next_due_job = job_id if _CRON_JOB_ID.fullmatch(job_id) else ""
+        else:
+            broker_client.next_due_at = 0
+            broker_client.next_due_job = ""
 
     def _schedule_durability_checkpoint(self, reason: str) -> None:
         if self._checkpoint_engine is None:
@@ -1026,6 +1075,11 @@ class AwsSessionInitializer:
         self._supervisor.start(timeout_seconds=self._startup_timeout)
         if not self._supervisor.ready:
             raise SessionInitializationError("Loopback gateway did not become ready.")
+        # Container start to gateway ready: the cold-start cost a scheduled wake
+        # has to absorb before a job can fire. Measured here and published on
+        # every receipt, so the waker can wake a big workspace earlier than an
+        # empty one without anybody configuring it per user.
+        client.restore_seconds = max(0, int(time.monotonic() - _PROCESS_STARTED))
         checkpoint_engine = CheckpointEngine(
             self._workspace,
             claims.sandbox_id,

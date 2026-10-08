@@ -782,3 +782,61 @@ def test_checkpoint_receipt_refuses_a_pointer_that_moved_past_the_base() -> None
             broker._checkpoint_receipt(
                 s3, kms, dynamo, SANDBOX, claims, {**request, "baseGeneration": base}
             )
+
+
+def test_checkpoint_receipt_publishes_the_wake_hints_in_the_same_update() -> None:
+    s3, kms, dynamo = FakeS3(), FakeKms(), FakeDynamo()
+    s3.objects[f"sandboxes/{SANDBOX}/commits/9.json"] = json.dumps(
+        {"committedAt": "2026-10-08T03:00:00Z", "generation": 9, "manifestDigest": DIGEST}
+    ).encode()
+    claims = broker._binding(kms, token())
+    request = {
+        "final": False,
+        "generation": 9,
+        "manifestDigest": DIGEST,
+        "runtimeSessionId": SESSION,
+    }
+    due = int(datetime.now(UTC).timestamp()) + 3600
+    broker._checkpoint_receipt(
+        s3,
+        kms,
+        dynamo,
+        SANDBOX,
+        claims,
+        {**request, "nextDueAt": due, "nextDueJob": "a1b2c3d4", "restoreSeconds": 95},
+    )
+    update = dynamo.transactions[-1]["TransactItems"][0]["Update"]  # type: ignore[index]
+    # Written in the SAME conditional update as the generation pointer, so a
+    # stale container whose receipt is refused cannot publish a schedule.
+    assert "nextDueAt = :nextDueAt, nextDueJob = :nextDueJob" in update["UpdateExpression"]
+    assert "restoreSeconds = :restoreSeconds" in update["UpdateExpression"]
+    values = update["ExpressionAttributeValues"]
+    assert values[":nextDueAt"] == {"N": str(due)}
+    assert values[":nextDueJob"] == {"S": "a1b2c3d4"}
+    assert values[":restoreSeconds"] == {"N": "95"}
+
+    # "Nothing scheduled" is a real value, and a loop's due time carries no job id.
+    broker._checkpoint_receipt(s3, kms, dynamo, SANDBOX, claims, {**request, "nextDueAt": 0})
+    nothing = dynamo.transactions[-1]["TransactItems"][0]["Update"]  # type: ignore[index]
+    assert nothing["ExpressionAttributeValues"][":nextDueAt"] == {"N": "0"}
+    assert nothing["ExpressionAttributeValues"][":nextDueJob"] == {"S": ""}
+
+    # An older runtime sends no hints and leaves the stored ones alone.
+    broker._checkpoint_receipt(s3, kms, dynamo, SANDBOX, claims, request)
+    legacy = dynamo.transactions[-1]["TransactItems"][0]["Update"]  # type: ignore[index]
+    assert "nextDueAt" not in legacy["UpdateExpression"]
+    assert "restoreSeconds" not in legacy["UpdateExpression"]
+
+    for bad in (
+        {"nextDueAt": -1},
+        {"nextDueAt": "soon"},
+        {"nextDueAt": True},
+        {"nextDueAt": due + 10 * 365 * 86400},
+        {"nextDueAt": due, "nextDueJob": "bad job id!"},
+        {"nextDueAt": due, "nextDueJob": 7},
+        {"restoreSeconds": -5},
+        {"restoreSeconds": 99999},
+        {"restoreSeconds": 1.5},
+    ):
+        with pytest.raises(ValueError, match="Invalid checkpoint receipt request"):
+            broker._checkpoint_receipt(s3, kms, dynamo, SANDBOX, claims, {**request, **bad})

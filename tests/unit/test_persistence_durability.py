@@ -194,6 +194,23 @@ def test_brokered_store_requires_valid_manifest_and_monotonic_commits() -> None:
         store.committed_generations()
 
 
+def test_next_generation_skips_a_manifest_orphaned_by_an_interrupted_checkpoint() -> None:
+    """A stop reclaimed between manifest upload and commit took 396 forever."""
+    _, objects, broker, store = components()
+    assert store.next_generation() == 1
+    commit(store, broker, 1, manifest(1), {})
+    assert store.next_generation() == 2
+    # The interrupted checkpoint: manifest 2 written create-only, never committed.
+    store.upload_manifest(2, broker.cipher(SANDBOX_ID).encrypt(b"{}"))
+    objects.objects[f"snapshots/{SANDBOX_ID}/manifests/stray.json.enc"] = b"x"
+    assert store.latest_committed() == 1
+    assert store.next_generation() == 3
+    # The gap is harmless: the next commit lands and becomes the latest.
+    commit(store, broker, 3, manifest(3), {})
+    assert store.latest_committed() == 3
+    assert store.next_generation() == 4
+
+
 def test_brokered_store_rejects_malformed_commit_and_manifest_objects() -> None:
     _, objects, broker, store = components()
     commit_key = f"snapshots/{SANDBOX_ID}/commits/1.json"

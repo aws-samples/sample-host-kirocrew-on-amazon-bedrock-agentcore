@@ -329,6 +329,9 @@ class FakeCheckpointStore:
     def latest_committed(self) -> int:
         return 4
 
+    def next_generation(self) -> int:
+        return 5
+
 
 class FakeBrokerClient:
     def __init__(self) -> None:

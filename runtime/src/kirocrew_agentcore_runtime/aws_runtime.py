@@ -511,7 +511,7 @@ class ProductionRuntimeBackend:
         async with self._checkpoint_lock:
             engine, store, broker_client = self._checkpoint_context()
             await self._publish_next_due(broker_client)
-            generation = (store.latest_committed() or 0) + 1
+            generation = store.next_generation()
             receipt = await asyncio.to_thread(engine.checkpoint, generation, final=final)
             checkpoint_receipt = await asyncio.to_thread(
                 broker_client.checkpoint_receipt,

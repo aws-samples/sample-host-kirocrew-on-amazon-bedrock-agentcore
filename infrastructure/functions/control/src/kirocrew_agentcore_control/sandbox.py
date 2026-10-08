@@ -93,6 +93,12 @@ class SandboxRecord:
     created_at: datetime
     updated_at: datetime
     init_expires_at: datetime | None = None
+    # Wake hints the persistence broker publishes on each checkpoint receipt
+    # (nextDueAt / nextDueJob / restoreSeconds) as raw DynamoDB attribute
+    # values. The control plane does not interpret them, but it rewrites the
+    # whole record with PutItem on every transition, so it must carry them
+    # through or Stop safely would erase the schedule the waker reads.
+    wake_hints: tuple[tuple[str, str, str], ...] = ()
 
 
 def init_lease_active(record: SandboxRecord, now: datetime) -> bool:

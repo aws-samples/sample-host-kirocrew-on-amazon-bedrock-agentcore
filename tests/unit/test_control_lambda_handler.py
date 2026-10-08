@@ -433,3 +433,31 @@ def test_registry_history_queries_events_newest_first() -> None:
     assert request["Limit"] == 20
     with pytest.raises(ValueError, match="positive"):
         store.history(SANDBOX, limit=0)
+
+
+def test_state_transition_carries_the_broker_wake_hints_through() -> None:
+    # The broker writes the wake hints with UpdateItem; every control-plane
+    # transition rewrites the whole record with PutItem. A hint the control
+    # plane dropped there is a scheduled job the waker never wakes for.
+    fake = FakeDynamo()
+    store = registry(fake)
+    item = store._record_item(record())
+    item["nextDueAt"] = {"N": "1800000000"}
+    item["nextDueJob"] = {"S": "4d18d844"}
+    item["restoreSeconds"] = {"N": "130"}
+    item["somethingUnrelated"] = {"S": "not carried"}
+    parsed = control.DynamoSandboxRegistry._record(item)
+    assert parsed.wake_hints == (
+        ("nextDueAt", "N", "1800000000"),
+        ("nextDueJob", "S", "4d18d844"),
+        ("restoreSeconds", "N", "130"),
+    )
+    rewritten = control.DynamoSandboxRegistry._record_item(
+        replace(parsed, state_version=parsed.state_version + 1)
+    )
+    assert rewritten["nextDueAt"] == {"N": "1800000000"}
+    assert rewritten["nextDueJob"] == {"S": "4d18d844"}
+    assert rewritten["restoreSeconds"] == {"N": "130"}
+    assert "somethingUnrelated" not in rewritten
+    # A record that never had hints gains none.
+    assert "nextDueAt" not in control.DynamoSandboxRegistry._record_item(record())

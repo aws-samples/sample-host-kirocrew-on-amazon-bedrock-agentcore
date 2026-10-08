@@ -156,6 +156,7 @@ resource "aws_lambda_function" "waker" {
       WAKE_POLL_SECONDS          = "30"
       WAKE_STOP_RESERVE_SECONDS  = "180"
       WAKE_MAX_RELAYS            = tostring(var.wake_max_relays)
+      WAKE_GATE                  = "on"
       SANDBOX_TABLE_NAME         = var.sandbox_table_name
     }
   }

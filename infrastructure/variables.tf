@@ -232,9 +232,9 @@ variable "enable_scheduled_wake" {
 }
 
 variable "wake_schedule_expression" {
-  description = "EventBridge Scheduler expression for the wake, e.g. cron(50 8 * * ? *) or rate(6 hours). Fire EARLY of the moment the in-sandbox job cares about: the sandbox has to be claimed and restored before its scheduler exists to notice the time."
+  description = "How often the waker CHECKS whether the sandbox is due. The sandbox publishes its next job or loop time on every checkpoint, and the waker wakes it only inside that job's lead window, so this is a polling cadence, not the job schedule: a tick that is not due costs one DynamoDB read. Keep rate(1 minute) so a job lands on its minute."
   type        = string
-  default     = "cron(50 8 * * ? *)"
+  default     = "rate(1 minute)"
 }
 
 variable "wake_schedule_enabled" {

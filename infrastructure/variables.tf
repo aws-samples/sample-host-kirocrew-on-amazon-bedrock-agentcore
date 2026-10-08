@@ -288,3 +288,14 @@ variable "wake_path" {
   type        = string
   default     = "/api/status"
 }
+
+variable "wake_max_relays" {
+  description = "How many times a wake may hand over to a fresh waker while the sandbox is still busy. Each leg is up to 15 minutes, so the default of 8 bounds one unattended run at about two hours. The container also stops reporting busy after its own fuse."
+  type        = number
+  default     = 8
+
+  validation {
+    condition     = var.wake_max_relays >= 0 && var.wake_max_relays <= 48
+    error_message = "Relays must be between 0 and 48."
+  }
+}

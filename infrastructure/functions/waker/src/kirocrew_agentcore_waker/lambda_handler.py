@@ -75,7 +75,11 @@ def _required(name: str) -> str:
 
 def handler(event: Any, _context: Any) -> dict[str, object]:
     """Claim the sandbox, then drive one request through the restored gateway."""
-    del event  # The schedule carries no input; every wake is identical.
+    # A scheduled wake carries no input. A RELAY carries two fields: which leg of
+    # the chain it is, and the generation the first leg saw before claiming, so the
+    # final "did this persist" answer is measured against the start of the work.
+    relay = event.get("relay", 0) if isinstance(event, dict) else 0
+    relay = relay if isinstance(relay, int) and relay >= 0 else 0
     subject = _required("COGNITO_SUBJECT")
     sandbox_id = _required("SANDBOX_ID")
     control_function = _required("CONTROL_FUNCTION_NAME")
@@ -83,12 +87,20 @@ def handler(event: Any, _context: Any) -> dict[str, object]:
     qualifier = _required("MACHINE_ENDPOINT_QUALIFIER")
     wake_path = os.environ.get("WAKE_PATH", "/api/status")
     dwell_seconds = int(os.environ.get("WAKE_DWELL_SECONDS", "120"))
+    poll_seconds = max(5, int(os.environ.get("WAKE_POLL_SECONDS", "30")))
+    stop_reserve = int(os.environ.get("WAKE_STOP_RESERVE_SECONDS", "180"))
+    max_relays = int(os.environ.get("WAKE_MAX_RELAYS", "8"))
     table_name = os.environ.get("SANDBOX_TABLE_NAME", "")
 
     session = boto3.Session()
     # Read BEFORE claiming anything, so the comparison afterwards answers "did
     # this wake persist something" rather than "is there any state at all".
-    before = _record_generation(session, table_name, sandbox_id)
+    inherited = event.get("generationBefore") if isinstance(event, dict) and relay else None
+    before = (
+        inherited
+        if isinstance(inherited, int)
+        else _record_generation(session, table_name, sandbox_id)
+    )
 
     lambda_client = session.client("lambda")
     # Invoked directly rather than through the API. That is not a shortcut: the
@@ -215,11 +227,44 @@ def handler(event: Any, _context: Any) -> dict[str, object]:
     # explicitly. `sandbox.prepare_stop` is handled by the runtime itself rather
     # than proxied to the gateway, so it does not depend on KiroCrew still being
     # healthy, and it hands back the generation it wrote.
-    if dwell_seconds > 0:
+    if dwell_seconds > 0 and relay == 0:
         LOGGER.info(
             "Holding sandbox %s awake for %ss so due jobs can fire.", sandbox_id, dwell_seconds
         )
         time.sleep(dwell_seconds)
+
+    # The dwell only gives a due job time to START. A job that is still working
+    # when it ends -- an app crew fixing an issue, an agent turn running tests --
+    # must not have its sandbox checkpointed and stopped under it. So keep the
+    # sandbox until it reports idle, and hand over to a fresh waker before this
+    # one's own Lambda deadline instead of cutting the work off.
+    def gateway_get(path: str) -> object:
+        return _gateway_get(runtime, runtime_arn, qualifier, runtime_session_id, binding, path)
+
+    held = _hold_while_busy(gateway_get, _context, poll_seconds, stop_reserve)
+    if held == "deadline":
+        if relay < max_relays:
+            _relay(lambda_client, _context, relay + 1, before)
+            LOGGER.info(
+                "Sandbox %s still busy at the deadline; handed over to relay %s.",
+                sandbox_id,
+                relay + 1,
+            )
+            return {
+                "sandboxId": sandbox_id,
+                "runtimeSessionId": runtime_session_id,
+                "status": result.get("statusCode"),
+                "outcome": "relayed",
+                "relay": relay + 1,
+            }
+        # The relay budget is a cost bound, not a correctness one: the container
+        # also stops reporting busy after its own fuse, and its busy-to-idle
+        # transition checkpoints. Stopping here commits what exists now.
+        LOGGER.warning(
+            "Sandbox %s still busy after %s relays; checkpointing and stopping.",
+            sandbox_id,
+            relay,
+        )
 
     generation, receipt = _commit_checkpoint(
         runtime, runtime_arn, qualifier, runtime_session_id, binding
@@ -254,6 +299,146 @@ def handler(event: Any, _context: Any) -> dict[str, object]:
         "persisted": persisted,
         "stopped": stopped,
     }
+
+
+def _gateway_get(
+    runtime: Any,
+    runtime_arn: str,
+    qualifier: str,
+    runtime_session_id: str,
+    binding: str,
+    path: str,
+) -> object:
+    """GET one gateway path through the machine endpoint; None when unreadable.
+
+    Never raises: this feeds a busy check, and a probe that cannot be read must
+    count as idle -- otherwise a broken gateway would keep its sandbox (and its
+    bill) alive for the whole relay budget.
+    """
+    envelope = {
+        "version": "kirocrew-agentcore.v1",
+        "requestId": _ulid(),
+        "bindingToken": binding,
+        "operation": "kirocrew.http",
+        "payload": {"method": "GET", "path": path, "transport": "http", "headers": {}, "body": ""},
+    }
+    try:
+        answer = runtime.invoke_agent_runtime(
+            agentRuntimeArn=runtime_arn,
+            qualifier=qualifier,
+            runtimeSessionId=runtime_session_id,
+            payload=json.dumps(envelope).encode(),
+        )
+        return _gateway_body(answer["response"].read())
+    except (ClientError, ValueError, KeyError, AttributeError) as error:
+        LOGGER.warning("Busy probe %s failed: %s", path, error)
+        return None
+
+
+def _gateway_body(raw: bytes) -> object:
+    """Return the first JSON document carried in the answer's event payloads."""
+    try:
+        events = json.loads(raw).get("events", [])
+    except (ValueError, AttributeError, TypeError):
+        return None
+    for event in events:
+        payload = event.get("payload", {}) if isinstance(event, dict) else {}
+        if not isinstance(payload, dict):
+            continue
+        for value in payload.values():
+            if not isinstance(value, str) or not value:
+                continue
+            for decode in (lambda text: base64.b64decode(text, validate=True), str.encode):
+                try:
+                    body = json.loads(decode(value))
+                except (ValueError, TypeError, binascii.Error):
+                    continue
+                if isinstance(body, dict | list):
+                    return body
+    return None
+
+
+def _sandbox_busy(gateway_get: Any) -> bool:
+    """The same four signals the container uses for its own /ping answer.
+
+    Kept in step with ``AwsRuntimeBackend._probe_background_activity``: task
+    runner, chat turns in flight (which is how an app crew such as Issue Radar
+    does its work), subagents, workflows.
+    """
+    runner = gateway_get("/api/taskrunner")
+    if isinstance(runner, dict) and isinstance(runner.get("runs"), list):
+        if any(isinstance(run, dict) and run.get("running") for run in runner["runs"]):
+            return True
+    health = gateway_get("/api/sessions/health")
+    counts = health.get("counts") if isinstance(health, dict) else None
+    if isinstance(counts, dict) and isinstance(counts.get("running"), int):
+        if counts["running"] > 0:
+            return True
+    status = gateway_get("/api/status")
+    if isinstance(status, dict) and isinstance(status.get("subagents"), int):
+        if status["subagents"] > 0:
+            return True
+    workflows = gateway_get("/api/workflows/runs")
+    if isinstance(workflows, dict) and isinstance(workflows.get("runs"), list):
+        if any(
+            isinstance(run, dict) and run.get("status") == "running" for run in workflows["runs"]
+        ):
+            return True
+    return False
+
+
+def _remaining_seconds(context: Any) -> float:
+    remaining = getattr(context, "get_remaining_time_in_millis", None)
+    if callable(remaining):
+        try:
+            return float(remaining()) / 1000.0
+        except (TypeError, ValueError):
+            pass
+    # No Lambda context (a direct call): fall back to the configured timeout.
+    return float(os.environ.get("WAKE_TIMEOUT_SECONDS", "900"))
+
+
+def _hold_while_busy(gateway_get: Any, context: Any, poll_seconds: int, stop_reserve: int) -> str:
+    """Wait until the sandbox is idle; return "idle", or "deadline" if time ran out.
+
+    Idle must be seen TWICE in a row: a crew finishing one turn and starting the
+    next shows a gap of a second or two, and stopping on that gap is exactly the
+    cut-off this exists to prevent. Each probe is also a real request, so the
+    machine endpoint's short idle timeout never reclaims the sandbox while we wait.
+    """
+    started = time.monotonic()
+    budget = _remaining_seconds(context) - stop_reserve
+    quiet = 0
+    while True:
+        if _sandbox_busy(gateway_get):
+            quiet = 0
+        else:
+            quiet += 1
+            if quiet >= 2:
+                return "idle"
+        if time.monotonic() - started + poll_seconds > budget:
+            return "deadline"
+        time.sleep(poll_seconds)
+
+
+def _relay(lambda_client: Any, context: Any, leg: int, before: int | None) -> None:
+    """Start the next leg asynchronously, then let this one return.
+
+    The next leg re-mints its binding through ``schedulerStart``: the sandbox's
+    start lease is still live (the container heartbeats it), so the control plane
+    hands back the SAME session rather than rotating it, and the work is never
+    interrupted -- only the watcher changes.
+    """
+    function = getattr(context, "invoked_function_arn", "") or os.environ.get(
+        "AWS_LAMBDA_FUNCTION_NAME", ""
+    )
+    if not function:
+        raise RuntimeError("The waker cannot name itself to start a relay.")
+    lambda_client.invoke(
+        FunctionName=function,
+        InvocationType="Event",
+        Payload=json.dumps({"relay": leg, "generationBefore": before}).encode(),
+    )
 
 
 def _finish_stop(

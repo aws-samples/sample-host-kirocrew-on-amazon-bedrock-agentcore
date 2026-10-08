@@ -44,6 +44,9 @@ class _StubLambda:
 
     def invoke(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(kwargs)
+        if kwargs.get("InvocationType") == "Event":
+            # An asynchronous self-invoke: a relay. Lambda answers 202 with no body.
+            return {"StatusCode": 202}
         operation = json.loads(kwargs["Payload"])["operation"]
         if operation == "schedulerStop":
             body: dict[str, Any] = {"sandboxId": "sbx_TEST", "state": "STOPPED"}
@@ -443,8 +446,10 @@ def test_a_wake_verifies_persistence_against_the_record_not_the_envelope(
     assert result["generationAfter"] == 138
     assert result["persisted"] is True
     operations = [json.loads(call["payload"])["operation"] for call in runtime.calls]
-    # Order matters: drive the work, THEN persist it.
-    assert operations == ["kirocrew.http", "sandbox.prepare_stop"]
+    # Order matters: drive the work, confirm it is idle, THEN persist it.
+    assert operations[0] == "kirocrew.http"
+    assert operations[-1] == "sandbox.prepare_stop"
+    assert set(operations[:-1]) == {"kirocrew.http"}
 
 
 def test_an_unchanged_generation_is_reported_as_not_persisted(
@@ -651,9 +656,11 @@ def test_the_dwell_holds_the_sandbox_awake_before_the_checkpoint(
 
     waker.handler({}, None)
 
-    assert slept == [45]
-    # The sleep must land BETWEEN the two calls, not after both.
-    assert len(runtime.calls) == 2
+    # The dwell comes first; one poll interval separates the two idle readings.
+    assert slept == [45, 30]
+    operations = [json.loads(call["payload"])["operation"] for call in runtime.calls]
+    assert operations[0] == "kirocrew.http"
+    assert operations[-1] == "sandbox.prepare_stop"
 
 
 def test_a_failed_checkpoint_is_reported_rather_than_retried(
@@ -693,3 +700,171 @@ def test_wake_path_is_configurable(waker: Any, monkeypatch: pytest.MonkeyPatch) 
     waker.handler({}, None)
 
     assert json.loads(runtime.calls[0]["payload"])["payload"]["path"] == "/api/taskrunner"
+
+
+class _BusyRuntime(_StubRuntime):
+    """Reports a running chat turn for the first `busy_polls` health probes."""
+
+    def __init__(self, busy_polls: int) -> None:
+        super().__init__()
+        self.busy_polls = busy_polls
+        self.health_probes = 0
+
+    def invoke_agent_runtime(self, **kwargs: Any) -> dict[str, Any]:
+        envelope = json.loads(kwargs["payload"])
+        if envelope["payload"].get("path") == "/api/sessions/health":
+            self.calls.append(kwargs)
+            self.health_probes += 1
+            running = 1 if self.health_probes <= self.busy_polls else 0
+            body = json.dumps({"counts": {"running": running}})
+            events = {"events": [{"operation": "output.delta", "payload": {"body": body}}]}
+            return {"statusCode": 200, "response": _StubPayload(json.dumps(events).encode())}
+        return super().invoke_agent_runtime(**kwargs)
+
+
+class _Context:
+    invoked_function_arn = "arn:aws:lambda:ap-southeast-1:1:function:kirocrew-waker"
+
+    def __init__(self, waker: Any, seconds: float) -> None:
+        self._end = waker.time.monotonic() + seconds
+        self._waker = waker
+
+    def get_remaining_time_in_millis(self) -> int:
+        return int((self._end - self._waker.time.monotonic()) * 1000)
+
+
+def _operations(runtime: Any) -> list[str]:
+    return [json.loads(call["payload"])["operation"] for call in runtime.calls]
+
+
+def test_a_busy_sandbox_is_held_until_it_goes_idle(
+    waker: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An Issue Radar crew still fixing an issue must not be stopped under it."""
+    lambda_client, runtime = _StubLambda(), _BusyRuntime(busy_polls=5)
+    _wire(waker, monkeypatch, lambda_client, runtime)
+    monkeypatch.setenv("WAKE_DWELL_SECONDS", "0")
+
+    result = waker.handler({}, _Context(waker, 900))
+
+    assert result["stopped"] == "stopped"
+    # Five busy readings, then two idle ones before the stop.
+    assert runtime.health_probes == 7
+    assert _operations(runtime)[-1] == "sandbox.prepare_stop"
+
+
+def test_one_quiet_reading_between_turns_does_not_stop_the_sandbox(
+    waker: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crew between two turns looks idle for a moment; that gap is not done."""
+
+    class _Flicker(_BusyRuntime):
+        def invoke_agent_runtime(self, **kwargs: Any) -> dict[str, Any]:
+            envelope = json.loads(kwargs["payload"])
+            if envelope["payload"].get("path") == "/api/sessions/health":
+                self.calls.append(kwargs)
+                self.health_probes += 1
+                running = 0 if self.health_probes in (2, 4, 5) else 1
+                running = 0 if self.health_probes > 5 else running
+                body = json.dumps({"counts": {"running": running}})
+                events = {"events": [{"operation": "output.delta", "payload": {"body": body}}]}
+                return {"statusCode": 200, "response": _StubPayload(json.dumps(events).encode())}
+            return _StubRuntime.invoke_agent_runtime(self, **kwargs)
+
+    lambda_client, runtime = _StubLambda(), _Flicker(busy_polls=0)
+    _wire(waker, monkeypatch, lambda_client, runtime)
+    monkeypatch.setenv("WAKE_DWELL_SECONDS", "0")
+
+    waker.handler({}, _Context(waker, 900))
+
+    # Readings: busy, idle, busy, idle, idle -> stops on the fifth, not the second.
+    assert runtime.health_probes == 5
+
+
+def test_work_still_running_at_the_deadline_is_handed_to_a_relay(
+    waker: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Lambda deadline must never be what ends a job: the watcher changes, not the work."""
+    lambda_client, runtime = _StubLambda(), _BusyRuntime(busy_polls=10_000)
+    _wire(waker, monkeypatch, lambda_client, runtime, _StubDynamo([41]))
+    monkeypatch.setenv("WAKE_DWELL_SECONDS", "0")
+
+    result = waker.handler({}, _Context(waker, 900))
+
+    assert result["outcome"] == "relayed"
+    assert result["relay"] == 1
+    assert "sandbox.prepare_stop" not in _operations(runtime)
+    relays = [call for call in lambda_client.calls if call.get("InvocationType") == "Event"]
+    assert len(relays) == 1
+    assert relays[0]["FunctionName"] == _Context.invoked_function_arn
+    assert json.loads(relays[0]["Payload"]) == {"relay": 1, "generationBefore": 41}
+
+
+def test_a_relay_skips_the_dwell_and_keeps_the_original_baseline(
+    waker: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lambda_client, runtime = _StubLambda(), _BusyRuntime(busy_polls=0)
+    ddb = _StubDynamo([45])
+    _wire(waker, monkeypatch, lambda_client, runtime, ddb)
+    monkeypatch.setenv("WAKE_DWELL_SECONDS", "120")
+    slept: list[float] = []
+    monkeypatch.setattr(waker.time, "sleep", slept.append)
+
+    result = waker.handler({"relay": 2, "generationBefore": 41}, _Context(waker, 900))
+
+    assert 120 not in slept
+    assert result["generationBefore"] == 41
+    assert result["persisted"] is True
+
+
+def test_the_relay_budget_bounds_the_cost(waker: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    lambda_client, runtime = _StubLambda(), _BusyRuntime(busy_polls=10_000)
+    _wire(waker, monkeypatch, lambda_client, runtime)
+    monkeypatch.setenv("WAKE_DWELL_SECONDS", "0")
+    monkeypatch.setenv("WAKE_MAX_RELAYS", "3")
+
+    result = waker.handler({"relay": 3, "generationBefore": 1}, _Context(waker, 900))
+
+    assert result["stopped"] == "stopped"
+    assert not [call for call in lambda_client.calls if call.get("InvocationType") == "Event"]
+
+
+def test_an_unreadable_probe_counts_as_idle(waker: Any) -> None:
+    """A broken gateway must be stoppable, never immortal."""
+
+    def broken(_path: str) -> object:
+        return None
+
+    assert waker._sandbox_busy(broken) is False
+    assert waker._gateway_body(b"not json") is None
+    assert waker._gateway_body(json.dumps({"events": [{"payload": {"x": ""}}]}).encode()) is None
+
+
+def test_each_activity_source_counts_as_busy(waker: Any) -> None:
+    answers: dict[str, object] = {}
+    probe = answers.get
+
+    answers["/api/taskrunner"] = {"runs": [{"running": True}]}
+    assert waker._sandbox_busy(probe) is True
+    answers.clear()
+    answers["/api/status"] = {"subagents": 1}
+    assert waker._sandbox_busy(probe) is True
+    answers.clear()
+    answers["/api/workflows/runs"] = {"runs": [{"status": "running"}]}
+    assert waker._sandbox_busy(probe) is True
+    answers.clear()
+    answers["/api/workflows/runs"] = {"runs": [{"status": "completed"}]}
+    assert waker._sandbox_busy(probe) is False
+
+
+def test_without_a_context_the_configured_timeout_bounds_the_wait(
+    waker: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("WAKE_TIMEOUT_SECONDS", "300")
+    assert waker._remaining_seconds(None) == 300.0
+
+
+def test_a_relay_needs_to_know_its_own_name(waker: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AWS_LAMBDA_FUNCTION_NAME", raising=False)
+    with pytest.raises(RuntimeError):
+        waker._relay(_StubLambda(), None, 1, None)

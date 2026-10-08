@@ -4,6 +4,7 @@ variable "schedule_enabled" { type = bool }
 variable "schedule_timezone" { type = string }
 variable "wake_lead_seconds" { type = number }
 variable "wake_dwell_seconds" { type = number }
+variable "wake_max_relays" { type = number }
 variable "cognito_subject" { type = string }
 variable "sandbox_id" { type = string }
 variable "sandbox_table_name" { type = string }
@@ -58,6 +59,16 @@ data "aws_iam_policy_document" "waker" {
     sid       = "MintSchedulerBinding"
     actions   = ["lambda:InvokeFunction"]
     resources = [var.control_function_arn]
+  }
+
+  # A wake whose work is still running near this Lambda's own deadline hands
+  # over to a fresh invocation of itself instead of stopping the sandbox under
+  # the work. Named by constructed ARN: referencing the function resource here
+  # would make the role depend on the function that depends on the role.
+  statement {
+    sid       = "RelayToNextLeg"
+    actions   = ["lambda:InvokeFunction"]
+    resources = ["arn:aws:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.prefix}-waker"]
   }
 
   # Scoped to the machine runtime alone. The browser runtime is deliberately NOT
@@ -125,11 +136,12 @@ resource "aws_lambda_function" "waker" {
   handler          = "kirocrew_agentcore_waker.lambda_handler.handler"
   filename         = data.archive_file.waker.output_path
   source_code_hash = data.archive_file.waker.output_base64sha256
-  # Budgeted from measurements, not guessed. A restore took 46-65s, a real
-  # workspace's final checkpoint took 92s, and the generation poll allows 30s on top
-  # of the configurable dwell. Dying while holding a claimed sandbox is the one
-  # outcome worse than not waking it, so the headroom is deliberate.
-  timeout     = min(900, 360 + var.wake_dwell_seconds)
+  # The Lambda maximum. A wake now holds the sandbox while its work is busy and
+  # relays before this deadline, so the timeout bounds one LEG, not the work. The
+  # stop reserve below keeps room for a real workspace's final checkpoint (92s
+  # measured) plus the generation poll; dying while holding a claimed sandbox is
+  # the one outcome worse than not waking it.
+  timeout     = 900
   memory_size = 512
 
   environment {
@@ -141,12 +153,26 @@ resource "aws_lambda_function" "waker" {
       MACHINE_ENDPOINT_QUALIFIER = var.machine_endpoint_qualifier
       WAKE_PATH                  = var.wake_path
       WAKE_DWELL_SECONDS         = tostring(var.wake_dwell_seconds)
+      WAKE_POLL_SECONDS          = "30"
+      WAKE_STOP_RESERVE_SECONDS  = "180"
+      WAKE_MAX_RELAYS            = tostring(var.wake_max_relays)
       SANDBOX_TABLE_NAME         = var.sandbox_table_name
     }
   }
 
   depends_on = [aws_cloudwatch_log_group.waker]
   tags       = var.tags
+}
+
+# A relay is an asynchronous self-invoke, and Lambda retries a failed async
+# invoke twice by default. A retried leg would watch the same sandbox as the one
+# that failed -- the overlapping-wake shape that once produced a corrupt
+# generation (see the schedule's retry_policy below). Skipping is cheaper: the
+# container keeps reporting busy on its own and checkpoints when it goes idle.
+resource "aws_lambda_function_event_invoke_config" "waker" {
+  function_name                = aws_lambda_function.waker.function_name
+  maximum_retry_attempts       = 0
+  maximum_event_age_in_seconds = 300
 }
 
 data "aws_iam_policy_document" "scheduler_assume" {

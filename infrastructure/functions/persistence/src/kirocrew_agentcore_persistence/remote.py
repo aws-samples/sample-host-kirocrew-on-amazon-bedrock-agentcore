@@ -87,6 +87,10 @@ class LambdaBrokerClient:
         self._sandbox_id = sandbox_id
         self._runtime_session_id = runtime_session_id
         self.binding_token = binding_token
+        # The generation this container's working copy descends from. Set it
+        # after restore (0 for a brand-new sandbox); every committed receipt
+        # advances it. While None, receipts are sent without a base.
+        self.base_generation: int | None = None
 
     def call(self, operation: str, **values: object) -> dict[str, object]:
         return invoke_broker(
@@ -102,15 +106,18 @@ class LambdaBrokerClient:
     def checkpoint_receipt(
         self, generation: int, manifest_digest: str, *, final: bool = True
     ) -> str:
-        value = self.call(
-            "checkpointReceipt",
-            final=final,
-            generation=generation,
-            manifestDigest=manifest_digest,
-        )
+        values: dict[str, object] = {
+            "final": final,
+            "generation": generation,
+            "manifestDigest": manifest_digest,
+        }
+        if self.base_generation is not None:
+            values["baseGeneration"] = self.base_generation
+        value = self.call("checkpointReceipt", **values)
         receipt = value.get("checkpointReceipt")
         if not isinstance(receipt, str):
             raise BrokerAuthorizationError("Checkpoint receipt is unavailable.")
+        self.base_generation = generation
         return receipt
 
 

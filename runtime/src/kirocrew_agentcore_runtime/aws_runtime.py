@@ -1007,6 +1007,9 @@ class AwsSessionInitializer:
             list(report.attempted_generations),
             list(report.reasons),
         )
+        # Receipts from here on must descend from what was just restored, so
+        # the broker refuses a commit if another container moved the chain.
+        client.base_generation = report.generation or 0
         self._evict_legacy_model_cache()
         self._supervisor.start(timeout_seconds=self._startup_timeout)
         if not self._supervisor.ready:

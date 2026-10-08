@@ -366,7 +366,10 @@ def _wake_plan(session: Any, table_name: str, sandbox_id: str, now: float) -> di
             .get_item(
                 TableName=table_name,
                 Key={"pk": {"S": f"SANDBOX#{sandbox_id}"}, "sk": {"S": "METADATA"}},
-                ProjectionExpression="#s, updatedAt, nextDueAt, nextDueJob, restoreSeconds",
+                ProjectionExpression=(
+                    "#s, updatedAt, nextDueAt, nextDueJob, restoreSeconds, "
+                    "leaseExpiresAt, initExpiresAt"
+                ),
                 ExpressionAttributeNames={"#s": "state"},
             )
             .get("Item")
@@ -381,7 +384,23 @@ def _wake_plan(session: Any, table_name: str, sandbox_id: str, now: float) -> di
     state = item.get("state", {}).get("S", "")
     updated = _iso_epoch(item.get("updatedAt", {}).get("S"))
     held_for = now - updated if updated is not None else None
-    if state != "STOPPED" and held_for is not None and held_for < _STALE_HOLD_SECONDS:
+    lease = _iso_epoch(item.get("leaseExpiresAt", {}).get("S"))
+    raw_init = item.get("initExpiresAt", {}).get("N")
+    init_until = int(raw_init) if raw_init is not None else None
+    if state == "STOPPED":
+        held = False
+    elif init_until is not None and init_until > now:
+        # A container is restoring right now.
+        held = True
+    elif lease is not None:
+        # The lease is the authoritative liveness signal: its owner renews it
+        # every 30 s for as long as the process lives. A READY record whose
+        # lease is dead was left behind by a container the platform reclaimed
+        # without a Stop, and nothing else will ever wake it.
+        held = lease > now
+    else:
+        held = held_for is not None and held_for < _STALE_HOLD_SECONDS
+    if held:
         # Somebody is using it, or a wake is already in progress: the scheduler
         # inside the sandbox is running, so there is nothing to wake.
         plan["reason"] = f"sandbox is {state}"

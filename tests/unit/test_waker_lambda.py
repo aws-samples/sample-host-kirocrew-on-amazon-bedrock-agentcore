@@ -951,6 +951,26 @@ def test_a_plan_leaves_a_sandbox_in_use_alone(waker: Any) -> None:
     assert stale["wake"] is True
 
 
+def _iso(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, tz=UTC).isoformat().replace("+00:00", "Z")
+
+
+def test_a_ready_record_with_a_dead_lease_is_woken_however_recent(waker: Any) -> None:
+    # The owner was reclaimed without a Stop two minutes ago: updatedAt is
+    # recent, but nothing renews the lease any more, and nothing else would
+    # ever wake this sandbox for the job that is due.
+    orphan = _record(state="READY", updated=NOW - 120, due=int(NOW) + 30)
+    orphan["leaseExpiresAt"] = {"S": _iso(NOW - 30)}
+    assert _plan(waker, orphan)["wake"] is True
+    live = _record(state="READY", updated=NOW - 20, due=int(NOW) + 30)
+    live["leaseExpiresAt"] = {"S": _iso(NOW + 70)}
+    assert _plan(waker, live)["wake"] is False
+    restoring = _record(state="RESTORING", updated=NOW - 20, due=int(NOW) + 30)
+    restoring["leaseExpiresAt"] = {"S": _iso(NOW - 30)}
+    restoring["initExpiresAt"] = {"N": str(int(NOW) + 60)}
+    assert _plan(waker, restoring)["wake"] is False
+
+
 def test_a_plan_does_not_wake_twice_for_one_occurrence(waker: Any) -> None:
     due = int(NOW) - 60
     assert _plan(waker, _record(updated=NOW - 30, due=due))["reason"] == (

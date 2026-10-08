@@ -654,6 +654,18 @@ class ProductionRuntimeBackend:
                 if isinstance(subagents, int) and subagents > 0:
                     return True
         with contextlib.suppress(Exception):
+            # A chat turn in flight: an app crew's cycle (Issue Radar drives a
+            # session from an auto-nudge loop), a cron job's agent turn, or a
+            # conversation the user left running. None of these is a task
+            # runner, subagent or workflow, so without this the sandbox
+            # reported idle mid-turn and was reclaimed with the work half done.
+            health = await self._loopback.fetch_json("/api/sessions/health")
+            if isinstance(health, Mapping):
+                counts = health.get("counts")
+                running = counts.get("running") if isinstance(counts, Mapping) else None
+                if isinstance(running, int) and running > 0:
+                    return True
+        with contextlib.suppress(Exception):
             workflows = await self._loopback.fetch_json("/api/workflows/runs")
             if isinstance(workflows, Mapping):
                 runs = workflows.get("runs")

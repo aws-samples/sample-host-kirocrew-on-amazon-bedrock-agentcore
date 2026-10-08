@@ -1346,6 +1346,12 @@ def test_background_busy_detects_each_activity_source_and_tolerates_failures() -
         assert await probe_backend(loopback).background_busy() is True
         # Workflow run marked running.
         loopback.responses["/api/status"] = {"subagents": 0}
+        loopback.responses["/api/sessions/health"] = {"counts": {"running": 1}}
+        assert await probe_backend(loopback).background_busy() is True
+        loopback.responses["/api/sessions/health"] = {"counts": {"running": 0}}
+        assert await probe_backend(loopback).background_busy() is False
+        loopback.responses["/api/sessions/health"] = {"counts": "nope"}
+        assert await probe_backend(loopback).background_busy() is False
         loopback.responses["/api/workflows/runs"] = {"runs": [{"status": "running"}]}
         assert await probe_backend(loopback).background_busy() is True
         # Everything quiet.

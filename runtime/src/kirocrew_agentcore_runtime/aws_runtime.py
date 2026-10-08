@@ -1070,7 +1070,12 @@ class AwsSessionInitializer:
         )
         # Receipts from here on must descend from what was just restored, so
         # the broker refuses a commit if another container moved the chain.
-        client.base_generation = report.generation or 0
+        # A fallback restore inspected newer generations and rejected them as
+        # unrestorable; it supersedes those on purpose, so it descends from the
+        # newest one it saw. Basing it on the older generation it restored
+        # instead would make every later receipt look like a fork and refuse
+        # them all -- the sandbox could then never checkpoint or stop safely.
+        client.base_generation = max([report.generation or 0, *report.attempted_generations])
         self._evict_legacy_model_cache()
         self._supervisor.start(timeout_seconds=self._startup_timeout)
         if not self._supervisor.ready:

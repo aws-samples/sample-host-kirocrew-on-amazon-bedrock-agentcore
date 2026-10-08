@@ -1107,7 +1107,17 @@ def test_initialize_sync_restore_composition(monkeypatch: pytest.MonkeyPatch) ->
     assert state.restoring == [("sandbox", "session")]
     assert state.ready == [("sandbox", "session", report)]
     assert supervisor.timeout == 12
+    assert client.base_generation == 3
 
+    # A fallback restore rejected generation 3 as unrestorable and restored 2.
+    # It supersedes 3 on purpose, so it descends from 3: basing it on 2 would
+    # make the broker refuse every later receipt as a fork, and the sandbox
+    # could never checkpoint or stop again.
+    report = RestoreReport(
+        "fallback", 2, True, ("generation-3-invalid",), (3, 2), datetime(2026, 8, 18, tzinfo=UTC)
+    )
+    client, _, _, _ = initializer._initialize_sync("binding", claims)
+    assert client.base_generation == 3
     metadata.runtime_session_id = "changed"
     with pytest.raises(SessionInitializationError, match="session changed"):
         initializer._initialize_sync("binding", claims)

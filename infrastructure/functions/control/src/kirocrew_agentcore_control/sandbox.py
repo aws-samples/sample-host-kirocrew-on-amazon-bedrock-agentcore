@@ -106,6 +106,22 @@ def init_lease_active(record: SandboxRecord, now: datetime) -> bool:
     return record.init_expires_at is not None and record.init_expires_at > now
 
 
+# How long a STARTING record keeps its session after the start lease lapses.
+# The 90s start lease covers the hop to the first invocation, but a cold
+# microVM plus the adapter's own boot can take longer than that before the
+# container claims initialization. Rotating the session inside that gap
+# provisions a second microVM for the same sandbox, and the two then fight
+# over it. Within this grace a repeated start (page retry, Retry, waker)
+# returns the session already being provisioned; past it the start is
+# treated as dead and rotated as before.
+START_GRACE = timedelta(minutes=5)
+
+
+def start_in_progress(record: SandboxRecord, now: datetime) -> bool:
+    """Whether a recent start is still provisioning this record's session."""
+    return record.state is SandboxState.STARTING and record.updated_at > now - START_GRACE
+
+
 @dataclass(frozen=True, slots=True)
 class StartLease:
     record: SandboxRecord
@@ -270,6 +286,10 @@ class InMemorySandboxRegistry:
                 and not confirmed_inactive
             ):
                 raise LeaseConflictError("Expired lease requires authoritative-owner confirmation.")
+            if start_in_progress(record, now) and not confirmed_inactive:
+                # The session is still being provisioned; a new one would
+                # only add a second microVM racing it.
+                return StartLease(record, authoritative=record.lease_owner == lease_owner)
             # Rotated on every authoritative start: reusing the id of a
             # session that died without a clean stop turns every restart
             # into failures until the platform reclaims the corpse. The

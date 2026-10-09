@@ -918,7 +918,8 @@ def _plan(waker: Any, item: dict[str, Any] | None, error: bool = False) -> dict[
             del name
             return _PlanDynamo(item, error)
 
-    return waker._wake_plan(_S(), "table", "sbx_TEST", NOW)
+    plan: dict[str, Any] = waker._wake_plan(_S(), "table", "sbx_TEST", NOW)
+    return plan
 
 
 def test_the_lead_follows_each_sandboxs_own_restore_time(waker: Any) -> None:

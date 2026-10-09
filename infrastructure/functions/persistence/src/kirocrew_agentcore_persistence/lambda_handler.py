@@ -20,6 +20,12 @@ _RESTORE_OUTCOME = re.compile(r"^[a-z][a-z-]{0,31}$")
 _DIAGNOSTIC = re.compile(r"^[\x20-\x7e]{1,256}$")
 _URL_TTL: Final = timedelta(minutes=5)
 _RECEIPT_TTL: Final = timedelta(minutes=10)
+# AgentCore can run two microVMs under one runtime session id and route the
+# session's traffic to the newer one, leaving the holder alive (heartbeating,
+# checkpointing) but serving nobody. A container that is receiving that traffic
+# may take the sandbox over once the holder has served no invocation for this
+# long; a holder that is still serving anyone is never taken over.
+_TAKEOVER_IDLE: Final = timedelta(seconds=60)
 _LIVE_STATES: Final = frozenset(
     {"STARTING", "RESTORING", "READY", "BUSY", "CHECKPOINTING", "STOPPING"}
 )
@@ -297,7 +303,7 @@ def _acquire_init(
         sandbox_id,
         (
             "SET #state = :restoring, initOwner = :owner, "
-            "initExpiresAt = :expires, updatedAt = :updated "
+            "initExpiresAt = :expires, holderInstance = :owner, updatedAt = :updated "
             "ADD stateVersion :one"
         ),
         # READY is claimable once the start lease is dead. A container left
@@ -311,11 +317,21 @@ def _acquire_init(
         # through healReady instead. The initOwner lease keeps two *live*
         # initializers apart, and the caller's token has already been matched
         # to this record's session, so no other tenant can reach this claim.
+        #
+        # A READY record with a LIVE lease is also claimable when the holder is
+        # another instance that has served nothing for _TAKEOVER_IDLE: the
+        # platform routes this session's traffic here, so that holder is
+        # unreachable. Writing holderInstance fences it at once -- its next
+        # lease beat and checkpoint receipt are refused and it exits. A holder
+        # that never recorded an instance (an older runtime) is never taken
+        # over this way.
         (
             "runtimeSessionId = :session "
             "AND (#state IN (:starting, :restoring) "
             "OR (#state = :ready AND (attribute_not_exists(leaseExpiresAt) "
-            "OR leaseExpiresAt < :deadline))) "
+            "OR leaseExpiresAt < :deadline "
+            "OR (attribute_exists(holderInstance) AND holderInstance <> :owner "
+            "AND lastServedAt < :stale)))) "
             "AND (attribute_not_exists(initOwner) "
             "OR initOwner = :owner OR initExpiresAt < :now)"
         ),
@@ -328,6 +344,7 @@ def _acquire_init(
             ":ready": {"S": "READY"},
             ":restoring": {"S": "RESTORING"},
             ":session": {"S": str(claims["runtimeSessionId"])},
+            ":stale": {"S": _iso(now - _TAKEOVER_IDLE)},
             ":starting": {"S": "STARTING"},
             ":updated": {"S": _iso(now)},
         },
@@ -356,21 +373,41 @@ def _heartbeat_init(
     )
 
 
+def _served_at(event: Mapping[str, object], now: datetime) -> str | None:
+    """The holder's last served invocation, clamped so it cannot be in the future."""
+    value = event.get("servedAt")
+    if value is None:
+        return None
+    if type(value) is not int or value <= 0:
+        raise ValueError("Invalid served-at timestamp.")
+    return _iso(min(datetime.fromtimestamp(value, UTC), now))
+
+
 def _heartbeat_lease(
-    dynamodb: Any, sandbox_id: str, claims: Mapping[str, object]
+    dynamodb: Any,
+    sandbox_id: str,
+    claims: Mapping[str, object],
+    event: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     now = datetime.now(UTC)
-    return _conditional_update(
-        dynamodb,
-        sandbox_id,
-        "SET leaseExpiresAt = :expires, updatedAt = :updated",
-        "leaseOwner = :owner",
-        {
-            ":expires": {"S": _iso(now + timedelta(seconds=90))},
-            ":owner": {"S": str(claims["runtimeSessionId"])},
-            ":updated": {"S": _iso(now)},
-        },
-    )
+    event = event or {}
+    update = "SET leaseExpiresAt = :expires, updatedAt = :updated"
+    condition = "leaseOwner = :owner"
+    values: dict[str, dict[str, str]] = {
+        ":expires": {"S": _iso(now + timedelta(seconds=90))},
+        ":owner": {"S": str(claims["runtimeSessionId"])},
+        ":updated": {"S": _iso(now)},
+    }
+    if event.get("initOwner") is not None:
+        # The session id is shared by every microVM the platform runs under
+        # it; only the instance tells the holder from a superseded one.
+        condition += " AND (attribute_not_exists(holderInstance) OR holderInstance = :instance)"
+        values[":instance"] = {"S": _init_owner(event)}
+    served = _served_at(event, now)
+    if served is not None:
+        update += ", lastServedAt = :served"
+        values[":served"] = {"S": served}
+    return _conditional_update(dynamodb, sandbox_id, update, condition, values)
 
 
 def _heal_ready(dynamodb: Any, sandbox_id: str, claims: Mapping[str, object]) -> dict[str, object]:
@@ -415,7 +452,8 @@ def _mark_ready(
         sandbox_id,
         (
             "SET #state = :ready, lastRestore = :restore, updatedAt = :updated, "
-            "leaseOwner = :session, leaseExpiresAt = :lease "
+            "leaseOwner = :session, leaseExpiresAt = :lease, "
+            "holderInstance = :owner, lastServedAt = :updated "
             "ADD stateVersion :one REMOVE initOwner, initExpiresAt"
         ),
         "runtimeSessionId = :session AND initOwner = :owner",
@@ -729,6 +767,17 @@ def _checkpoint_receipt(
     else:
         advance = "lastCheckpointGeneration <= :base OR "
         base_values = {":base": {"N": str(base_generation)}}
+    # A superseded microVM of the same session must not move the pointer: it
+    # holds a stale working copy, and its commits would be what the next start
+    # restores. Older runtimes send no instance and keep the session-only check.
+    holder = event.get("holderInstance")
+    if holder is None:
+        holder_clause = ""
+    else:
+        if not isinstance(holder, str) or not _INIT_OWNER.fullmatch(holder):
+            raise ValueError("Invalid checkpoint receipt request.")
+        holder_clause = "(attribute_not_exists(holderInstance) OR holderInstance = :instance) AND "
+        base_values[":instance"] = {"S": holder}
     if final:
         update_expression = (
             "SET #state = :stopping, lastCheckpointGeneration = :generation, "
@@ -738,7 +787,8 @@ def _checkpoint_receipt(
         )
         condition_expression = (
             "runtimeSessionId = :session AND "
-            "#state IN (:ready, :checkpointing, :stopping) AND "
+            + holder_clause
+            + "#state IN (:ready, :checkpointing, :stopping) AND "
             "(attribute_not_exists(lastCheckpointGeneration) OR "
             + advance
             + "(lastCheckpointGeneration = :generation AND "
@@ -758,7 +808,8 @@ def _checkpoint_receipt(
         )
         condition_expression = (
             "runtimeSessionId = :session AND "
-            "#state IN (:ready, :busy, :checkpointing) AND "
+            + holder_clause
+            + "#state IN (:ready, :busy, :checkpointing) AND "
             "(attribute_not_exists(lastCheckpointGeneration) OR "
             + advance
             + "(lastCheckpointGeneration = :generation AND "
@@ -856,7 +907,7 @@ def handler(event: Mapping[str, object], _context_value: object) -> dict[str, ob
     if operation == "heartbeatInit":
         return _heartbeat_init(dynamodb, sandbox_id, event)
     if operation == "heartbeatLease":
-        return _heartbeat_lease(dynamodb, sandbox_id, claims)
+        return _heartbeat_lease(dynamodb, sandbox_id, claims, event)
     if operation == "healReady":
         return _heal_ready(dynamodb, sandbox_id, claims)
     if operation == "markReady":

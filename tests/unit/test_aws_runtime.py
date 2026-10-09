@@ -371,6 +371,7 @@ def test_brokered_state_store_maps_lifecycle_operations_and_adopts_the_session_t
     store.mark_ready(SANDBOX, "session-1", report, OWNER)
     store.heartbeat_init(SANDBOX, "session-1", OWNER)
     store.heartbeat_lease(SANDBOX, "session-1")
+    store.heartbeat_lease(SANDBOX, "session-1", OWNER, 1_700_000_000)
     store.mark_error(SANDBOX, "session-1", init_owner=OWNER)
     store.mark_error(SANDBOX, "session-1", "RestoreError", "PERSISTENCE_RESTORE_FAILED", "OSError")
     store.heal_ready(SANDBOX, "session-1")
@@ -382,19 +383,23 @@ def test_brokered_state_store_maps_lifecycle_operations_and_adopts_the_session_t
         ("markReady", "session-token"),
         ("heartbeatInit", "session-token"),
         ("heartbeatLease", "session-token"),
+        ("heartbeatLease", "session-token"),
         ("markError", "session-token"),
         ("markError", "session-token"),
         ("healReady", "session-token"),
     ]
     requests = lambda_client.requests
+    beats = [r for r in requests if r.get("operation") == "heartbeatLease"]
+    assert "initOwner" not in beats[0] and "servedAt" not in beats[0]
+    assert beats[1]["initOwner"] == OWNER and beats[1]["servedAt"] == 1_700_000_000
     assert all(r["sandboxId"] == SANDBOX and r["runtimeSessionId"] == "session-1" for r in requests)
     assert requests[1]["initOwner"] == OWNER
     assert requests[2]["restoreOutcome"] == "restored"
-    assert requests[5]["initOwner"] == OWNER
-    assert "initOwner" not in requests[6]
-    assert requests[6]["failureType"] == "RestoreError"
-    assert requests[6]["failureDetail"] == "PERSISTENCE_RESTORE_FAILED"
-    assert requests[6]["upstreamException"] == "OSError"
+    assert requests[6]["initOwner"] == OWNER
+    assert "initOwner" not in requests[7]
+    assert requests[7]["failureType"] == "RestoreError"
+    assert requests[7]["failureDetail"] == "PERSISTENCE_RESTORE_FAILED"
+    assert requests[7]["upstreamException"] == "OSError"
 
     # The broker's conditional outcome surfaces as a typed conflict.
     conflicted = BrokeredSandboxStateStore(FakeBrokerLambda({"applied": False}), "arn:broker")
@@ -1640,15 +1645,22 @@ def test_cloudwatch_logging_attaches_only_when_configured(
     assert [h for h in root.handlers if h not in before] == []
 
 
-def test_lifetime_lease_heartbeat_stops_when_superseded() -> None:
-    """A newer start owns the lease: the loop exits instead of fighting it."""
+def test_lifetime_lease_heartbeat_stops_when_superseded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A newer start or another instance owns the lease: the process exits."""
+    import kirocrew_agentcore_runtime.aws_runtime as module
+
+    kills: list[tuple[int, int]] = []
+    monkeypatch.setattr(module.os, "kill", lambda pid, sig: kills.append((pid, sig)))
 
     async def scenario() -> None:
         initializer = StubAwsSessionInitializer()
-        beats: list[str] = []
+        initializer._last_served = 1_700_000_000
+        beats: list[tuple[object, ...]] = []
 
-        def heartbeat(sandbox: str, session: str) -> None:
-            beats.append(session)
+        def heartbeat(sandbox: str, session: str, *rest: object) -> None:
+            beats.append((session, *rest))
             if len(beats) == 2:
                 raise RuntimeError("broker hiccup")
             if len(beats) == 3:
@@ -1666,19 +1678,28 @@ def test_lifetime_lease_heartbeat_stops_when_superseded() -> None:
             await initializer._lease_heartbeat("sandbox", "session-1")
         finally:
             asyncio.sleep = original_sleep
-        assert beats == ["session-1", "session-1", "session-1"]
+        owner = initializer._init_owner
+        assert beats == [("session-1", owner, 1_700_000_000)] * 3
+        assert initializer.supervisor.terminated
 
     asyncio.run(scenario())
+    assert kills == [(module_os.getpid(), signal.SIGTERM)]
 
 
-def test_lifetime_lease_heartbeat_stops_when_the_broker_no_longer_accepts_the_session() -> None:
+def test_lifetime_lease_heartbeat_stops_when_the_broker_no_longer_accepts_the_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """An expired or rotated-away token means the lease is not ours to extend."""
+    import kirocrew_agentcore_runtime.aws_runtime as module
+
+    kills: list[int] = []
+    monkeypatch.setattr(module.os, "kill", lambda pid, sig: kills.append(sig))
 
     async def scenario() -> None:
         initializer = StubAwsSessionInitializer()
         beats: list[int] = []
 
-        def heartbeat(sandbox: str, session: str) -> None:
+        def heartbeat(sandbox: str, session: str, *rest: object) -> None:
             beats.append(1)
             if len(beats) == 1:
                 # A non-refusal broker failure (throttling, a crash) is transient.
@@ -1700,6 +1721,7 @@ def test_lifetime_lease_heartbeat_stops_when_the_broker_no_longer_accepts_the_se
         assert beats == [1, 1]
 
     asyncio.run(scenario())
+    assert kills == [signal.SIGTERM]
 
 
 def test_lifetime_lease_heartbeat_propagates_cancellation_and_other_client_errors() -> None:
@@ -1707,7 +1729,7 @@ def test_lifetime_lease_heartbeat_propagates_cancellation_and_other_client_error
         initializer = StubAwsSessionInitializer()
         beats: list[int] = []
 
-        def heartbeat(sandbox: str, session: str) -> None:
+        def heartbeat(sandbox: str, session: str, *rest: object) -> None:
             beats.append(1)
             if len(beats) == 1:
                 raise RuntimeError("Throttling")

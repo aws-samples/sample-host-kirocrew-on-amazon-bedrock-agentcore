@@ -70,7 +70,15 @@ class KmsRsaPssSigner:
 
 # Attributes the persistence broker owns on the sandbox record. The control
 # plane never sets them, only carries them through its full-record writes.
-_WAKE_HINT_ATTRIBUTES = (("nextDueAt", "N"), ("nextDueJob", "S"), ("restoreSeconds", "N"))
+# holderInstance / lastServedAt fence the current holder from a superseded
+# microVM of the same session; dropping them would silently disable that.
+_WAKE_HINT_ATTRIBUTES = (
+    ("nextDueAt", "N"),
+    ("nextDueJob", "S"),
+    ("restoreSeconds", "N"),
+    ("holderInstance", "S"),
+    ("lastServedAt", "S"),
+)
 
 
 class DynamoSandboxRegistry(InMemorySandboxRegistry):

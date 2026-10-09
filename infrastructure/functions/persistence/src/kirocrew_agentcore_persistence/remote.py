@@ -99,6 +99,11 @@ class LambdaBrokerClient:
         self.next_due_at: int | None = None
         self.next_due_job: str = ""
         self.restore_seconds: int | None = None
+        # This container's own id (its initialization owner). The platform can
+        # run two microVMs under one runtime session id, so the session alone
+        # cannot tell the current holder from a superseded one; receipts carry
+        # the instance and the broker accepts them only from the holder.
+        self.holder_instance: str | None = None
 
     def call(self, operation: str, **values: object) -> dict[str, object]:
         return invoke_broker(
@@ -126,6 +131,8 @@ class LambdaBrokerClient:
             values["nextDueJob"] = self.next_due_job
         if self.restore_seconds is not None:
             values["restoreSeconds"] = self.restore_seconds
+        if self.holder_instance is not None:
+            values["holderInstance"] = self.holder_instance
         value = self.call("checkpointReceipt", **values)
         receipt = value.get("checkpointReceipt")
         if not isinstance(receipt, str):

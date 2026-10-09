@@ -26,6 +26,7 @@ from kirocrew_agentcore_persistence.manifest import (
     ManifestEntry,
     PersistenceManifest,
     PersistencePolicy,
+    safe_symlink_target,
 )
 
 MAX_RESTORE_FILES: Final = 100_000
@@ -249,18 +250,7 @@ class ManifestDecoder:
 
     @staticmethod
     def _safe_symlink(path: PurePosixPath, target: str) -> bool:
-        candidate = PurePosixPath(target)
-        if candidate.is_absolute():
-            return False
-        depth = len(path.parent.parts)
-        for part in candidate.parts:
-            if part == "..":
-                depth -= 1
-                if depth < 0:
-                    return False
-            else:
-                depth += 1
-        return True
+        return safe_symlink_target(path, target)
 
 
 def _replace_path(source: Path, destination: Path) -> None:

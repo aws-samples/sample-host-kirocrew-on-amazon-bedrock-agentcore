@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import stat
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -23,6 +24,27 @@ PERSISTENCE_CATEGORIES: Final = (
     "user-durable-state",
 )
 EntryType = Literal["file", "directory", "symlink"]
+_LOGGER = logging.getLogger(__name__)
+
+
+def safe_symlink_target(path: PurePosixPath, target: str) -> bool:
+    """Whether a symlink at ``path`` pointing to ``target`` stays inside the workspace.
+
+    The one rule both sides apply: restore refuses an entry that fails it, so
+    the checkpoint must never record one.
+    """
+    candidate = PurePosixPath(target)
+    if candidate.is_absolute():
+        return False
+    depth = len(path.parent.parts)
+    for part in candidate.parts:
+        if part == "..":
+            depth -= 1
+            if depth < 0:
+                return False
+        else:
+            depth += 1
+    return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,6 +249,16 @@ class ManifestBuilder:
                 )
             elif stat.S_ISLNK(metadata.st_mode):
                 target = str(path.readlink())
+                if not safe_symlink_target(relative, target):
+                    # Restore refuses a link that is absolute or climbs out of
+                    # the workspace, and one such entry invalidates the whole
+                    # generation. Leave it out rather than commit a checkpoint
+                    # that commits fine but can never be restored.
+                    _LOGGER.warning(
+                        "Skipping unrestorable symlink in checkpoint: %s",
+                        relative.as_posix(),
+                    )
+                    continue
                 entries.append(
                     ManifestEntry(
                         relative.as_posix(),

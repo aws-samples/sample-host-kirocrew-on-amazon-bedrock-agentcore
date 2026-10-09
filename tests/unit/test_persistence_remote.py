@@ -79,6 +79,15 @@ def test_lambda_client_validates_binding_calls_and_receipts() -> None:
     based = json.loads(cast(bytes, fake.requests[2]["Payload"]))
     assert based["baseGeneration"] == 4
     assert broker_client.base_generation == 5
+    # Wake hints ride along once the runtime sets them.
+    assert "nextDueAt" not in based and "restoreSeconds" not in based
+    broker_client.next_due_at, broker_client.next_due_job = 1_800_000_000, "job1"
+    broker_client.restore_seconds = 42
+    broker_client.checkpoint_receipt(6, "d" * 64)
+    hinted = json.loads(cast(bytes, fake.requests[3]["Payload"]))
+    assert hinted["nextDueAt"] == 1_800_000_000
+    assert hinted["nextDueJob"] == "job1"
+    assert hinted["restoreSeconds"] == 42
 
     for value in ({}, {"checkpointReceipt": 1}):
         broken, _ = client(value)

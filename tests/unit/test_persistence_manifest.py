@@ -16,6 +16,7 @@ from kirocrew_agentcore_persistence.manifest import (
     PERSISTENCE_CATEGORIES,
     ManifestBuilder,
     PersistencePolicy,
+    safe_symlink_target,
     workspace_fingerprint,
 )
 
@@ -198,10 +199,9 @@ def test_manifest_records_symlinked_persistence_root_without_traversal(tmp_path:
     (target / "outside.txt").write_text("outside", encoding="utf-8")
     (workspace / "user").symlink_to(target, target_is_directory=True)
     built = ManifestBuilder(workspace).build(1, SANDBOX_ID, "2026-08-17T16:00:00Z")
-    assert len(built.manifest.entries) == 1
-    assert built.manifest.entries[0].path == "user"
-    assert built.manifest.entries[0].type == "symlink"
-    assert "outside.txt" not in {entry.path for entry in built.manifest.entries}
+    # Never traversed, and -- an absolute link restore would refuse, which
+    # would invalidate the whole generation -- not recorded either.
+    assert built.manifest.entries == ()
 
 
 def test_policy_excludes_the_in_workspace_embedding_model_cache() -> None:
@@ -213,3 +213,26 @@ def test_policy_excludes_the_in_workspace_embedding_model_cache() -> None:
     # Only that exact directory: user files merely named "models" survive.
     assert policy.includes(PurePosixPath("projects/default/models/data.txt"))
     assert policy.includes(PurePosixPath("home/.kiro/crew/skills/models.md"))
+
+
+def test_checkpoint_leaves_out_symlinks_restore_would_refuse(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # One unrestorable link used to invalidate the whole generation: the
+    # checkpoint committed, the next start fell back a generation and the
+    # work in between was gone. The checkpoint now applies restore's own rule.
+    workspace = tmp_path / "workspace"
+    project = workspace / "projects/default"
+    project.mkdir(parents=True)
+    (project / "data.txt").write_text("kept", encoding="utf-8")
+    (project / "inside").symlink_to("data.txt")
+    (project / "absolute").symlink_to("/etc/hosts")
+    (project / "escapes").symlink_to("../../../outside")
+    with caplog.at_level("WARNING"):
+        built = ManifestBuilder(workspace).build(1, SANDBOX_ID, "2026-10-08T07:00:00Z")
+    links = {e.path: e.symlink_target for e in built.manifest.entries if e.type == "symlink"}
+    assert links == {"projects/default/inside": "data.txt"}
+    assert "projects/default/absolute" in caplog.text
+    assert "projects/default/escapes" in caplog.text
+    assert safe_symlink_target(PurePosixPath("projects/default/x"), "../../user/y")
+    assert not safe_symlink_target(PurePosixPath("projects/default/x"), "../../../y")

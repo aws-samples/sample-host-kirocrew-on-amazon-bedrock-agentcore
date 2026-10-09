@@ -405,6 +405,23 @@ class BrokeredCheckpointStore:
         generations = self.committed_generations()
         return generations[-1].generation if generations else None
 
+    def next_generation(self) -> int:
+        """The first generation number nobody has written a manifest for.
+
+        Manifests are written create-only, so a checkpoint interrupted after its
+        manifest upload and before its commit (a container reclaimed mid-stop)
+        leaves that number permanently taken. Reusing ``latest_committed + 1``
+        then answered 412 on every later attempt and the sandbox could never
+        checkpoint again. Skipping the orphan leaves a gap, which restore never
+        sees: it walks commits, not manifests.
+        """
+        highest = self.latest_committed() or 0
+        for key in self._broker.internal_keys(self._sandbox_id, "manifests"):
+            name = key.rsplit("/", 1)[-1].removesuffix(".json.enc")
+            if name.isdigit():
+                highest = max(highest, int(name))
+        return highest + 1
+
     def committed_generations(self) -> tuple[CommittedGeneration, ...]:
         commits: list[CommittedGeneration] = []
         for key in self._broker.internal_keys(self._sandbox_id, "commits"):

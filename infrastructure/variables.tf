@@ -232,9 +232,9 @@ variable "enable_scheduled_wake" {
 }
 
 variable "wake_schedule_expression" {
-  description = "EventBridge Scheduler expression for the wake, e.g. cron(50 8 * * ? *) or rate(6 hours). Fire EARLY of the moment the in-sandbox job cares about: the sandbox has to be claimed and restored before its scheduler exists to notice the time."
+  description = "How often the waker CHECKS whether the sandbox is due. The sandbox publishes its next job or loop time on every checkpoint, and the waker wakes it only inside that job's lead window, so this is a polling cadence, not the job schedule: a tick that is not due costs one DynamoDB read. Keep rate(1 minute) so a job lands on its minute."
   type        = string
-  default     = "cron(50 8 * * ? *)"
+  default     = "rate(1 minute)"
 }
 
 variable "wake_schedule_enabled" {
@@ -287,4 +287,15 @@ variable "wake_path" {
   description = "Gateway path the wake requests once the sandbox is restored. Reading status is enough: the request exists to prove KiroCrew itself came up, since the container starting is NOT the same as the gateway that owns the cron scheduler starting."
   type        = string
   default     = "/api/status"
+}
+
+variable "wake_max_relays" {
+  description = "How many times a wake may hand over to a fresh waker while the sandbox is still busy. Each leg is up to 15 minutes, so the default of 8 bounds one unattended run at about two hours. The container also stops reporting busy after its own fuse."
+  type        = number
+  default     = 8
+
+  validation {
+    condition     = var.wake_max_relays >= 0 && var.wake_max_relays <= 48
+    error_message = "Relays must be between 0 and 48."
+  }
 }

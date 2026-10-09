@@ -67,6 +67,11 @@ class KmsRsaPssSigner:
             raise ValueError("KMS signature is invalid.")
 
 
+# Attributes the persistence broker owns on the sandbox record. The control
+# plane never sets them, only carries them through its full-record writes.
+_WAKE_HINT_ATTRIBUTES = (("nextDueAt", "N"), ("nextDueJob", "S"), ("restoreSeconds", "N"))
+
+
 class DynamoSandboxRegistry(InMemorySandboxRegistry):
     def __init__(
         self,
@@ -363,6 +368,8 @@ class DynamoSandboxRegistry(InMemorySandboxRegistry):
         for name, (kind, value) in optional.items():
             if value is not None:
                 item[name] = {kind: value}
+        for name, kind, value in record.wake_hints:
+            item[name] = {kind: value}
         return item
 
     @staticmethod
@@ -402,6 +409,11 @@ class DynamoSandboxRegistry(InMemorySandboxRegistry):
                 _datetime(required("createdAt")),
                 _datetime(required("updatedAt")),
                 init_expires,
+                tuple(
+                    (name, kind, value)
+                    for name, kind in _WAKE_HINT_ATTRIBUTES
+                    if isinstance(value := item.get(name, {}).get(kind), str)
+                ),
             )
         except (ValueError, TypeError) as error:
             raise SandboxUnavailableError("Sandbox metadata is invalid.") from error

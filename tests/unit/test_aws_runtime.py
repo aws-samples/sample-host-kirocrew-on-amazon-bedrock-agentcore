@@ -329,6 +329,9 @@ class FakeCheckpointStore:
     def latest_committed(self) -> int:
         return 4
 
+    def next_generation(self) -> int:
+        return 5
+
 
 class FakeBrokerClient:
     def __init__(self) -> None:
@@ -1107,7 +1110,17 @@ def test_initialize_sync_restore_composition(monkeypatch: pytest.MonkeyPatch) ->
     assert state.restoring == [("sandbox", "session")]
     assert state.ready == [("sandbox", "session", report)]
     assert supervisor.timeout == 12
+    assert client.base_generation == 3
 
+    # A fallback restore rejected generation 3 as unrestorable and restored 2.
+    # It supersedes 3 on purpose, so it descends from 3: basing it on 2 would
+    # make the broker refuse every later receipt as a fork, and the sandbox
+    # could never checkpoint or stop again.
+    report = RestoreReport(
+        "fallback", 2, True, ("generation-3-invalid",), (3, 2), datetime(2026, 8, 18, tzinfo=UTC)
+    )
+    client, _, _, _ = initializer._initialize_sync("binding", claims)
+    assert client.base_generation == 3
     metadata.runtime_session_id = "changed"
     with pytest.raises(SessionInitializationError, match="session changed"):
         initializer._initialize_sync("binding", claims)
@@ -1334,6 +1347,71 @@ def probe_backend(
     )
 
 
+def test_next_due_is_the_earliest_enabled_job_or_active_loop() -> None:
+    class Hints:
+        next_due_at: int | None = None
+        next_due_job = ""
+
+    async def scenario() -> None:
+        loopback = ProbeLoopback()
+        backend = probe_backend(loopback)
+        hints = Hints()
+
+        # A failed read keeps whatever was published before.
+        hints.next_due_at = 123
+        await backend._publish_next_due(hints)
+        assert hints.next_due_at == 123
+
+        loopback.responses["/api/crons"] = {
+            "jobs": [
+                {"id": "daily9", "enabled": True, "next_run_ts": 1_800_000_900.5},
+                {"id": "paused", "enabled": False, "next_run_ts": 1_800_000_000},
+                {"id": "never", "enabled": True, "next_run_ts": None},
+                "not-a-job",
+            ]
+        }
+        loopback.responses["/api/autonudge"] = {
+            "loops": [
+                {"active": True, "next_due_ts": 1_800_000_500},
+                {"active": False, "next_due_ts": 1_800_000_100},
+                {"active": True, "next_due_ts": None},
+                ["not", "a", "loop"],
+            ]
+        }
+        await backend._publish_next_due(hints)
+        # The Issue Radar-style loop wakes first, and a loop names no cron job.
+        assert (hints.next_due_at, hints.next_due_job) == (1_800_000_500, "")
+
+        loopback.responses["/api/autonudge"] = {"loops": []}
+        await backend._publish_next_due(hints)
+        assert (hints.next_due_at, hints.next_due_job) == (1_800_000_900, "daily9")
+
+        # A due time already gone is not the next wake: the real one after it is.
+        loopback.responses["/api/crons"] = {
+            "jobs": [
+                {"id": "stale1", "enabled": True, "next_run_ts": 1_000},
+                {"id": "daily9", "enabled": True, "next_run_ts": 1_800_000_900},
+            ]
+        }
+        await backend._publish_next_due(hints)
+        assert (hints.next_due_at, hints.next_due_job) == (1_800_000_900, "daily9")
+
+        # A job id the broker would refuse is published without the id.
+        loopback.responses["/api/crons"] = {
+            "jobs": [{"id": "bad id!", "enabled": True, "next_run_ts": 1_800_000_000}]
+        }
+        await backend._publish_next_due(hints)
+        assert (hints.next_due_at, hints.next_due_job) == (1_800_000_000, "")
+
+        # Nothing scheduled is published as 0, so the scheduler does not wake.
+        loopback.responses["/api/crons"] = {"jobs": "nope"}
+        loopback.responses["/api/autonudge"] = ["nope"]
+        await backend._publish_next_due(hints)
+        assert (hints.next_due_at, hints.next_due_job) == (0, "")
+
+    asyncio.run(scenario())
+
+
 def test_background_busy_detects_each_activity_source_and_tolerates_failures() -> None:
     async def scenario() -> None:
         loopback = ProbeLoopback()
@@ -1346,6 +1424,14 @@ def test_background_busy_detects_each_activity_source_and_tolerates_failures() -
         assert await probe_backend(loopback).background_busy() is True
         # Workflow run marked running.
         loopback.responses["/api/status"] = {"subagents": 0}
+        loopback.responses["/api/sessions/health"] = {"counts": {"running": 1}}
+        assert await probe_backend(loopback).background_busy() is True
+        loopback.responses["/api/sessions/health"] = {"counts": {"running": 0}}
+        assert await probe_backend(loopback).background_busy() is False
+        loopback.responses["/api/sessions/health"] = {"counts": "nope"}
+        assert await probe_backend(loopback).background_busy() is False
+        loopback.responses["/api/sessions/health"] = ["not", "a", "mapping"]
+        assert await probe_backend(loopback).background_busy() is False
         loopback.responses["/api/workflows/runs"] = {"runs": [{"status": "running"}]}
         assert await probe_backend(loopback).background_busy() is True
         # Everything quiet.
@@ -1358,6 +1444,19 @@ def test_background_busy_detects_each_activity_source_and_tolerates_failures() -
         assert await probe_backend(loopback).background_busy() is False
         loopback.responses = {}
         assert await probe_backend(loopback).background_busy() is False
+
+    asyncio.run(scenario())
+
+
+def test_background_busy_holds_the_sandbox_while_a_checkpoint_is_in_flight() -> None:
+    """A terminal checkpoint outlasting the idle timeout was reclaimed mid-upload."""
+
+    async def scenario() -> None:
+        backend = probe_backend(ProbeLoopback())
+        assert await backend.background_busy() is False
+        async with backend._checkpoint_lock:
+            assert await backend.background_busy() is True
+        assert await backend.background_busy() is False
 
     asyncio.run(scenario())
 

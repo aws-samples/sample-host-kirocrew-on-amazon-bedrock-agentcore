@@ -187,6 +187,7 @@ module "scheduler" {
   schedule_timezone          = var.wake_schedule_timezone
   wake_lead_seconds          = var.wake_lead_seconds
   wake_dwell_seconds         = var.wake_dwell_seconds
+  wake_max_relays            = var.wake_max_relays
   cognito_subject            = var.wake_cognito_subject
   sandbox_id                 = var.wake_sandbox_id
   sandbox_table_name         = module.persistence.sandbox_table_name

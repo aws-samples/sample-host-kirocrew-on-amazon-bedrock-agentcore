@@ -91,6 +91,14 @@ class LambdaBrokerClient:
         # after restore (0 for a brand-new sandbox); every committed receipt
         # advances it. While None, receipts are sent without a base.
         self.base_generation: int | None = None
+        # Published outward on every receipt so a scheduler outside the sandbox
+        # knows when to wake it: the epoch second the next job or loop is due
+        # (0 = nothing scheduled), which cron job that is (empty for a loop),
+        # and how long this sandbox took to restore -- the wake lead is derived
+        # from it, so a big workspace is woken earlier than an empty one.
+        self.next_due_at: int | None = None
+        self.next_due_job: str = ""
+        self.restore_seconds: int | None = None
 
     def call(self, operation: str, **values: object) -> dict[str, object]:
         return invoke_broker(
@@ -113,6 +121,11 @@ class LambdaBrokerClient:
         }
         if self.base_generation is not None:
             values["baseGeneration"] = self.base_generation
+        if self.next_due_at is not None:
+            values["nextDueAt"] = self.next_due_at
+            values["nextDueJob"] = self.next_due_job
+        if self.restore_seconds is not None:
+            values["restoreSeconds"] = self.restore_seconds
         value = self.call("checkpointReceipt", **values)
         receipt = value.get("checkpointReceipt")
         if not isinstance(receipt, str):

@@ -1649,10 +1649,9 @@ def test_lifetime_lease_heartbeat_stops_when_superseded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A newer start or another instance owns the lease: the process exits."""
-    import kirocrew_agentcore_runtime.aws_runtime as module
 
     kills: list[tuple[int, int]] = []
-    monkeypatch.setattr(module.os, "kill", lambda pid, sig: kills.append((pid, sig)))
+    monkeypatch.setattr(module_os, "kill", lambda pid, sig: kills.append((pid, sig)))
 
     async def scenario() -> None:
         initializer = StubAwsSessionInitializer()
@@ -1690,10 +1689,9 @@ def test_lifetime_lease_heartbeat_stops_when_the_broker_no_longer_accepts_the_se
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An expired or rotated-away token means the lease is not ours to extend."""
-    import kirocrew_agentcore_runtime.aws_runtime as module
 
     kills: list[int] = []
-    monkeypatch.setattr(module.os, "kill", lambda pid, sig: kills.append(sig))
+    monkeypatch.setattr(module_os, "kill", lambda pid, sig: kills.append(sig))
 
     async def scenario() -> None:
         initializer = StubAwsSessionInitializer()

@@ -88,6 +88,11 @@ def test_lambda_client_validates_binding_calls_and_receipts() -> None:
     assert hinted["nextDueAt"] == 1_800_000_000
     assert hinted["nextDueJob"] == "job1"
     assert hinted["restoreSeconds"] == 42
+    assert "holderInstance" not in hinted
+    broker_client.holder_instance = "6f1d2c3b-4a5e-4f60-9b1c-2d3e4f5a6b7c"
+    broker_client.checkpoint_receipt(7, "e" * 64)
+    fenced = json.loads(cast(bytes, fake.requests[4]["Payload"]))
+    assert fenced["holderInstance"] == "6f1d2c3b-4a5e-4f60-9b1c-2d3e4f5a6b7c"
 
     for value in ({}, {"checkpointReceipt": 1}):
         broken, _ = client(value)

@@ -274,7 +274,13 @@ class BrokeredSandboxStateStore:
     def heartbeat_init(self, sandbox_id: str, runtime_session_id: str, init_owner: str) -> None:
         self._apply("heartbeatInit", sandbox_id, runtime_session_id, initOwner=init_owner)
 
-    def heartbeat_lease(self, sandbox_id: str, runtime_session_id: str) -> None:
+    def heartbeat_lease(
+        self,
+        sandbox_id: str,
+        runtime_session_id: str,
+        init_owner: str | None = None,
+        served_at: int | None = None,
+    ) -> None:
         """Extend the start lease for as long as this session is alive.
 
         A live lease is the signal that lets the control plane renew
@@ -282,8 +288,17 @@ class BrokeredSandboxStateStore:
         under a healthy session kills every open browser connection. The
         lease owner is this session's own id, so the condition fails - and
         the heartbeat stops mattering - the moment a newer start takes over.
+        The instance id narrows that to THIS microVM, because the platform
+        can run two under one session; ``served_at`` (epoch seconds of the
+        last invocation this process handled) is what lets a reachable
+        container take over from one the platform no longer routes to.
         """
-        self._apply("heartbeatLease", sandbox_id, runtime_session_id)
+        values: dict[str, object] = {}
+        if init_owner is not None:
+            values["initOwner"] = init_owner
+        if served_at is not None:
+            values["servedAt"] = served_at
+        self._apply("heartbeatLease", sandbox_id, runtime_session_id, **values)
 
     def heal_ready(self, sandbox_id: str, runtime_session_id: str) -> None:
         """Flip a reconnect-induced STARTING back to READY.
@@ -824,6 +839,7 @@ class AwsSessionInitializer:
         self._initialized_session: tuple[str, str, str] | None = None
         self._lease_heartbeat_task: asyncio.Task[None] | None = None
         self._init_owner = str(uuid.uuid4())
+        self._last_served = 0
         self._broker_client: LambdaBrokerClient | None = None
 
     async def initialize(
@@ -833,6 +849,10 @@ class AwsSessionInitializer:
         claims: BindingClaims,
     ) -> None:
         identity = (cognito_subject, claims.sandbox_id, claims.runtime_session_id)
+        # Every invocation passes through here; the lease beat reports this so
+        # a container the platform routes this session to can tell whether the
+        # holder is still serving anyone.
+        self._last_served = int(time.time())
         async with self._lock:
             # The browser's binding token authorizes record access until this
             # container wins initialization; afterwards the store prefers the
@@ -872,6 +892,7 @@ class AwsSessionInitializer:
                     binding_token,
                     claims,
                 )
+                broker_client.holder_instance = self._init_owner
                 self._backend.configure(
                     engine,
                     store,
@@ -978,9 +999,11 @@ class AwsSessionInitializer:
         """Extend the start lease every 30s until the process dies.
 
         A rejected condition, or a broker that refuses this session's token,
-        means a newer start owns the lease; this session is superseded and
-        stops heartbeating so the takeover completes cleanly. Any other broker
-        failure is transient and the next beat retries.
+        means a newer start - or another microVM of this same session - owns
+        the lease. This process is then fenced: its checkpoints are refused
+        and serving would hand out a working copy nobody can save, so it exits
+        and the platform routes the session to the holder or a fresh container.
+        Any other broker failure is transient and the next beat retries.
         """
         while True:
             await asyncio.sleep(30)
@@ -989,11 +1012,18 @@ class AwsSessionInitializer:
                     self._state_store.heartbeat_lease,
                     sandbox_id,
                     runtime_session_id,
+                    self._init_owner,
+                    self._last_served,
                 )
             except asyncio.CancelledError:
                 raise
             except (SandboxRecordConflictError, BrokerRefusalError):
-                _LOGGER.info("Lease superseded by a newer start; heartbeat stops.")
+                _LOGGER.warning(
+                    "Lease superseded by another start or instance; exiting so the "
+                    "platform routes this session to the current holder."
+                )
+                self._supervisor.terminate()
+                os.kill(os.getpid(), signal.SIGTERM)
                 return
             except Exception:
                 _LOGGER.warning("Lease heartbeat failed.", exc_info=True)

@@ -312,3 +312,31 @@ def test_two_subjects_have_independent_process_and_storage_identity() -> None:
     assert alice.runtime_session_id != bob.runtime_session_id
     with pytest.raises(SandboxUnavailableError):
         store.authorize("bob", alice.sandbox_id)
+
+
+def test_repeated_start_reuses_a_session_still_being_provisioned() -> None:
+    clock = MutableClock()
+    sessions = iter(["session-0", "session-a", "session-b"])
+    store = InMemorySandboxRegistry(
+        sandbox_id_factory=lambda: "sbx_01J00000000000000000000000",
+        runtime_session_id_factory=lambda: next(sessions),
+        clock=clock,
+        kirocrew_version="1.2.3",
+    )
+    store.get_or_create("subject")
+    first = store.acquire_start("subject", "browser", ttl=timedelta(seconds=90))
+    assert first.record.runtime_session_id == "session-a"
+    # Cold start outlives the 90s start lease before the container claims init.
+    clock.advance(timedelta(seconds=150))
+    again = store.acquire_start(
+        "subject", first.record.runtime_session_id, ttl=timedelta(seconds=90)
+    )
+    assert again.record.runtime_session_id == "session-a"
+    assert again.record.state_version == first.record.state_version
+    # A start that never came up is rotated once the grace has passed.
+    clock.advance(timedelta(minutes=5))
+    dead = store.acquire_start(
+        "subject", first.record.runtime_session_id, ttl=timedelta(seconds=90)
+    )
+    assert dead.authoritative
+    assert dead.record.runtime_session_id == "session-b"

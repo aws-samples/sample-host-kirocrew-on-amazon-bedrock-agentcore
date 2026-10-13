@@ -195,7 +195,17 @@ def test_registry_start_transition_delete_and_conditional_updates() -> None:
     assert held.record is initializing
     assert held.record.state is SandboxState.STARTING
 
-    expired = replace(active, lease_expires_at=NOW - timedelta(seconds=1))
+    # A start still being provisioned keeps its session past the start lease.
+    provisioning = replace(active, lease_expires_at=NOW - timedelta(seconds=1), updated_at=NOW)
+    store.get_or_create = lambda cognito_subject: provisioning  # type: ignore[method-assign]
+    kept = store.acquire_start("subject", "owner", ttl=timedelta(minutes=1))
+    assert kept.record is provisioning
+
+    expired = replace(
+        active,
+        lease_expires_at=NOW - timedelta(seconds=1),
+        updated_at=NOW - timedelta(minutes=6),
+    )
     store.get_or_create = lambda cognito_subject: expired  # type: ignore[method-assign]
     with pytest.raises(LeaseConflictError, match="confirmation"):
         store.acquire_start("subject", "other", ttl=timedelta(minutes=1))

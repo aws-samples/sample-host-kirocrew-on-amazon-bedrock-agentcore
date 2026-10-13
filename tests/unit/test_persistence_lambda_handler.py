@@ -846,3 +846,99 @@ def test_checkpoint_receipt_publishes_the_wake_hints_in_the_same_update() -> Non
     ):
         with pytest.raises(ValueError, match="Invalid checkpoint receipt request"):
             broker._checkpoint_receipt(s3, kms, dynamo, SANDBOX, claims, {**request, **bad})
+
+
+def test_acquire_init_fences_the_holder_and_takes_over_an_unreachable_one() -> None:
+    """Two microVMs under one session: the reachable one may take an idle holder over."""
+    kms = FakeKms()
+    claims = broker._binding(kms, token())
+    dynamo = FakeDynamo(state="READY")
+    broker._acquire_init(kms, dynamo, SANDBOX, claims, event("acquireInit", initOwner=OWNER))
+    update = dynamo.updates[-1]
+    assert "holderInstance = :owner" in str(update["UpdateExpression"])
+    condition = str(update["ConditionExpression"])
+    # Only another instance, only one that has served nothing recently, and
+    # never a holder that predates instance tracking.
+    assert (
+        "attribute_exists(holderInstance) AND holderInstance <> :owner AND lastServedAt < :stale"
+    ) in condition
+    values = cast(dict[str, dict[str, str]], update["ExpressionAttributeValues"])
+    stale = datetime.fromisoformat(values[":stale"]["S"].replace("Z", "+00:00"))
+    deadline = datetime.fromisoformat(values[":deadline"]["S"].replace("Z", "+00:00"))
+    assert deadline - stale == broker._TAKEOVER_IDLE
+
+
+def test_heartbeat_lease_checks_the_instance_and_reports_when_it_last_served() -> None:
+    kms = FakeKms()
+    claims = broker._binding(kms, token())
+    dynamo = FakeDynamo()
+    broker._heartbeat_lease(dynamo, SANDBOX, claims, {"initOwner": OWNER, "servedAt": 1})
+    update = dynamo.updates[-1]
+    assert "lastServedAt = :served" in str(update["UpdateExpression"])
+    assert "holderInstance = :instance" in str(update["ConditionExpression"])
+    values = cast(dict[str, dict[str, str]], update["ExpressionAttributeValues"])
+    assert values[":instance"] == {"S": OWNER}
+    assert values[":served"] == {"S": "1970-01-01T00:00:01Z"}
+
+    # A clock ahead of the broker cannot claim to have served in the future.
+    broker._heartbeat_lease(dynamo, SANDBOX, claims, {"servedAt": 99_999_999_999})
+    future = dynamo.updates[-1]
+    assert "holderInstance" not in str(future["ConditionExpression"])
+    served = cast(dict[str, dict[str, str]], future["ExpressionAttributeValues"])[":served"]
+    assert served["S"] <= broker._iso(datetime.now(UTC))
+
+    # Older runtimes send neither and keep the session-only beat.
+    broker._heartbeat_lease(dynamo, SANDBOX, claims)
+    legacy = dynamo.updates[-1]
+    assert legacy["ConditionExpression"] == "leaseOwner = :owner"
+    assert "lastServedAt" not in str(legacy["UpdateExpression"])
+
+    for bad in ({"servedAt": 0}, {"servedAt": "1"}, {"servedAt": True}):
+        with pytest.raises(ValueError, match="served-at"):
+            broker._heartbeat_lease(dynamo, SANDBOX, claims, bad)
+    with pytest.raises(ValueError, match="Invalid initialization owner"):
+        broker._heartbeat_lease(dynamo, SANDBOX, claims, {"initOwner": "nope"})
+
+
+def test_mark_ready_records_the_holder_instance() -> None:
+    kms = FakeKms()
+    claims = broker._binding(kms, token())
+    dynamo = FakeDynamo(state="RESTORING")
+    broker._mark_ready(dynamo, SANDBOX, claims, {"initOwner": OWNER, "restoreOutcome": "restored"})
+    expression = str(dynamo.updates[-1]["UpdateExpression"])
+    assert "holderInstance = :owner" in expression
+    assert "lastServedAt = :updated" in expression
+
+
+def test_checkpoint_receipt_is_refused_to_a_superseded_instance() -> None:
+    s3, kms, dynamo = FakeS3(), FakeKms(), FakeDynamo()
+    s3.objects[f"sandboxes/{SANDBOX}/commits/5.json"] = json.dumps(
+        {"committedAt": "2026-10-09T07:00:00Z", "generation": 5, "manifestDigest": DIGEST}
+    ).encode()
+    claims = broker._binding(kms, token())
+    request = {
+        "final": False,
+        "generation": 5,
+        "manifestDigest": DIGEST,
+        "runtimeSessionId": SESSION,
+        "holderInstance": OWNER,
+    }
+    for final in (False, True):
+        broker._checkpoint_receipt(s3, kms, dynamo, SANDBOX, claims, {**request, "final": final})
+        update = dynamo.transactions[-1]["TransactItems"][0]["Update"]  # type: ignore[index]
+        assert (
+            "(attribute_not_exists(holderInstance) OR holderInstance = :instance)"
+            in update["ConditionExpression"]
+        )
+        assert update["ExpressionAttributeValues"][":instance"] == {"S": OWNER}
+
+    legacy = {key: value for key, value in request.items() if key != "holderInstance"}
+    broker._checkpoint_receipt(s3, kms, dynamo, SANDBOX, claims, legacy)
+    update = dynamo.transactions[-1]["TransactItems"][0]["Update"]  # type: ignore[index]
+    assert "holderInstance" not in update["ConditionExpression"]
+
+    for bad in ("nope", 7):
+        with pytest.raises(ValueError, match="Invalid checkpoint receipt request"):
+            broker._checkpoint_receipt(
+                s3, kms, dynamo, SANDBOX, claims, {**request, "holderInstance": bad}
+            )

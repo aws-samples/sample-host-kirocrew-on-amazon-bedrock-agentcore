@@ -33,6 +33,7 @@ from kirocrew_agentcore_control.sandbox import (
     init_lease_active,
     new_runtime_session_id,
     new_sandbox_id,
+    start_in_progress,
 )
 
 
@@ -69,7 +70,15 @@ class KmsRsaPssSigner:
 
 # Attributes the persistence broker owns on the sandbox record. The control
 # plane never sets them, only carries them through its full-record writes.
-_WAKE_HINT_ATTRIBUTES = (("nextDueAt", "N"), ("nextDueJob", "S"), ("restoreSeconds", "N"))
+# holderInstance / lastServedAt fence the current holder from a superseded
+# microVM of the same session; dropping them would silently disable that.
+_WAKE_HINT_ATTRIBUTES = (
+    ("nextDueAt", "N"),
+    ("nextDueJob", "S"),
+    ("restoreSeconds", "N"),
+    ("holderInstance", "S"),
+    ("lastServedAt", "S"),
+)
 
 
 class DynamoSandboxRegistry(InMemorySandboxRegistry):
@@ -233,6 +242,10 @@ class DynamoSandboxRegistry(InMemorySandboxRegistry):
             and not confirmed_inactive
         ):
             raise LeaseConflictError("Expired lease requires authoritative-owner confirmation.")
+        if start_in_progress(record, now) and not confirmed_inactive:
+            # Still provisioning this session's microVM: rotating now would
+            # start a second one that races it for the sandbox.
+            return StartLease(record, authoritative=record.lease_owner == lease_owner)
         # A fresh AgentCore session for every authoritative start: a
         # previous session that died without a clean stop (lost browser,
         # failed checkpoint, stuck microVM) leaves its session id

@@ -42,6 +42,7 @@ jobs:
       - run: uv run --frozen python tools/check-secrets.py .
       - uses: aquasecurity/trivy-action@76071ef0d7ec797419534a183b498b4d6366cf37 # v0.31.0
         with:
+          version: v0.75.0
           scan-type: fs
           scan-ref: .
           severity: HIGH,CRITICAL
@@ -49,6 +50,7 @@ jobs:
       - run: docker build --tag kirocrew-agentcore:ci --file runtime/Dockerfile .
       - uses: aquasecurity/trivy-action@76071ef0d7ec797419534a183b498b4d6366cf37 # v0.31.0
         with:
+          version: v0.75.0
           image-ref: kirocrew-agentcore:ci
           severity: HIGH,CRITICAL
           ignore-unfixed: true

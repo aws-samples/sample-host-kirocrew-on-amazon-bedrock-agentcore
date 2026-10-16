@@ -48,6 +48,7 @@ const DENIED_PREFIXES = [
   "/api/config/export",
   "/api/shutdown",
   "/api/restart",
+  "/api/update",
 ] as const;
 
 export type RouteDisposition =

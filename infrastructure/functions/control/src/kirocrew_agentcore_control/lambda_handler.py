@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -13,6 +14,7 @@ import boto3  # type: ignore[import-untyped]
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 
 from kirocrew_agentcore_control.api import (
+    WAKE_SUBJECT_PURPOSE,
     AgentCoreStopError,
     CheckpointMetadata,
     ClaimsValidator,
@@ -66,6 +68,33 @@ class KmsRsaPssSigner:
         )
         if response.get("SignatureValid") is not True:
             raise ValueError("KMS signature is invalid.")
+
+
+class KmsWakeSubjectSealer:
+    """Seal a subject with the symmetric data key, bound to one sandbox.
+
+    The encryption context carries both the purpose and the sandbox id: KMS
+    refuses a decrypt whose context differs, so the ciphertext only opens for
+    the record it was written onto, and only for a principal whose grant names
+    this purpose.
+    """
+
+    def __init__(self, client: Any, key_arn: str) -> None:
+        if not key_arn:
+            raise ValueError("WAKE_SUBJECT_KEY_ARN is required.")
+        self._client = client
+        self._key_arn = key_arn
+
+    def seal(self, subject: str, sandbox_id: str) -> str:
+        response = self._client.encrypt(
+            KeyId=self._key_arn,
+            Plaintext=subject.encode("utf-8"),
+            EncryptionContext={"purpose": WAKE_SUBJECT_PURPOSE, "sandboxId": sandbox_id},
+        )
+        blob = response.get("CiphertextBlob")
+        if not isinstance(blob, bytes) or not blob:
+            raise RuntimeError("KMS ciphertext is unavailable.")
+        return base64.b64encode(blob).decode("ascii")
 
 
 # Attributes the persistence broker owns on the sandbox record. The control
@@ -167,6 +196,34 @@ class DynamoSandboxRegistry(InMemorySandboxRegistry):
         return self._record(cast(Mapping[str, Mapping[str, str]], item))
 
     _HISTORY_TTL_SECONDS = 7 * 24 * 3600
+
+    def record_wake_subject(self, sandbox_id: str, sealed_subject: str) -> None:
+        # A targeted SET, not a record rewrite: the runtime and the broker write
+        # this item concurrently, and a full put would clobber their fields.
+        if not sealed_subject:
+            raise ValueError("Sealed wake subject is required.")
+        try:
+            self._client.update_item(
+                TableName=self._table_name,
+                Key=self._key(sandbox_id),
+                UpdateExpression="SET wakeSubject = :sealed",
+                ConditionExpression="attribute_exists(pk)",
+                ExpressionAttributeValues={":sealed": {"S": sealed_subject}},
+            )
+        except ClientError as error:
+            if error.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                raise SandboxUnavailableError("Sandbox is unavailable.") from error
+            raise
+
+    def wake_subject(self, sandbox_id: str) -> str | None:
+        item = self._client.get_item(
+            TableName=self._table_name,
+            Key=self._key(sandbox_id),
+            ProjectionExpression="wakeSubject",
+            ConsistentRead=True,
+        ).get("Item", {})
+        value = cast(Mapping[str, str], item.get("wakeSubject", {})).get("S")
+        return value or None
 
     def record_observation(self, record: SandboxRecord) -> None:
         # One event per state version: the version key makes repeated polls
@@ -561,6 +618,13 @@ def _build_service() -> SandboxControlService:
         ),
         DynamoCheckpointCatalog(dynamodb, table_name),
         BotoAgentCoreStopper(agentcore, runtime_arn, qualifier),
+        # Opt-in: without the key the deployment keeps the single-owner wake
+        # (the waker's own COGNITO_SUBJECT) and nothing is sealed or stored.
+        wake_sealer=(
+            KmsWakeSubjectSealer(kms, os.environ["WAKE_SUBJECT_KEY_ARN"])
+            if os.environ.get("WAKE_SUBJECT_KEY_ARN")
+            else None
+        ),
     )
 
 

@@ -183,6 +183,7 @@ class InMemorySandboxRegistry:
         self._owner_by_sandbox: dict[str, str] = {}
         self._requests: dict[tuple[str, str], str] = {}
         self._history: dict[str, dict[int, HistoryEvent]] = {}
+        self._wake_subjects: dict[str, str] = {}
         self._lock = threading.RLock()
 
     def record_observation(self, record: SandboxRecord) -> None:
@@ -428,6 +429,25 @@ class InMemorySandboxRegistry:
             )
             self._store(updated)
             return updated
+
+    def record_wake_subject(self, sandbox_id: str, sealed_subject: str) -> None:
+        """Remember who may be woken for this sandbox, sealed for the waker.
+
+        The record keeps only a one-way owner hash, so an unattended wake cannot
+        recover whose sandbox it is. The control plane seals the subject while
+        the owner is present and authenticated (a Start), and only a waker holding
+        decrypt rights under the matching encryption context can open it again.
+        """
+        if not sealed_subject:
+            raise ValueError("Sealed wake subject is required.")
+        with self._lock:
+            if sandbox_id not in self._owner_by_sandbox:
+                raise SandboxUnavailableError("Sandbox is unavailable.")
+            self._wake_subjects[sandbox_id] = sealed_subject
+
+    def wake_subject(self, sandbox_id: str) -> str | None:
+        with self._lock:
+            return self._wake_subjects.get(sandbox_id)
 
     def _store(self, record: SandboxRecord) -> None:
         self._by_owner[record.owner_hash] = record

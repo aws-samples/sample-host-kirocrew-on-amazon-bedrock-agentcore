@@ -371,6 +371,10 @@ def test_build_service_and_cached_handler(monkeypatch: pytest.MonkeyPatch) -> No
     assert "/ws?" in config.websocket_url
     assert "/invocations" not in config.websocket_url
     assert config.websocket_url.endswith("qualifier=LIVE%20value")
+    assert service._wake_sealer is None
+    monkeypatch.setenv("WAKE_SUBJECT_KEY_ARN", "arn:wake-key")
+    assert isinstance(control._build_service()._wake_sealer, control.KmsWakeSubjectSealer)
+    monkeypatch.delenv("WAKE_SUBJECT_KEY_ARN")
 
     class FakeService:
         def __init__(self) -> None:

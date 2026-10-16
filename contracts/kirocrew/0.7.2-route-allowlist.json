@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "kirocrewVersion": "0.3.0",
+  "kirocrewVersion": "0.7.2",
   "defaultDisposition": "allowed",
   "rationale": [
     "The sandbox is a single-tenant microVM. AgentCore validates the Cognito authorization header and the adapter verifies a binding token against the Cognito subject hash on every invocation, so tenancy is enforced by the transport, not by route filtering.",
@@ -38,12 +38,12 @@
     {
       "prefix": "/api/desktop",
       "registeredUpstream": false,
-      "reason": "Host-native desktop control; not registered by upstream 0.3.0 and impossible inside a microVM."
+      "reason": "Host-native desktop control; not registered by upstream 0.7.2 and impossible inside a microVM."
     },
     {
       "prefix": "/api/files/pick",
       "registeredUpstream": false,
-      "reason": "Native OS file picker; not registered by upstream 0.3.0 and impossible inside a microVM."
+      "reason": "Native OS file picker; not registered by upstream 0.7.2 and impossible inside a microVM."
     }
   ],
   "deniedPrefixes": [
@@ -62,8 +62,8 @@
     {
       "prefix": "/api/secrets",
       "registeredUpstream": false,
-      "calledByBundle": false,
-      "reason": "Defensive: no secret-bearing family may become reachable by upstream rename."
+      "calledByBundle": true,
+      "reason": "Defensive: no secret-bearing family may become reachable by upstream rename. 0.7.2's settings page reads this vault; losing that page is the accepted cost of keeping credential values out of the browser."
     },
     {
       "prefix": "/api/config/export",
@@ -81,7 +81,13 @@
       "prefix": "/api/restart",
       "registeredUpstream": true,
       "calledByBundle": true,
-      "reason": "Upstream 0.3.0 registers POST /api/restart (and the dev-fleet app's /api/restart-gateway). The supervisor owns gateway lifecycle: a browser-initiated restart races checkpoint/restore exactly like /api/shutdown."
+      "reason": "Upstream 0.7.2 registers POST /api/restart (and the dev-fleet app's /api/restart-gateway). The supervisor owns gateway lifecycle: a browser-initiated restart races checkpoint/restore exactly like /api/shutdown."
+    },
+    {
+      "prefix": "/api/update",
+      "registeredUpstream": true,
+      "calledByBundle": true,
+      "reason": "Self-update installs a newer wheel in place and restarts the gateway. The KiroCrew version is pinned by the image digest; updates ship as a new image."
     }
   ]
 }

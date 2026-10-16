@@ -26,7 +26,7 @@ from kirocrew_agentcore_runtime.supervisor import (
     WorkspaceLayout,
 )
 
-DIGEST = "30bd90fcf5e0adc87541f67162866dcc3b5b2d5a0a44418c6d42022c8c7abbb2"
+DIGEST = "ba966c8b2263a211d01c2630f6e0ec22efac746d0c9d2e16eea0fa90dc2ecc3a"
 
 
 class FakeProcess:

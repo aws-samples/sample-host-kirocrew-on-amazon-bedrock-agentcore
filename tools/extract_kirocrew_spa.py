@@ -30,6 +30,9 @@ _COMPILED_SUFFIXES: Final = frozenset(
         ".png",
         ".svg",
         ".ttf",
+        # Font licence texts (0.7.2 bundles OpenDyslexic with its OFL.txt);
+        # the licence must ship alongside the font it covers.
+        ".txt",
         ".wasm",
         ".webmanifest",
         ".woff",

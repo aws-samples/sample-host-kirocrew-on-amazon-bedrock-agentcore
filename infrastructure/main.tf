@@ -200,6 +200,7 @@ module "scheduler" {
   wake_path                  = var.wake_path
   log_retention_days         = var.log_retention_days
   source_directory           = "${path.module}/functions/waker/src"
+  alarm_actions              = var.alarm_actions
   tags                       = module.naming.tags
 }
 

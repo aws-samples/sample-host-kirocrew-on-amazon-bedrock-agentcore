@@ -986,6 +986,24 @@ def test_a_plan_catches_up_a_recent_miss_but_not_an_old_one(waker: Any) -> None:
     assert old["reason"] == "occurrence too old to catch up"
 
 
+def test_a_failed_wake_does_not_strand_the_schedule_forever(waker: Any, caplog: Any) -> None:
+    # Observed: a 09:01 wake died with a 503 before committing, so no receipt
+    # republished nextDueAt. Every later tick saw "already handled" and the
+    # next two mornings were silently skipped.
+    due = int(NOW) - 2 * 86400
+    stranded = _plan(waker, _record(state="READY", updated=due + 66, due=due, job="daily9"))
+    assert stranded["wake"] is True
+    assert stranded.get("stranded") is True
+    assert "STRANDED_SCHEDULE" in caplog.text
+    # The same strand reached through the "too old to catch up" branch.
+    old = _plan(waker, _record(updated=NOW - 7 * 3600, due=int(NOW) - 7 * 3600 - 60))
+    assert old["wake"] is True
+    # Rate limit: a recovery attempt touched the record recently, so wait.
+    recent = _plan(waker, _record(updated=NOW - 600, due=due))
+    assert recent["wake"] is False
+    assert recent["reason"] == "already handled this occurrence"
+
+
 def test_an_older_runtime_keeps_the_periodic_wake(waker: Any) -> None:
     assert _plan(waker, _record(updated=NOW - 7 * 3600))["wake"] is True
     assert _plan(waker, _record(updated=NOW - 600))["wake"] is False

@@ -421,14 +421,45 @@ def _wake_plan(session: Any, table_name: str, sandbox_id: str, now: float) -> di
     elif now < due_at - lead:
         plan["reason"] = f"due in {int(due_at - now)}s, lead {lead}s"
     elif updated is not None and updated >= due_at:
-        # Already woken (and stopped) for this occurrence; a fresh due time
-        # arrives with that wake's final receipt.
-        plan["reason"] = "already handled this occurrence"
+        # Already woken for this occurrence; a fresh due time arrives with that
+        # wake's final receipt. If no receipt ever came (the wake failed before
+        # it could commit), `nextDueAt` is stranded in the past and this branch
+        # would match forever -- one failed morning silently cancelling every
+        # later one. Recover once the strand is older than the periodic wake.
+        plan.update(_recovery(now, due_at, held_for, "already handled this occurrence"))
     elif now - due_at > _CATCH_UP_GRACE_SECONDS:
-        plan["reason"] = "occurrence too old to catch up"
+        plan.update(_recovery(now, due_at, held_for, "occurrence too old to catch up"))
     else:
         plan.update(wake=True, reason=f"due at {due_at}, lead {lead}s")
     return plan
+
+
+def _recovery(now: float, due_at: int, held_for: float | None, reason: str) -> dict[str, Any]:
+    """Wake a sandbox whose published due time is stranded in the past.
+
+    `nextDueAt` is written only by a wake's final receipt (or a Stop). A wake
+    that dies before committing leaves it pointing at an occurrence that is
+    already over, and both "already handled" and "too old" then hold on every
+    later tick -- the schedule stops for good, with no error anywhere. Observed:
+    one 503 at 09:01 and no wake on either of the next two mornings.
+
+    The recovery wake is what republishes a fresh due time: the gateway comes
+    up, its scheduler runs whatever is due, and the final receipt carries the
+    next occurrence. It is rate-limited by the record itself -- any wake touches
+    `updatedAt` -- so a sandbox that keeps failing is retried every
+    `_LEGACY_WAKE_SECONDS`, not every minute.
+    """
+    stale = now - due_at > _LEGACY_WAKE_SECONDS
+    idle = held_for is None or held_for >= _LEGACY_WAKE_SECONDS
+    if stale and idle:
+        LOGGER.warning(
+            "STRANDED_SCHEDULE: nextDueAt %s is %ss in the past with no newer receipt; "
+            "waking to republish the schedule.",
+            due_at,
+            int(now - due_at),
+        )
+        return {"wake": True, "reason": "stranded schedule; recovery wake", "stranded": True}
+    return {"reason": reason}
 
 
 def _catch_up(

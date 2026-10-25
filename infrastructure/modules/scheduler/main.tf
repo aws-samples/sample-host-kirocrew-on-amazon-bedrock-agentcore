@@ -18,6 +18,10 @@ variable "wake_path" { type = string }
 variable "log_retention_days" { type = number }
 variable "source_directory" { type = string }
 variable "tags" { type = map(string) }
+variable "alarm_actions" {
+  type    = list(string)
+  default = []
+}
 
 data "aws_partition" "current" {}
 data "aws_region" "current" {}
@@ -269,3 +273,34 @@ output "waker_function_name" { value = aws_lambda_function.waker.function_name }
 output "waker_function_arn" { value = aws_lambda_function.waker.arn }
 output "schedule_name" { value = aws_scheduler_schedule.waker.name }
 output "schedule_arn" { value = aws_scheduler_schedule.waker.arn }
+
+# A wake that dies before committing strands `nextDueAt` in the past, and the
+# schedule then stops with no error anywhere. The waker logs STRANDED_SCHEDULE
+# when it detects that and recovers; this alarm makes the failure visible.
+resource "aws_cloudwatch_log_metric_filter" "stranded_schedule" {
+  name           = "${var.prefix}-wake-stranded-schedule"
+  log_group_name = aws_cloudwatch_log_group.waker.name
+  pattern        = "\"STRANDED_SCHEDULE\""
+
+  metric_transformation {
+    name          = "WakeStrandedSchedule"
+    namespace     = "KiroCrew/Ops"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "stranded_schedule" {
+  alarm_name          = "${var.prefix}-wake-stranded-schedule"
+  alarm_description   = "A scheduled wake failed before committing and its schedule had to be recovered."
+  namespace           = "KiroCrew/Ops"
+  metric_name         = "WakeStrandedSchedule"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = var.alarm_actions
+  tags                = var.tags
+}

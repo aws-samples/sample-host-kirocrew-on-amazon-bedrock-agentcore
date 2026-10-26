@@ -41,8 +41,8 @@ def test_runtime_image_contract_is_pinned_multiarch_nonroot_and_secret_free() ->
     assert "apt-get upgrade --yes --no-install-recommends" in dockerfile
     assert "tini=0.19.0-1+b3" in dockerfile
     assert (
-        "ghcr.io/astral-sh/uv:0.12.5@sha256:"
-        "e85be844203885286c60ffad8a858d48afb6c5a5c237ca0e67f12e74b8f174b1" in dockerfile
+        "ghcr.io/astral-sh/uv:0.13.4@sha256:"
+        "9f130421e930bfbdc563c00740466603f8723158e90297d07957c2294640262b" in dockerfile
     )
     assert 'echo "${DEPENDENCY_LOCK_SHA256}  uv.lock" | sha256sum --check' in dockerfile
     assert "uv export --frozen --no-dev --no-emit-workspace" in dockerfile

@@ -70,7 +70,7 @@ case "${1:-}" in
     test "$(docker image inspect "$IMAGE_TAG" --format '{{index .Config.Labels "dev.kirocrew.agentcore.protocol"}}')" = "kirocrew-agentcore.v1"
     test "$(docker image inspect "$IMAGE_TAG" --format '{{index .Config.Labels "dev.kirocrew.agentcore.toolchain.node"}}')" = "22.23.1"
     test "$(docker image inspect "$IMAGE_TAG" --format '{{index .Config.Labels "dev.kirocrew.agentcore.toolchain.npm"}}')" = "10.9.8"
-    test "$(docker image inspect "$IMAGE_TAG" --format '{{index .Config.Labels "dev.kirocrew.agentcore.toolchain.uv"}}')" = "0.12.5"
+    test "$(docker image inspect "$IMAGE_TAG" --format '{{index .Config.Labels "dev.kirocrew.agentcore.toolchain.uv"}}')" = "0.13.4"
     image_size=$(docker image inspect "$IMAGE_TAG" --format '{{.Size}}')
     test "$image_size" -lt "$IMAGE_MAX_BYTES"
     docker run --rm --entrypoint /bin/sh "$IMAGE_TAG" -ec '

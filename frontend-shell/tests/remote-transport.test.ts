@@ -12,6 +12,7 @@ import {
   KiroCrewRemoteWebSocket,
   RemoteTransportError,
   classifyKiroCrewRoute,
+  gateChannel,
   kiroPrerequisiteSnapshot,
 } from "../src/remote-transport.js";
 
@@ -548,5 +549,60 @@ describe("stream compatibility", () => {
     expect(() =>
       remote.webSocket(`wss://shell.example/api/ws`, "local-token"),
     ).toThrow(RemoteTransportError);
+  });
+});
+
+describe("gateChannel", () => {
+  function sample(): AgentCoreInvocation {
+    return {
+      version: 1,
+      requestId: REQUEST_ID,
+      bindingToken: "binding",
+      operation: "kirocrew.http",
+      payload: { method: "GET", path: "/api/status" },
+    } as unknown as AgentCoreInvocation;
+  }
+
+  it("holds invocations until the duplex is ready, then forwards them", async (): Promise<void> => {
+    const channel = new FakeChannel();
+    let open: () => void = () => undefined;
+    const ready = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const gated = gateChannel(channel, ready);
+    const drained = (async (): Promise<void> => {
+      for await (const value of gated.invoke(sample())) {
+        void value;
+      }
+    })();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(channel.invocations).toHaveLength(0);
+    open();
+    await drained;
+    expect(channel.invocations).toHaveLength(1);
+  });
+
+  it("fails held invocations when the duplex never opens", async (): Promise<void> => {
+    const channel = new FakeChannel();
+    const failure = new Error("handshake failed");
+    const gated = gateChannel(channel, Promise.reject(failure));
+    await expect(
+      (async (): Promise<void> => {
+        for await (const value of gated.invoke(sample())) {
+          void value;
+        }
+      })(),
+    ).rejects.toBe(failure);
+    await expect(gated.openWebSocket?.(sample())).rejects.toBe(failure);
+    expect(channel.invocations).toHaveLength(0);
+  });
+
+  it("omits openWebSocket when the wrapped channel has none", (): void => {
+    const channel: AgentCoreChannel = {
+      invoke: (invocation) => new FakeChannel().invoke(invocation),
+    };
+    expect("openWebSocket" in gateChannel(channel, Promise.resolve())).toBe(
+      false,
+    );
   });
 });

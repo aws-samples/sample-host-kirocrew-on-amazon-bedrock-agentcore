@@ -23,6 +23,7 @@ import {
 } from "./generated/protocol.js";
 import {
   KiroCrewRemoteTransport,
+  gateChannel,
   type AgentCoreDuplex,
   type AgentCoreInvocation,
 } from "./remote-transport.js";
@@ -650,11 +651,22 @@ export class BrowserApplication {
         }
       },
     });
-    const transport = new KiroCrewRemoteTransport(channel, {
-      origin: this.#config.upstreamOrigin,
-      bindingToken: (): string =>
-        this.#activeBindingToken ?? descriptor.bindingToken,
+    let duplexOpened: () => void = () => undefined;
+    let duplexFailed: (error: unknown) => void = () => undefined;
+    const duplexReady = new Promise<void>((resolve, reject) => {
+      duplexOpened = resolve;
+      duplexFailed = reject;
     });
+    // A rejection nobody awaited yet must not surface as unhandled.
+    duplexReady.catch(() => undefined);
+    const transport = new KiroCrewRemoteTransport(
+      gateChannel(channel, duplexReady),
+      {
+        origin: this.#config.upstreamOrigin,
+        bindingToken: (): string =>
+          this.#activeBindingToken ?? descriptor.bindingToken,
+      },
+    );
     this.#uninstallBootstrap = this.#installTransport(this.#target, transport);
     const invocation: AgentCoreInvocation = {
       version: PROTOCOL_VERSION,
@@ -667,7 +679,13 @@ export class BrowserApplication {
     // the handshake and the resulting kiroCheck() needs the channel in place.
     this.#kiroChannel = channel;
     this.#kiroDescriptor = descriptor;
-    this.#duplex = await channel.openWebSocket(invocation);
+    try {
+      this.#duplex = await channel.openWebSocket(invocation);
+    } catch (error: unknown) {
+      duplexFailed(error);
+      throw error;
+    }
+    duplexOpened();
     this.#schedulePing();
     this.#scheduleBindingRenewal();
     this.#flushQueuedStop();

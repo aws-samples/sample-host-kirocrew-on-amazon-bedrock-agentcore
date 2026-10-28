@@ -110,6 +110,50 @@ export interface RemoteTransportOptions {
   readonly maxResponseBodyBytes?: number;
 }
 
+/**
+ * Hold every invocation on `channel` until `ready` settles.
+ *
+ * The page's own `/api/*` traffic starts the moment the transport is
+ * installed, while the shell's duplex WebSocket is still handshaking. On a
+ * cold session those concurrent first requests let AgentCore provision two
+ * microVMs for one session id: the socket lands on one, HTTP on the other,
+ * and the HTTP side is refused for a minute while the first holds the
+ * sandbox lease. Waiting for the duplex to open means the session already
+ * has its microVM, so every later request reaches that same one. If `ready`
+ * rejects, held and later invocations fail with that error instead of
+ * hanging.
+ */
+export function gateChannel(
+  channel: AgentCoreChannel,
+  ready: Promise<void>,
+): AgentCoreChannel {
+  const gated: AgentCoreChannel = {
+    invoke(
+      invocation: AgentCoreInvocation,
+      signal?: AbortSignal,
+    ): AsyncIterable<AgentCoreRuntimeEvent> {
+      return (async function* (): AsyncIterable<AgentCoreRuntimeEvent> {
+        await ready;
+        yield* channel.invoke(invocation, signal);
+      })();
+    },
+  };
+  const open = channel.openWebSocket?.bind(channel);
+  if (open !== undefined) {
+    return {
+      ...gated,
+      openWebSocket: async (
+        invocation: AgentCoreInvocation,
+        signal?: AbortSignal,
+      ): Promise<AgentCoreDuplex> => {
+        await ready;
+        return await open(invocation, signal);
+      },
+    };
+  }
+  return gated;
+}
+
 export class RemoteTransportError extends Error {
   public constructor(
     public readonly code: ProtocolError["code"],

@@ -12,6 +12,7 @@ import {
   KiroCrewRemoteWebSocket,
   RemoteTransportError,
   classifyKiroCrewRoute,
+  chunkFrames,
   gateChannel,
   kiroPrerequisiteSnapshot,
 } from "../src/remote-transport.js";
@@ -466,7 +467,14 @@ describe("stream compatibility", () => {
     ): AsyncIterable<AgentCoreRuntimeEvent> {
       await Promise.resolve();
       if (invocation.operation === "kirocrew.ws.send") {
-        const data = (invocation.payload as { data: string }).data;
+        const payload = invocation.payload as {
+          data?: string;
+          frames?: { data: string }[];
+        };
+        const data =
+          payload.frames === undefined
+            ? (payload.data ?? "")
+            : payload.frames.map((frame) => frame.data).join("+");
         started.push(data);
         if (data === "a") {
           await firstGate;
@@ -491,10 +499,26 @@ describe("stream compatibility", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(started).toEqual(["a"]);
     releaseFirst();
+    // Frames queued behind the in-flight send leave as ONE ordered batch.
     await vi.waitFor(() => {
-      expect(started).toEqual(["a", "b", "c"]);
+      expect(started).toEqual(["a", "b+c"]);
+    });
+    socket.send("d");
+    await vi.waitFor(() => {
+      expect(started).toEqual(["a", "b+c", "d"]);
     });
     socket.close();
+  });
+
+  it("splits a large backlog into batches under the adapter cap", (): void => {
+    const big = "x".repeat(400 * 1024);
+    expect(chunkFrames(["a", "b"])).toEqual([["a", "b"]]);
+    expect(chunkFrames([big, big, "c"])).toEqual([[big], [big, "c"]]);
+    const bytes = new Uint8Array(300 * 1024);
+    expect(chunkFrames([bytes, bytes]).map((chunk) => chunk.length)).toEqual([
+      1, 1,
+    ]);
+    expect(chunkFrames([])).toEqual([]);
   });
 
   it("closes without ever opening when the tunnel fails before the handshake", async (): Promise<void> => {

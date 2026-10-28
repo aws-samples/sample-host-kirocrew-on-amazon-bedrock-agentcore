@@ -462,16 +462,19 @@ class LoopbackKiroCrewBackend:
         return bytes(buffer)
 
     async def _tunnel_send(self, payload: Mapping[str, object]) -> None:
+        """Forward one frame, or an ordered batch, into an open tunnel.
+
+        A browser sends one invocation per frame and must wait for each to
+        land before the next (concurrent invocations arrive in any order), so
+        a terminal typing one keystroke per frame pays a full runtime round
+        trip per key. The browser therefore coalesces the frames queued while
+        a send is in flight into one ``frames`` list, delivered here strictly
+        in list order. The single ``data``/``encoding`` form stays accepted.
+        """
         tunnel = payload.get("tunnelId")
-        data = payload.get("data")
-        encoding = payload.get("encoding", "utf8")
-        if (
-            not isinstance(tunnel, str)
-            or not isinstance(data, str)
-            or encoding not in {"utf8", "base64"}
-            or len(data) > _MAX_LOOPBACK_BODY_BYTES
-        ):
+        if not isinstance(tunnel, str):
             raise _invalid_request()
+        frames = _tunnel_frames(payload)
         websocket = self._tunnels.get(tunnel)
         if websocket is None or websocket.closed:
             raise AdapterRequestError(
@@ -480,14 +483,11 @@ class LoopbackKiroCrewBackend:
                 "TRANSPORT",
                 "The WebSocket tunnel is not open.",
             )
-        if encoding == "base64":
-            try:
-                decoded = base64.b64decode(data, validate=True)
-            except (ValueError, binascii.Error) as error:
-                raise _invalid_request() from error
-            await websocket.send_bytes(decoded)
-        else:
-            await websocket.send_str(data)
+        for frame in frames:
+            if isinstance(frame, bytes):
+                await websocket.send_bytes(frame)
+            else:
+                await websocket.send_str(frame)
 
     async def _websocket(
         self, request_id: str, request: LoopbackRequest, headers: Mapping[str, str]
@@ -589,3 +589,47 @@ def _invalid_request() -> AdapterRequestError:
     return AdapterRequestError(
         400, "INVALID_MESSAGE", "TRANSPORT", "The loopback request is invalid."
     )
+
+
+_MAX_TUNNEL_BATCH_FRAMES: Final = 256
+
+
+def _decode_frame(data: object, encoding: object) -> str | bytes:
+    if not isinstance(data, str) or encoding not in {"utf8", "base64"}:
+        raise _invalid_request()
+    if encoding == "utf8":
+        return data
+    try:
+        return base64.b64decode(data, validate=True)
+    except (ValueError, binascii.Error) as error:
+        raise _invalid_request() from error
+
+
+def _tunnel_frames(payload: Mapping[str, object]) -> list[str | bytes]:
+    """Decode a ``kirocrew.ws.send`` payload into frames, validating all first.
+
+    Every frame is validated before any is sent, so a malformed batch is
+    refused whole rather than half-delivered. The size cap applies to the
+    batch's encoded total, the same bound a single frame has always had.
+    """
+    raw = payload.get("frames")
+    if raw is None:
+        items: list[object] = [
+            {"data": payload.get("data"), "encoding": payload.get("encoding", "utf8")}
+        ]
+    elif isinstance(raw, list) and 0 < len(raw) <= _MAX_TUNNEL_BATCH_FRAMES:
+        items = list(raw)
+    else:
+        raise _invalid_request()
+    total = 0
+    frames: list[str | bytes] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            raise _invalid_request()
+        data = item.get("data")
+        if isinstance(data, str):
+            total += len(data)
+        if total > _MAX_LOOPBACK_BODY_BYTES:
+            raise _invalid_request()
+        frames.append(_decode_frame(data, item.get("encoding", "utf8")))
+    return frames

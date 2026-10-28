@@ -680,6 +680,63 @@ def test_live_tunnel_send_and_close_bridge_interactive_terminals() -> None:
     asyncio.run(scenario())
 
 
+def test_tunnel_send_delivers_a_frame_batch_in_order() -> None:
+    async def scenario() -> None:
+        websocket = FakeWebSocket([SimpleNamespace(type=WSMsgType.TEXT, data="x")])
+        adapter = backend(FakeSession(websocket=websocket))
+        stream = adapter.execute(
+            "kirocrew.http",
+            "term-batch",
+            {"method": "GET", "path": "/api/ws/terminal/abc", "transport": "websocket"},
+        )
+        assert (await anext(stream))[0] == "request.accepted"
+
+        events = await collect(
+            adapter.execute(
+                "kirocrew.ws.send",
+                "batch-1",
+                {
+                    "tunnelId": "term-batch",
+                    "frames": [
+                        {"data": "l", "encoding": "utf8"},
+                        {"data": "s"},
+                        {"data": base64.b64encode(b"\r").decode(), "encoding": "base64"},
+                    ],
+                },
+            )
+        )
+        assert events == [("request.completed", {"delivered": True})]
+        assert websocket.sent == ["l", "s"]
+        assert websocket.sent_bytes == [b"\r"]
+
+        # A malformed batch is refused whole: nothing from it is delivered.
+        for frames in (
+            [],
+            [{"data": "ok"}, {"data": "!!!", "encoding": "base64"}],
+            [{"data": "ok"}, "not-a-mapping"],
+            [{"data": "a"}] * 257,
+            [{"data": "a" * (1024 * 1024)}, {"data": "b"}],
+            "not-a-list",
+        ):
+            with pytest.raises(AdapterRequestError) as excinfo:
+                await collect(
+                    adapter.execute(
+                        "kirocrew.ws.send",
+                        "batch-x",
+                        {"tunnelId": "term-batch", "frames": frames},
+                    )
+                )
+            assert excinfo.value.status == 400
+        assert websocket.sent == ["l", "s"]
+        with pytest.raises(AdapterRequestError) as excinfo:
+            await collect(
+                adapter.execute("kirocrew.ws.send", "batch-y", {"tunnelId": 7, "data": "x"})
+            )
+        assert excinfo.value.status == 400
+
+    asyncio.run(scenario())
+
+
 def test_websocket_cancellation_and_error_close_branches() -> None:
     async def scenario() -> None:
         websocket = FakeWebSocket([SimpleNamespace(type=WSMsgType.ERROR, data=None)])

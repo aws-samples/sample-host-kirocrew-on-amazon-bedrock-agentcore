@@ -23,8 +23,12 @@ PATTERNS = {
     "AWS access key": re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
     "private key": re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
     "JWT": re.compile(r"\beyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\b"),
+    # A value containing an ellipsis ("kc_whs_…") is a documentation
+    # placeholder, not a credential: upstream 0.10.0's compiled webhook help page
+    # shows exactly that. Real values never contain U+2026.
     "credential assignment": re.compile(
-        r"(?i)\b(?:password|passwd|secret|client_secret)\s*[:=]\s*['\"][^'\"\s]{8,}['\"]"
+        r"(?i)\b(?:password|passwd|secret|client_secret)\s*[:=]\s*['\"]"
+        r"(?![^'\"]*\u2026)[^'\"\s]{8,}['\"]"
     ),
 }
 

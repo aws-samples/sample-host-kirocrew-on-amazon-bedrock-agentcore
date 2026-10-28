@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -81,8 +83,25 @@ def handler(event: Any, _context: Any) -> dict[str, object]:
     # final "did this persist" answer is measured against the start of the work.
     relay = event.get("relay", 0) if isinstance(event, dict) else 0
     relay = relay if isinstance(relay, int) and relay >= 0 else 0
-    subject = _required("COGNITO_SUBJECT")
-    sandbox_id = _required("SANDBOX_ID")
+    session = boto3.Session()
+    target = event.get("sandboxId") if isinstance(event, dict) else None
+    if _multi_owner():
+        if not isinstance(target, str) or not target:
+            # The scheduled tick in multi-owner mode only dispatches: one leg per
+            # due sandbox, each with its own Lambda deadline, so a slow restore of
+            # one workspace never delays another owner's 9 o'clock job.
+            return _dispatch(session, _context)
+        sandbox_id = target
+        try:
+            subject = _open_subject(session, sandbox_id)
+        except WakeRefusedError as refusal:
+            # Returned, not raised: an async invoke retries on error, and a
+            # refusal is a decision, not a fault that a retry could fix.
+            LOGGER.warning("WAKE_REFUSED: %s", refusal)
+            return {"sandboxId": sandbox_id, "outcome": "refused", "reason": str(refusal)}
+    else:
+        subject = _required("COGNITO_SUBJECT")
+        sandbox_id = _required("SANDBOX_ID")
     control_function = _required("CONTROL_FUNCTION_NAME")
     runtime_arn = _required("MACHINE_RUNTIME_ARN")
     qualifier = _required("MACHINE_ENDPOINT_QUALIFIER")
@@ -93,7 +112,6 @@ def handler(event: Any, _context: Any) -> dict[str, object]:
     max_relays = int(os.environ.get("WAKE_MAX_RELAYS", "8"))
     table_name = os.environ.get("SANDBOX_TABLE_NAME", "")
 
-    session = boto3.Session()
     # The schedule fires every minute; most of those ticks must cost nothing.
     # Decide from the record whether THIS tick is the one to wake on.
     # A relay is already mid-work, and a manual invoke with {"force": true}
@@ -263,7 +281,7 @@ def handler(event: Any, _context: Any) -> dict[str, object]:
     held = _hold_while_busy(gateway_get, _context, poll_seconds, stop_reserve)
     if held == "deadline":
         if relay < max_relays:
-            _relay(lambda_client, _context, relay + 1, before)
+            _relay(lambda_client, _context, relay + 1, before, sandbox_id)
             LOGGER.info(
                 "Sandbox %s still busy at the deadline; handed over to relay %s.",
                 sandbox_id,
@@ -318,6 +336,154 @@ def handler(event: Any, _context: Any) -> dict[str, object]:
         "persisted": persisted,
         "stopped": stopped,
     }
+
+
+#: KMS encryption-context purpose the control plane seals a wake subject under.
+#: Must match ``WAKE_SUBJECT_PURPOSE`` in the control plane.
+_WAKE_SUBJECT_PURPOSE = "kirocrew-wake-subject"
+#: Upper bound on legs started by one tick: a cost and blast-radius bound if the
+#: table ever reports many sandboxes due at once (a bad clock, a bulk import).
+_DEFAULT_MAX_DISPATCH = 20
+
+
+class WakeRefusedError(RuntimeError):
+    """A sealed subject that must not be used to wake anything."""
+
+
+def _multi_owner() -> bool:
+    """Multi-owner mode is on exactly when the waker can open sealed subjects."""
+    return bool(os.environ.get("WAKE_SUBJECT_KEY_ARN"))
+
+
+def _dispatch(session: Any, context: Any) -> dict[str, object]:
+    """Find every enrolled sandbox that is due and start one wake leg for each.
+
+    Enrolment is the presence of ``wakeSubject`` on the METADATA item, written
+    by the control plane at the owner's own Start. Nothing here decrypts
+    anything: the dispatcher only reads the same due-time fields the
+    single-owner path reads, and hands each due leg nothing but a sandbox id.
+    """
+    table_name = _required("SANDBOX_TABLE_NAME")
+    limit = int(os.environ.get("WAKE_MAX_DISPATCH", str(_DEFAULT_MAX_DISPATCH)))
+    dynamodb = session.client("dynamodb")
+    now = time.time()
+    enrolled: list[str] = []
+    request: dict[str, Any] = {
+        "TableName": table_name,
+        "FilterExpression": "sk = :m AND attribute_exists(wakeSubject)",
+        "ExpressionAttributeValues": {":m": {"S": "METADATA"}},
+        "ProjectionExpression": "pk",
+    }
+    while True:
+        page = dynamodb.scan(**request)
+        for item in page.get("Items", []):
+            key = item.get("pk", {}).get("S", "")
+            if key.startswith("SANDBOX#"):
+                enrolled.append(key.removeprefix("SANDBOX#"))
+        if "LastEvaluatedKey" not in page:
+            break
+        request["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+
+    due: list[str] = []
+    for sandbox_id in enrolled:
+        plan = _wake_plan(session, table_name, sandbox_id, now)
+        if plan["wake"]:
+            due.append(sandbox_id)
+    if len(due) > limit:
+        LOGGER.warning(
+            "WAKE_DISPATCH_CAPPED: %s sandboxes due, starting %s this tick.", len(due), limit
+        )
+        due = due[:limit]
+    if not due:
+        LOGGER.info("Dispatch: %s enrolled, none due.", len(enrolled))
+        return {"outcome": "dispatched", "enrolled": len(enrolled), "started": []}
+    function = getattr(context, "invoked_function_arn", "") or os.environ.get(
+        "AWS_LAMBDA_FUNCTION_NAME", ""
+    )
+    if not function:
+        raise RuntimeError("The waker cannot name itself to start a wake leg.")
+    lambda_client = session.client("lambda")
+    for sandbox_id in due:
+        lambda_client.invoke(
+            FunctionName=function,
+            InvocationType="Event",
+            Payload=json.dumps({"sandboxId": sandbox_id}).encode(),
+        )
+    LOGGER.info("Dispatch: %s enrolled, %s due and started.", len(enrolled), len(due))
+    return {"outcome": "dispatched", "enrolled": len(enrolled), "started": due}
+
+
+def _open_subject(session: Any, sandbox_id: str) -> str:
+    """Recover the owner's subject for one sandbox, or refuse to wake it.
+
+    Three checks, each closing a different hole:
+    * KMS refuses a decrypt whose encryption context names another sandbox, so
+      a ciphertext copied onto a different record cannot be opened here.
+    * The plaintext must hash to the record's own ``ownerHash`` -- the same
+      derivation the control plane uses -- so a record whose owner changed
+      does not wake on a stale enrolment.
+    * The Cognito user must still exist and be enabled, so disabling a person
+      also stops their unattended wakes; a sealed subject has no expiry of its
+      own.
+    """
+    table_name = _required("SANDBOX_TABLE_NAME")
+    item = (
+        session.client("dynamodb")
+        .get_item(
+            TableName=table_name,
+            Key={"pk": {"S": f"SANDBOX#{sandbox_id}"}, "sk": {"S": "METADATA"}},
+            ProjectionExpression="wakeSubject, ownerHash",
+            ConsistentRead=True,
+        )
+        .get("Item", {})
+    )
+    sealed = item.get("wakeSubject", {}).get("S", "")
+    owner_hash = item.get("ownerHash", {}).get("S", "")
+    if not sealed or not owner_hash:
+        raise WakeRefusedError(f"Sandbox {sandbox_id} is not enrolled for scheduled wakes.")
+    try:
+        blob = base64.b64decode(sealed, validate=True)
+        plaintext = (
+            session.client("kms")
+            .decrypt(
+                CiphertextBlob=blob,
+                KeyId=_required("WAKE_SUBJECT_KEY_ARN"),
+                EncryptionContext={"purpose": _WAKE_SUBJECT_PURPOSE, "sandboxId": sandbox_id},
+            )
+            .get("Plaintext")
+        )
+    except (binascii.Error, ClientError) as error:
+        raise WakeRefusedError(f"Sealed subject for {sandbox_id} does not open: {error}") from error
+    if not isinstance(plaintext, bytes) or not plaintext:
+        raise WakeRefusedError(f"Sealed subject for {sandbox_id} is empty.")
+    subject = plaintext.decode("utf-8")
+    derived = hashlib.sha256(f"kirocrew-owner-v1\x00{subject}".encode()).hexdigest()
+    if not hmac.compare_digest(derived, owner_hash):
+        raise WakeRefusedError(f"Sealed subject for {sandbox_id} does not match its owner.")
+    if not _subject_enabled(session, subject):
+        raise WakeRefusedError(f"Owner of {sandbox_id} is disabled or no longer exists.")
+    return subject
+
+
+def _subject_enabled(session: Any, subject: str) -> bool:
+    """Whether the Cognito user behind ``subject`` still exists and is enabled.
+
+    Looked up by ``sub`` with ListUsers because a pool's username is not
+    necessarily the sub. Without a configured pool the check is skipped, which
+    the Terraform module never does in multi-owner mode.
+    """
+    pool = os.environ.get("COGNITO_USER_POOL_ID", "")
+    if not pool:
+        return True
+    if not re.fullmatch(r"[0-9a-fA-F-]{8,64}", subject):
+        # A Cognito sub is a UUID; anything else must not reach the filter.
+        return False
+    users = (
+        session.client("cognito-idp")
+        .list_users(UserPoolId=pool, Filter=f'sub = "{subject}"', Limit=1)
+        .get("Users", [])
+    )
+    return bool(users) and users[0].get("Enabled", False) is True
 
 
 #: How long after its due time a missed occurrence is still worth running. Past
@@ -642,7 +808,9 @@ def _hold_while_busy(gateway_get: Any, context: Any, poll_seconds: int, stop_res
         time.sleep(poll_seconds)
 
 
-def _relay(lambda_client: Any, context: Any, leg: int, before: int | None) -> None:
+def _relay(
+    lambda_client: Any, context: Any, leg: int, before: int | None, sandbox_id: str = ""
+) -> None:
     """Start the next leg asynchronously, then let this one return.
 
     The next leg re-mints its binding through ``schedulerStart``: the sandbox's
@@ -655,10 +823,15 @@ def _relay(lambda_client: Any, context: Any, leg: int, before: int | None) -> No
     )
     if not function:
         raise RuntimeError("The waker cannot name itself to start a relay.")
+    payload: dict[str, object] = {"relay": leg, "generationBefore": before}
+    if sandbox_id and _multi_owner():
+        # Only the sandbox id travels; the next leg unseals the subject itself,
+        # so no plaintext identity ever sits in an async event queue.
+        payload["sandboxId"] = sandbox_id
     lambda_client.invoke(
         FunctionName=function,
         InvocationType="Event",
-        Payload=json.dumps({"relay": leg, "generationBefore": before}).encode(),
+        Payload=json.dumps(payload).encode(),
     )
 
 

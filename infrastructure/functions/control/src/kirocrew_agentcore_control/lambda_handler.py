@@ -101,12 +101,16 @@ class KmsWakeSubjectSealer:
 # plane never sets them, only carries them through its full-record writes.
 # holderInstance / lastServedAt fence the current holder from a superseded
 # microVM of the same session; dropping them would silently disable that.
+# wakeSubject is sealed at Start by a targeted SET; the Stop that follows is a
+# full-record write, so without carrying it the enrolment would vanish at
+# exactly the moment an unattended wake starts to need it.
 _WAKE_HINT_ATTRIBUTES = (
     ("nextDueAt", "N"),
     ("nextDueJob", "S"),
     ("restoreSeconds", "N"),
     ("holderInstance", "S"),
     ("lastServedAt", "S"),
+    ("wakeSubject", "S"),
 )
 
 

@@ -801,6 +801,7 @@ export class KiroCrewRemoteWebSocket extends EventTarget {
   readonly #abort = new AbortController();
   readonly #transport: KiroCrewRemoteTransport;
   #tunnelId: string | undefined;
+  #sendChain: Promise<void> = Promise.resolve();
 
   public constructor(
     transport: KiroCrewRemoteTransport,
@@ -855,16 +856,19 @@ export class KiroCrewRemoteWebSocket extends EventTarget {
                     )
                   : new ArrayBuffer(0),
             );
-    if (bytes === undefined) {
-      void (data as Blob).arrayBuffer().then((buffer) => {
-        void this.#transport
-          .tunnelSend(tunnelId, new Uint8Array(buffer))
-          .catch(() => this.#failed());
-      });
-      return;
-    }
-    void this.#transport
-      .tunnelSend(tunnelId, bytes)
+    const frame: Promise<string | Uint8Array> =
+      bytes === undefined
+        ? (data as Blob).arrayBuffer().then((buffer) => new Uint8Array(buffer))
+        : Promise.resolve(bytes);
+    // Each frame is its own runtime invocation, and concurrent invocations
+    // reach the adapter in no particular order. A native socket delivers
+    // messages in send order, and a terminal depends on it: one keystroke per
+    // frame, so racing sends arrive as scrambled commands that the shell then
+    // executes. Chain the sends so frame N+1 leaves only after frame N landed.
+    this.#sendChain = this.#sendChain
+      .then(async () => {
+        await this.#transport.tunnelSend(tunnelId, await frame);
+      })
       .catch(() => this.#failed());
   }
 

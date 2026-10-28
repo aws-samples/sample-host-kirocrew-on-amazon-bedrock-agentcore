@@ -448,6 +448,49 @@ describe("stream compatibility", () => {
     socket.close();
   });
 
+  it("delivers frames in send order even when an earlier send is slow", async (): Promise<void> => {
+    const channel = new FakeChannel();
+    const started: string[] = [];
+    let releaseFirst: () => void = () => undefined;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    channel.events = async function* (
+      invocation,
+    ): AsyncIterable<AgentCoreRuntimeEvent> {
+      await Promise.resolve();
+      if (invocation.operation === "kirocrew.ws.send") {
+        const data = (invocation.payload as { data: string }).data;
+        started.push(data);
+        if (data === "a") {
+          await firstGate;
+        }
+        yield event(invocation, 0, "request.completed", { delivered: true });
+        return;
+      }
+      yield event(invocation, 0, "request.accepted", {
+        status: 101,
+        transport: "websocket",
+      });
+      await new Promise<never>(() => undefined);
+    };
+    const socket = transport(channel).webSocket(`wss://shell.example/api/ws`);
+    await new Promise<void>((resolve) => {
+      socket.onopen = (): void => resolve();
+    });
+    socket.send("a");
+    socket.send("b");
+    socket.send("c");
+    // While "a" is still in flight, nothing behind it may leave.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(started).toEqual(["a"]);
+    releaseFirst();
+    await vi.waitFor(() => {
+      expect(started).toEqual(["a", "b", "c"]);
+    });
+    socket.close();
+  });
+
   it("closes without ever opening when the tunnel fails before the handshake", async (): Promise<void> => {
     const channel = new FakeChannel();
     channel.events = async function* (

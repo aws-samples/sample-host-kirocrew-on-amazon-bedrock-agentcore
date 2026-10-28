@@ -7,6 +7,10 @@ variable "log_retention_days" { type = number }
 variable "alarm_actions" { type = list(string) }
 variable "tags" { type = map(string) }
 variable "source_directory" { type = string }
+variable "create_wake_subject_key" {
+  type    = bool
+  default = false
+}
 # Upper bound for the runtime-session tokens the broker mints to a container that
 # owns a sandbox initialization; pinned to the platform session lifetime so a
 # token can never outlive the microVM it was issued to.
@@ -35,6 +39,25 @@ resource "aws_kms_key" "bindings" {
 resource "aws_kms_alias" "bindings" {
   name          = "alias/${var.prefix}-bindings"
   target_key_id = aws_kms_key.bindings.key_id
+}
+
+# Seals each owner's Cognito subject onto their own sandbox record at Start, so a
+# single waker can wake every enrolled owner. A key of its own rather than the
+# snapshot key: the only grants on it are the control plane's Encrypt and the
+# waker's Decrypt, both pinned to one encryption-context purpose, so its blast
+# radius is "who may be woken", never "whose workspace can be read".
+resource "aws_kms_key" "wake_subjects" {
+  count                   = var.create_wake_subject_key ? 1 : 0
+  description             = "${var.prefix} sealed owner subjects for scheduled wakes"
+  enable_key_rotation     = true
+  deletion_window_in_days = var.retain_data ? 30 : 7
+  tags                    = var.tags
+}
+
+resource "aws_kms_alias" "wake_subjects" {
+  count         = var.create_wake_subject_key ? 1 : 0
+  name          = "alias/${var.prefix}-wake-subjects"
+  target_key_id = aws_kms_key.wake_subjects[0].key_id
 }
 
 resource "aws_s3_bucket" "snapshots" {
@@ -286,5 +309,6 @@ output "sandbox_table_arn" { value = aws_dynamodb_table.sandboxes.arn }
 output "snapshot_bucket_name" { value = aws_s3_bucket.snapshots.id }
 output "snapshot_key_arn" { value = aws_kms_key.snapshots.arn }
 output "binding_key_arn" { value = aws_kms_key.bindings.arn }
+output "wake_subject_key_arn" { value = one(aws_kms_key.wake_subjects[*].arn) }
 output "broker_function_arn" { value = aws_lambda_function.broker.arn }
 output "broker_role_arn" { value = aws_iam_role.broker.arn }

@@ -18,6 +18,27 @@ variable "wake_path" { type = string }
 variable "log_retention_days" { type = number }
 variable "source_directory" { type = string }
 variable "tags" { type = map(string) }
+variable "wake_subject_key_arn" {
+  description = "Non-empty turns on multi-owner wake: the waker scans enrolled sandboxes and unseals each owner's subject with this key."
+  type        = string
+  default     = ""
+}
+variable "user_pool_id" {
+  type    = string
+  default = ""
+}
+variable "user_pool_arn" {
+  type    = string
+  default = ""
+}
+variable "wake_max_dispatch" {
+  type    = number
+  default = 20
+}
+
+locals {
+  multi_owner = var.wake_subject_key_arn != ""
+}
 variable "alarm_actions" {
   type    = list(string)
   default = []
@@ -119,6 +140,40 @@ data "aws_iam_policy_document" "waker" {
     actions   = ["bedrock-agentcore:InvokeAgentRuntimeForUser"]
     resources = ["*"]
   }
+
+  # Multi-owner mode only. The tick scans for enrolled sandboxes (projection:
+  # the key alone); a leg decrypts one sealed subject under the wake purpose --
+  # the key policy context means the snapshot key and every other context stay
+  # out of reach -- and asks Cognito whether that person is still enabled.
+  dynamic "statement" {
+    for_each = local.multi_owner ? [1] : []
+    content {
+      sid       = "FindEnrolledSandboxes"
+      actions   = ["dynamodb:Scan"]
+      resources = [var.sandbox_table_arn]
+    }
+  }
+  dynamic "statement" {
+    for_each = local.multi_owner ? [1] : []
+    content {
+      sid       = "UnsealWakeSubject"
+      actions   = ["kms:Decrypt"]
+      resources = [var.wake_subject_key_arn]
+      condition {
+        test     = "StringEquals"
+        variable = "kms:EncryptionContext:purpose"
+        values   = ["kirocrew-wake-subject"]
+      }
+    }
+  }
+  dynamic "statement" {
+    for_each = local.multi_owner && var.user_pool_arn != "" ? [1] : []
+    content {
+      sid       = "CheckOwnerStillEnabled"
+      actions   = ["cognito-idp:ListUsers"]
+      resources = [var.user_pool_arn]
+    }
+  }
 }
 
 resource "aws_iam_role_policy" "waker" {
@@ -149,20 +204,33 @@ resource "aws_lambda_function" "waker" {
   memory_size = 512
 
   environment {
-    variables = {
-      COGNITO_SUBJECT            = var.cognito_subject
-      SANDBOX_ID                 = var.sandbox_id
-      CONTROL_FUNCTION_NAME      = var.control_function_name
-      MACHINE_RUNTIME_ARN        = var.machine_runtime_arn
-      MACHINE_ENDPOINT_QUALIFIER = var.machine_endpoint_qualifier
-      WAKE_PATH                  = var.wake_path
-      WAKE_DWELL_SECONDS         = tostring(var.wake_dwell_seconds)
-      WAKE_POLL_SECONDS          = "30"
-      WAKE_STOP_RESERVE_SECONDS  = "180"
-      WAKE_MAX_RELAYS            = tostring(var.wake_max_relays)
-      WAKE_GATE                  = "on"
-      SANDBOX_TABLE_NAME         = var.sandbox_table_name
-    }
+    variables = merge(
+      {
+        CONTROL_FUNCTION_NAME      = var.control_function_name
+        MACHINE_RUNTIME_ARN        = var.machine_runtime_arn
+        MACHINE_ENDPOINT_QUALIFIER = var.machine_endpoint_qualifier
+        WAKE_PATH                  = var.wake_path
+        WAKE_DWELL_SECONDS         = tostring(var.wake_dwell_seconds)
+        WAKE_POLL_SECONDS          = "30"
+        WAKE_STOP_RESERVE_SECONDS  = "180"
+        WAKE_MAX_RELAYS            = tostring(var.wake_max_relays)
+        WAKE_GATE                  = "on"
+        SANDBOX_TABLE_NAME         = var.sandbox_table_name
+      },
+      # One mode or the other, never both: a single-owner subject left in the
+      # environment of a multi-owner waker would be dead configuration that
+      # looks authoritative.
+      local.multi_owner
+      ? {
+        WAKE_SUBJECT_KEY_ARN = var.wake_subject_key_arn
+        COGNITO_USER_POOL_ID = var.user_pool_id
+        WAKE_MAX_DISPATCH    = tostring(var.wake_max_dispatch)
+      }
+      : {
+        COGNITO_SUBJECT = var.cognito_subject
+        SANDBOX_ID      = var.sandbox_id
+      },
+    )
   }
 
   depends_on = [aws_cloudwatch_log_group.waker]

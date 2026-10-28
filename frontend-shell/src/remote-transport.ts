@@ -2,6 +2,9 @@ import { PROTOCOL_VERSION, type ProtocolError } from "./generated/protocol.js";
 
 export const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 export const MAX_RESPONSE_BODY_BYTES = 8 * 1024 * 1024;
+/** The adapter refuses a `kirocrew.ws.send` batch above these bounds. */
+const MAX_TUNNEL_BATCH_FRAMES = 256;
+const MAX_TUNNEL_BATCH_CHARS = 512 * 1024;
 
 const SAFE_REQUEST_HEADERS = new Set([
   "accept",
@@ -100,6 +103,36 @@ export interface AgentCoreChannel {
     invocation: AgentCoreInvocation,
     signal?: AbortSignal,
   ): Promise<AgentCoreDuplex>;
+}
+
+/**
+ * Split ordered frames into consecutive batches whose encoded size stays
+ * under the adapter's cap. A single oversized frame travels alone, exactly as
+ * it did before batching, so the adapter's per-frame limit still decides it.
+ */
+export function chunkFrames(
+  frames: readonly (string | Uint8Array)[],
+): (string | Uint8Array)[][] {
+  const chunks: (string | Uint8Array)[][] = [];
+  let current: (string | Uint8Array)[] = [];
+  let size = 0;
+  for (const frame of frames) {
+    const encoded =
+      typeof frame === "string"
+        ? frame.length
+        : Math.ceil(frame.byteLength / 3) * 4;
+    if (current.length > 0 && size + encoded > MAX_TUNNEL_BATCH_CHARS) {
+      chunks.push(current);
+      current = [];
+      size = 0;
+    }
+    current.push(frame);
+    size += encoded;
+  }
+  if (current.length > 0) {
+    chunks.push(current);
+  }
+  return chunks;
 }
 
 export interface RemoteTransportOptions {
@@ -514,22 +547,33 @@ export class KiroCrewRemoteTransport {
     return this.#channel.invoke(invocation, signal);
   }
 
-  /** Forward a live frame into an open upstream WebSocket tunnel. */
+  /**
+   * Forward live frames, in order, into an open upstream WebSocket tunnel.
+   * One frame uses the original single-frame payload; several travel as one
+   * ordered `frames` batch in a single invocation.
+   */
   public async tunnelSend(
     tunnelId: string,
-    data: string | Uint8Array,
+    data: string | Uint8Array | readonly (string | Uint8Array)[],
   ): Promise<void> {
-    const binary = typeof data !== "string";
+    const encode = (
+      frame: string | Uint8Array,
+    ): { data: string; encoding: "utf8" | "base64" } =>
+      typeof frame === "string"
+        ? { data: frame, encoding: "utf8" }
+        : { data: encodeBase64(frame), encoding: "base64" };
+    const frames = Array.isArray(data)
+      ? (data as readonly (string | Uint8Array)[])
+      : [data as string | Uint8Array];
     const invocation: AgentCoreInvocation = {
       version: PROTOCOL_VERSION,
       requestId: this.#requestId(),
       bindingToken: this.#bindingToken(),
       operation: "kirocrew.ws.send",
-      payload: {
-        tunnelId,
-        data: binary ? encodeBase64(data) : data,
-        encoding: binary ? "base64" : "utf8",
-      },
+      payload:
+        frames.length === 1
+          ? { tunnelId, ...encode(frames[0] as string | Uint8Array) }
+          : { tunnelId, frames: frames.map(encode) },
     };
     for await (const event of this.#channel.invoke(invocation)) {
       if (event.operation === "error") {
@@ -847,7 +891,8 @@ export class KiroCrewRemoteWebSocket extends EventTarget {
   readonly #abort = new AbortController();
   readonly #transport: KiroCrewRemoteTransport;
   #tunnelId: string | undefined;
-  #sendChain: Promise<void> = Promise.resolve();
+  readonly #outbox: Promise<string | Uint8Array>[] = [];
+  #draining = false;
 
   public constructor(
     transport: KiroCrewRemoteTransport,
@@ -906,16 +951,37 @@ export class KiroCrewRemoteWebSocket extends EventTarget {
       bytes === undefined
         ? (data as Blob).arrayBuffer().then((buffer) => new Uint8Array(buffer))
         : Promise.resolve(bytes);
-    // Each frame is its own runtime invocation, and concurrent invocations
-    // reach the adapter in no particular order. A native socket delivers
-    // messages in send order, and a terminal depends on it: one keystroke per
-    // frame, so racing sends arrive as scrambled commands that the shell then
-    // executes. Chain the sends so frame N+1 leaves only after frame N landed.
-    this.#sendChain = this.#sendChain
-      .then(async () => {
-        await this.#transport.tunnelSend(tunnelId, await frame);
-      })
-      .catch(() => this.#failed());
+    this.#outbox.push(frame);
+    if (!this.#draining) {
+      void this.#drain(tunnelId);
+    }
+  }
+
+  /**
+   * Each send is a runtime invocation, and concurrent invocations reach the
+   * adapter in no particular order, while a native socket (and the terminal,
+   * one keystroke per frame) relies on send order. So only one send is in
+   * flight per socket. Frames queued meanwhile leave together as one ordered
+   * batch: order holds, and fast typing costs one round trip per batch
+   * rather than one per key.
+   */
+  async #drain(tunnelId: string): Promise<void> {
+    this.#draining = true;
+    try {
+      while (this.#outbox.length > 0) {
+        const batch = this.#outbox.splice(0, MAX_TUNNEL_BATCH_FRAMES);
+        try {
+          const frames = await Promise.all(batch);
+          for (const chunk of chunkFrames(frames)) {
+            await this.#transport.tunnelSend(tunnelId, chunk);
+          }
+        } catch {
+          this.#failed();
+        }
+      }
+    } finally {
+      this.#draining = false;
+    }
   }
 
   #failed(): void {

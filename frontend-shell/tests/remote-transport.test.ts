@@ -147,9 +147,14 @@ describe("KiroCrew route policy", () => {
       "/api/secrets",
       "/api/config/export",
       "/api/shutdown",
+      "/api/debug/processes",
+      "/api/kas-bundle/install",
     ]) {
       expect(classifyKiroCrewRoute("GET", path, ORIGIN)).toBe("denied");
     }
+    expect(classifyKiroCrewRoute("GET", "/api/kas-bundle", ORIGIN)).toBe(
+      "allowed",
+    );
     expect(
       classifyKiroCrewRoute("GET", "https://evil.example/api/chat", ORIGIN),
     ).toBe("denied");

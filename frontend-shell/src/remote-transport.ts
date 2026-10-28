@@ -49,6 +49,8 @@ const DENIED_PREFIXES = [
   "/api/shutdown",
   "/api/restart",
   "/api/update",
+  "/api/debug",
+  "/api/kas-bundle/install",
 ] as const;
 
 export type RouteDisposition =

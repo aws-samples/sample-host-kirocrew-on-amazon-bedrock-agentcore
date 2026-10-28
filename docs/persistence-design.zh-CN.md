@@ -113,7 +113,7 @@ Stop safely 的全部时长"。
 包含：`home/.kiro`、`home/.config`、`home/.local/share/kiro-cli`、
 `projects`、`user`。
 排除：`.agentcore`、`.aws`、`.ssh`、各类缓存（`.cache`、`node_modules`、
-`__pycache__`、`.git/objects` 等）、`.env*`、`*.log/.pid/.sock/.tmp/~`、
+`__pycache__` 等）、`.env*`、`*.log/.pid/.sock/.tmp/~`、
 FIFO / 设备文件；symlink 只记录目标不跟随。
 
 ### 2.3 同步机制一览

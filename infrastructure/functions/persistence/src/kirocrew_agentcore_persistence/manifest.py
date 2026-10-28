@@ -121,7 +121,11 @@ class PersistencePolicy:
             ".agentcore",
             ".aws",
             ".cache",
-            ".git/objects",
+            # `.git/objects` is deliberately NOT excluded: the refs and HEAD
+            # are durable, so dropping the objects restored every repository
+            # pointing at commits that no longer exist, losing unpushed work.
+            # Pack files are immutable, so content-addressed chunks dedupe
+            # them across checkpoints.
             ".mypy_cache",
             ".pytest_cache",
             ".ruff_cache",

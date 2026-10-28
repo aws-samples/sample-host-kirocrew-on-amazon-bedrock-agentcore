@@ -20,8 +20,7 @@ from kirocrew_agentcore_control.lambda_handler import (
     KmsWakeSubjectSealer,
 )
 from kirocrew_agentcore_control.sandbox import SandboxUnavailableError
-
-from tests.unit.test_control_api import (
+from test_control_api import (
     SUBJECT,
     response_body,
     service,

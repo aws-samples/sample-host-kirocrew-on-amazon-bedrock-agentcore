@@ -97,7 +97,14 @@ def test_pinned_official_kirocrew_start_token_pause_resume_shutdown_and_crash(
                 address, port = fields[1].split(":")
                 if int(port, 16) == 5476 and fields[3] == "0A":
                     listeners.append(address)
-        assert listeners == ["0100007F"]
+        # 127.0.0.1, and since 0.10.0 also ::1: upstream pairs a secondary
+        # loopback listener (SECONDARY_LOOPBACK_FOR) so a `localhost` that
+        # resolves to either family still lands on this gateway. Both are
+        # host-local; what must never appear is a wildcard or routable address.
+        ipv4_loopback = "0100007F"
+        ipv6_loopback = "00000000000000000000000001000000"
+        assert ipv4_loopback in listeners
+        assert set(listeners) <= {ipv4_loopback, ipv6_loopback}, listeners
 
         supervisor.pause()
         assert wait_for_state(ready.pid, lambda state: state == "T") == "T"

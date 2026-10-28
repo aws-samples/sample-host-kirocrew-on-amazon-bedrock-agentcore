@@ -312,3 +312,31 @@ def test_panel_persisted_paths_mirror_the_persistence_policy() -> None:
         assert f'"/mnt/workspace/{root.as_posix()}",' in variables
     declared = re.findall(r'"(/mnt/workspace/[^"]+)",', variables)
     assert len(declared) == len(PersistencePolicy._roots)
+
+
+def test_multi_owner_wake_key_is_dedicated_opt_in_and_purpose_bound() -> None:
+    # The wake key decides who may be woken. Every grant on it is pinned to the
+    # wake purpose, it is never the snapshot key, and nothing exists unless the
+    # deployment opts in.
+    persistence = terraform("modules/persistence/main.tf")
+    assert 'resource "aws_kms_key" "wake_subjects"' in persistence
+    assert "count                   = var.create_wake_subject_key ? 1 : 0" in persistence
+    assert terraform("variables.tf").count('variable "enable_multi_owner_wake"') == 1
+
+    purpose = (
+        'variable = "kms:EncryptionContext:purpose"\n        values   = ["kirocrew-wake-subject"]'
+    )
+    control = terraform("modules/control-api/main.tf")
+    seal = control[control.index('sid       = "SealWakeSubject"') :][:400]
+    assert 'actions   = ["kms:Encrypt"]' in seal
+    assert "resources = [var.wake_subject_key_arn]" in seal
+    assert purpose in seal
+
+    scheduler = terraform("modules/scheduler/main.tf")
+    unseal = scheduler[scheduler.index('sid       = "UnsealWakeSubject"') :][:400]
+    assert 'actions   = ["kms:Decrypt"]' in unseal
+    assert "resources = [var.wake_subject_key_arn]" in unseal
+    assert purpose in unseal
+    # The waker reads the table but never writes it.
+    assert "dynamodb:PutItem" not in scheduler
+    assert "dynamodb:UpdateItem" not in scheduler

@@ -10,6 +10,13 @@ module "naming" {
 }
 
 locals {
+  # Multi-owner wake needs the same machine door single-owner wake does.
+  multi_owner_wake = (
+    var.enable_multi_owner_wake
+    && var.enable_scheduled_wake
+    && var.enable_machine_runtime
+    && var.deployment_mode == "microvm"
+  )
   binding_audience            = "urn:kirocrew:agentcore:${local.account_id}:${local.region}:${module.naming.prefix}"
   cognito_domain_prefix       = "${module.naming.prefix}-${local.account_id}-${local.region}"
   cognito_domain              = "https://${local.cognito_domain_prefix}.auth.${local.region}.amazoncognito.com"
@@ -32,6 +39,7 @@ module "persistence" {
   alarm_actions             = var.alarm_actions
   tags                      = module.naming.tags
   source_directory          = "${path.module}/functions/persistence/src"
+  create_wake_subject_key   = local.multi_owner_wake
 
   runtime_session_token_ttl_seconds = var.runtime_max_lifetime_seconds
 }
@@ -164,6 +172,7 @@ module "control_api" {
   allowed_email_domains          = var.allowed_email_domains
   allowed_email_patterns         = var.allowed_email_patterns
   persisted_paths                = var.persisted_paths
+  wake_subject_key_arn           = local.multi_owner_wake ? module.persistence.wake_subject_key_arn : ""
   tags                           = module.naming.tags
 }
 
@@ -176,12 +185,17 @@ module "scheduler" {
     var.deployment_mode == "microvm"
     && var.enable_machine_runtime
     && var.enable_scheduled_wake
-    && var.wake_cognito_subject != ""
-    && var.wake_sandbox_id != ""
+    && (
+      local.multi_owner_wake
+      || (var.wake_cognito_subject != "" && var.wake_sandbox_id != "")
+    )
   ) ? 1 : 0
   source = "./modules/scheduler"
 
   prefix                     = module.naming.prefix
+  wake_subject_key_arn       = local.multi_owner_wake ? module.persistence.wake_subject_key_arn : ""
+  user_pool_id               = module.identity.user_pool_id
+  user_pool_arn              = module.identity.user_pool_arn
   schedule_expression        = var.wake_schedule_expression
   schedule_enabled           = var.wake_schedule_enabled
   schedule_timezone          = var.wake_schedule_timezone

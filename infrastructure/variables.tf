@@ -283,6 +283,12 @@ variable "wake_sandbox_id" {
   default     = ""
 }
 
+variable "enable_multi_owner_wake" {
+  description = "Wake every owner who has started their sandbox, instead of the one wake_cognito_subject. Each Start seals the owner's Cognito subject onto their own record with a dedicated KMS key; the waker unseals it, checks it against the record's owner hash and that the Cognito user is still enabled, then wakes. wake_cognito_subject and wake_sandbox_id are ignored when this is on. Owners enrol on their next Start after it is turned on."
+  type        = bool
+  default     = false
+}
+
 variable "wake_path" {
   description = "Gateway path the wake requests once the sandbox is restored. Reading status is enough: the request exists to prove KiroCrew itself came up, since the container starting is NOT the same as the gateway that owns the cron scheduler starting."
   type        = string

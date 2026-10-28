@@ -22,6 +22,11 @@ variable "log_retention_days" { type = number }
 variable "source_directory" { type = string }
 variable "auth_source_directory" { type = string }
 variable "tags" { type = map(string) }
+variable "wake_subject_key_arn" {
+  description = "Key the control plane seals owner subjects with at Start. Empty keeps single-owner wake."
+  type        = string
+  default     = ""
+}
 
 data "archive_file" "control" {
   type        = "zip"
@@ -74,6 +79,21 @@ data "aws_iam_policy_document" "control" {
     sid       = "SignAndVerifyBindings"
     actions   = ["kms:GetPublicKey", "kms:Sign", "kms:Verify"]
     resources = [var.binding_key_arn]
+  }
+  # Encrypt only, and only under the wake purpose: the control plane seals a
+  # subject but never needs to read one back.
+  dynamic "statement" {
+    for_each = var.wake_subject_key_arn == "" ? [] : [1]
+    content {
+      sid       = "SealWakeSubject"
+      actions   = ["kms:Encrypt"]
+      resources = [var.wake_subject_key_arn]
+      condition {
+        test     = "StringEquals"
+        variable = "kms:EncryptionContext:purpose"
+        values   = ["kirocrew-wake-subject"]
+      }
+    }
   }
   statement {
     sid       = "InvokePersistenceBroker"
@@ -134,6 +154,7 @@ resource "aws_lambda_function" "control" {
       RUNTIME_ARN                    = var.runtime_arn
       RUNTIME_QUALIFIER              = var.runtime_qualifier
       SANDBOX_TABLE                  = var.sandbox_table_name
+      WAKE_SUBJECT_KEY_ARN           = var.wake_subject_key_arn
     }
   }
 

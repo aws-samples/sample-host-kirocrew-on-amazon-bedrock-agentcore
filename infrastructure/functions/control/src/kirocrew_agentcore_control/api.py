@@ -25,6 +25,23 @@ from kirocrew_agentcore_control.sandbox import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# KMS encryption-context purpose for a sealed wake subject. The waker's decrypt
+# grant is conditioned on this exact value, so ciphertext sealed for any other
+# purpose with the same key cannot be opened through the wake path.
+WAKE_SUBJECT_PURPOSE: Final = "kirocrew-wake-subject"
+
+
+class WakeSubjectSealer(Protocol):
+    """Seal a Cognito subject so only the scheduled waker can recover it.
+
+    Implementations MUST bind the ciphertext to ``sandbox_id`` (KMS encryption
+    context), so a sealed subject copied onto another sandbox's record fails to
+    decrypt instead of waking the wrong workspace.
+    """
+
+    def seal(self, subject: str, sandbox_id: str) -> str: ...
+
+
 PROTOCOL_VERSION: Final = "kirocrew-agentcore.v1"
 # Long enough for a cold-start restore of a multi-hundred-megabyte checkpoint
 # (every chunk download re-presents this token to the persistence broker);
@@ -414,9 +431,11 @@ class SandboxControlService:
         * cap,
         max_stop_attempts: int = 4,
         lease_ttl: timedelta = timedelta(seconds=90),
+        wake_sealer: WakeSubjectSealer | None = None,
     ) -> None:
         if max_stop_attempts <= 0 or lease_ttl <= timedelta(0):
             raise ValueError("Retry attempts and lease TTL must be positive.")
+        self._wake_sealer = wake_sealer
         self._config = config
         self._registry = registry
         self._claims = claims
@@ -612,6 +631,7 @@ class SandboxControlService:
             ttl=self._lease_ttl,
         )
         binding, expires = self._tokens.issue_binding(identity, lease.record)
+        self._enroll_wake(identity, lease.record)
         response: dict[str, object] = {
             "bindingToken": binding,
             "expiresAt": _timestamp(expires),
@@ -627,6 +647,26 @@ class SandboxControlService:
         }
         self._remember(identity.subject, "start", key, "start", response)
         return response
+
+    def _enroll_wake(self, identity: Identity, record: SandboxRecord) -> None:
+        """Seal the owner's subject onto the record so a scheduled wake can find them.
+
+        A Start is the one moment the owner is provably present (a validated
+        Cognito token), so it is where enrolment happens -- no operator step,
+        no per-user configuration. Best effort on purpose: failing to enrol only
+        costs a future unattended wake, while failing the Start would cost the
+        session the owner is asking for right now.
+        """
+        if self._wake_sealer is None:
+            return
+        try:
+            sealed = self._wake_sealer.seal(identity.subject, record.sandbox_id)
+            self._registry.record_wake_subject(record.sandbox_id, sealed)
+        except Exception:
+            _LOGGER.warning(
+                "Wake enrolment failed; scheduled wakes for this sandbox stay off",
+                exc_info=True,
+            )
 
     def _scheduler_stop(
         self, event: Mapping[str, object], correlation_id: str

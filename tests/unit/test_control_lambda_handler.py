@@ -371,6 +371,10 @@ def test_build_service_and_cached_handler(monkeypatch: pytest.MonkeyPatch) -> No
     assert "/ws?" in config.websocket_url
     assert "/invocations" not in config.websocket_url
     assert config.websocket_url.endswith("qualifier=LIVE%20value")
+    assert service._wake_sealer is None
+    monkeypatch.setenv("WAKE_SUBJECT_KEY_ARN", "arn:wake-key")
+    assert isinstance(control._build_service()._wake_sealer, control.KmsWakeSubjectSealer)
+    monkeypatch.delenv("WAKE_SUBJECT_KEY_ARN")
 
     class FakeService:
         def __init__(self) -> None:
@@ -443,6 +447,19 @@ def test_registry_history_queries_events_newest_first() -> None:
     assert request["Limit"] == 20
     with pytest.raises(ValueError, match="positive"):
         store.history(SANDBOX, limit=0)
+
+
+def test_state_transition_keeps_the_wake_enrolment() -> None:
+    # Start seals wakeSubject with a targeted SET; the Stop that follows rewrites
+    # the record with PutItem. Dropping it there unenrols every owner exactly
+    # when their unattended wake first needs it.
+    item = registry(FakeDynamo())._record_item(record())
+    item["wakeSubject"] = {"S": "c2VhbGVk"}
+    parsed = control.DynamoSandboxRegistry._record(item)
+    rewritten = control.DynamoSandboxRegistry._record_item(
+        replace(parsed, state_version=parsed.state_version + 1)
+    )
+    assert rewritten["wakeSubject"] == {"S": "c2VhbGVk"}
 
 
 def test_state_transition_carries_the_broker_wake_hints_through() -> None:

@@ -610,3 +610,47 @@ Two verifications remain outstanding rather than unstarted — voluntary lease
 release, and a real workspace's restore time, which is what `wake_lead_seconds`
 should be fitted to. The only restore ever timed was six seconds against an EMPTY
 workspace, so the current lead is a deliberately loose guess.
+
+## Multi-owner wake (#39)
+
+The single-owner design needed the operator to configure one Cognito subject and
+one sandbox id, because the record keeps only a one-way `ownerHash` and the
+control plane cannot mint a scheduler binding without the plaintext subject.
+Multi-owner wake removes that step. It is opt-in behind
+`enable_multi_owner_wake`; with it off nothing below exists and the single-owner
+path is unchanged.
+
+**Enrolment happens at the owner's own Start.** That is the one moment the
+owner is provably present (a validated Cognito token). The control plane
+KMS-encrypts the subject with a dedicated key (`alias/<prefix>-wake-subjects`)
+under the encryption context `{purpose: kirocrew-wake-subject, sandboxId}` and
+stores it as `wakeSubject` on that sandbox's METADATA item. The Stop that follows
+is a full-record write, so `wakeSubject` is carried through with the other wake
+hints. Enrolment is best effort: a failed seal is logged and the Start proceeds.
+
+**One waker, two roles.**
+
+- The per-minute tick *dispatches*: it scans METADATA items that carry
+  `wakeSubject`, runs the usual wake plan on each, and starts one asynchronous
+  leg per due sandbox, passing only `{"sandboxId": ...}`. It decrypts nothing.
+  `WAKE_MAX_DISPATCH` (default 20) caps the legs started by one tick.
+- A *leg* unseals its own subject and refuses to wake (a logged `WAKE_REFUSED`
+  and a normal return, so the async invoke does not retry) unless all three
+  hold: KMS decrypts under that sandbox's context; the plaintext hashes to the
+  record's `ownerHash`; the Cognito user is found by `sub` and is enabled.
+  Relays carry the sandbox id, never the subject.
+
+**Grants.** The control plane gets `kms:Encrypt` and the waker gets
+`kms:Decrypt`, both conditioned on `kms:EncryptionContext:purpose`. The waker
+also gets `dynamodb:Scan` on the sandbox table and `cognito-idp:ListUsers` on the
+pool. Neither grant touches the snapshot key.
+
+**Limits worth knowing.**
+
+- An owner is enrolled only after their first Start with the feature on.
+- Disabling the Cognito user stops their wakes; there is no other revocation.
+- The tick scans the whole table every minute. Fine for tens of owners; a sparse
+  GSI on `wakeSubject` is the change to make before hundreds.
+- Several owners due in the same minute each start their own sandbox. The
+  control plane and the runtime already serialise per sandbox, not per
+  deployment, so they do not contend with each other.

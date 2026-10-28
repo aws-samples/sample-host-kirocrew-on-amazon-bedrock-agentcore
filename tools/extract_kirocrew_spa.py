@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
 import importlib.util
 import json
 import shutil
@@ -30,7 +31,7 @@ _COMPILED_SUFFIXES: Final = frozenset(
         ".png",
         ".svg",
         ".ttf",
-        # Font licence texts (0.7.2 bundles OpenDyslexic with its OFL.txt);
+        # Font licence texts (0.7.2 and later bundle OpenDyslexic with its OFL.txt);
         # the licence must ship alongside the font it covers.
         ".txt",
         ".wasm",
@@ -81,10 +82,20 @@ def load_pin(path: Path = _ARTIFACT_CONFIG) -> ArtifactPin:
     return ArtifactPin(*(value[key] for key in required))
 
 
-def installed_dist() -> Path:
+def installed_dist(expected_version: str | None = None) -> Path:
     spec = importlib.util.find_spec("kiro_crew")
     if spec is None or spec.submodule_search_locations is None:
         raise FileNotFoundError("The pinned KiroCrew distribution is not installed.")
+    if expected_version is not None:
+        # A venv left on the previous pin still imports fine, so without this the
+        # old SPA is extracted under the NEW version's directory and manifest --
+        # a stale bundle that every downstream digest check then agrees with.
+        installed = importlib.metadata.version("kirocrew")
+        if installed != expected_version:
+            raise SystemExit(
+                f"Installed kirocrew is {installed}, but the pin is {expected_version}; "
+                "run `uv sync --frozen --all-packages` first."
+            )
     package_root = Path(next(iter(spec.submodule_search_locations))).resolve()
     return package_root / "static" / "dist"
 
@@ -210,7 +221,7 @@ def _arguments(argv: Sequence[str] | None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _arguments(argv)
     pin = load_pin()
-    source = arguments.source or installed_dist()
+    source = arguments.source or installed_dist(pin.version)
     if arguments.check:
         with tempfile.TemporaryDirectory() as temporary:
             expected = extract(source, Path(temporary), pin)

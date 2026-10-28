@@ -140,7 +140,7 @@ def test_route_rules_and_policy_are_closed_by_default() -> None:
     assert prefix.matches("GET", "/api/prefix/child")
 
     policy = KiroCrewRoutePolicy()
-    assert policy.VERSION == "0.7.2"
+    assert policy.VERSION == "0.10.0"
     assert policy.classify("get", "/api/auth/status") is RouteDisposition.SYNTHETIC
     assert policy.classify("POST", "/api/auth/logout") is RouteDisposition.SYNTHETIC
     assert policy.classify("GET", "/api/chat?q=1") is RouteDisposition.ALLOWED
@@ -174,6 +174,8 @@ def test_route_rules_and_policy_are_closed_by_default() -> None:
         ("POST", "/api/file-raw"),
         ("DELETE", "/api/chat"),
         ("POST", "/api/new-upstream-route"),
+        # 0.10.0: engine status is readable even though installing one is not.
+        ("GET", "/api/kas-bundle"),
     ):
         assert policy.classify(method, path) is RouteDisposition.ALLOWED
     for path in (
@@ -183,6 +185,8 @@ def test_route_rules_and_policy_are_closed_by_default() -> None:
         "/api/shutdown",
         "/api/secrets",
         "/api/config/export",
+        "/api/debug/processes",
+        "/api/kas-bundle/install",
         "/api/chat/../secrets",
         "/api//chat",
         "api/chat",

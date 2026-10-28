@@ -4,7 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "boto3==1.40.21",
-  "kirocrew @ https://download.crew.kiro.dev/cli/stable/0.7.2/kirocrew-0.7.2-py3-none-any.whl#sha256=ba966c8b2263a211d01c2630f6e0ec22efac746d0c9d2e16eea0fa90dc2ecc3a",
+  "kirocrew @ https://download.crew.kiro.dev/cli/stable/0.10.0/kirocrew-0.10.0-py3-none-any.whl#sha256=bea234a0b2ae6e63a50b3c6000a0e9a954bf6bb19d84db6f3b9a93b95cc50196",
 ]
 
 [build-system]

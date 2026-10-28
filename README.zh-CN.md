@@ -103,7 +103,7 @@ KiroCrew 原本面向本地运行：浏览器中的 SPA 通过 HTTP、服务器�
   Adapter 再把绑定令牌与 Cognito subject 比对。沙箱是单租户 microVM。
 - **路由策略。** 上游全部路由默认隧穿。只有会签发 Gateway 自身凭证（`/api/token`）或抢夺
   Gateway 生命周期（`/api/shutdown`）的路由被拒绝；microVM 中不可能存在的宿主机原生功能返回
-  `501`。策略固化在 `contracts/kirocrew/0.7.2-route-allowlist.json`，由契约测试同时约束
+  `501`。策略固化在 `contracts/kirocrew/0.10.0-route-allowlist.json`，由契约测试同时约束
   Python Adapter 和 TypeScript Shell。
 - **绑定令牌** 授权每次调用，有效期 30 分钟；沙箱租约存活期间会透明续签，长时间打开的
   页面不会因此失效，也不会轮换会话。容器赢得沙箱初始化后，Broker 会为它签发一枚绑定同一
@@ -176,7 +176,7 @@ terraform -chdir=infrastructure apply -state="$TF_STATE" \
 
 ```bash
 make image-publish \
-  IMAGE_RELEASE_TAG=0.7.2-microvm-r1 \
+  IMAGE_RELEASE_TAG=0.10.0-microvm-r1 \
   EXPECTED_AWS_ACCOUNT_ID=<AWS_ACCOUNT_ID> \
   AWS_REGION=$AWS_REGION \
   ECR_REPOSITORY_URI=<AWS_ACCOUNT_ID>.dkr.ecr.$AWS_REGION.amazonaws.com/kirocrew-agentcore-dev-runtime

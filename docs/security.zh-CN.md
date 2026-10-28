@@ -29,7 +29,7 @@ MCP）。这决定了威胁模型：
 | 沙箱内无数据权限 | 执行角色只能验签、调用 Broker、写自身日志和指标，以及（可选）只读访问一个 Agent Registry。DynamoDB、S3 和 KMS 数据密钥只能经 Broker 访问 | `infrastructure/modules/runtime-common/main.tf` |
 | 经 Broker 的短期存储访问 | Broker 校验绑定、确认记录仍指向该会话后，返回 SigV4 签名的预签名 URL | `infrastructure/functions/persistence/` |
 | 加密检查点 | 每沙箱独立 KMS 数据密钥、VM 内加密、按代提交、恢复失败可回退 | [persistence.md](persistence.md) |
-| Gateway 凭证不出 VM | 固定路由策略拒绝 `/api/token` 和 `/api/shutdown`，两端都有契约测试 | `contracts/kirocrew/0.7.2-route-allowlist.json` |
+| Gateway 凭证不出 VM | 固定路由策略拒绝 `/api/token` 和 `/api/shutdown`，两端都有契约测试 | `contracts/kirocrew/0.10.0-route-allowlist.json` |
 | 注册门禁 | 注册和登录经 auth Lambda，强制邮箱域名白名单 | `infrastructure/functions/auth/` |
 | 无人值守唤醒不存密钥 | EventBridge Scheduler → 只有 IAM 角色的 Waker Lambda → 单独的 IAM 鉴权 Runtime 端点；Adapter 只在该端点接受调度调用 | [design-scheduled-jobs.md](design-scheduled-jobs.md) |
 | 访问 Registry 不用用户凭证 | stdio SigV4 MCP 桥用执行角色签名，拒绝非 `https` 地址，权限限定为单个 Registry ARN 的四个只读动作 | `runtime/.../sigv4_mcp_proxy.py`、[operations.md](operations.md) |

@@ -36,7 +36,7 @@ model:
 | No data access in the sandbox | The execution role can only verify bindings, invoke the broker, write its own logs and metrics, and (optionally) read one Agent Registry. DynamoDB, S3 and KMS data keys are reached only through the broker | `infrastructure/modules/runtime-common/main.tf` |
 | Brokered, short-lived storage access | The broker checks the binding, confirms the record still names that session, then returns presigned URLs signed with SigV4 | `infrastructure/functions/persistence/` |
 | Encrypted checkpoints | Per-sandbox KMS data key, encryption inside the VM, generation commit with rollback on restore | [persistence.md](persistence.md) |
-| Gateway credential stays in the VM | `/api/token` and `/api/shutdown` are denied by the pinned route policy, enforced by contract tests on both sides | `contracts/kirocrew/0.7.2-route-allowlist.json` |
+| Gateway credential stays in the VM | `/api/token` and `/api/shutdown` are denied by the pinned route policy, enforced by contract tests on both sides | `contracts/kirocrew/0.10.0-route-allowlist.json` |
 | Gated sign-up | Registration and sign-in go through an auth Lambda that enforces an email-domain allowlist | `infrastructure/functions/auth/` |
 | Unattended wake without a stored secret | EventBridge Scheduler → waker Lambda with an IAM role only → a separate IAM-authorized runtime endpoint. The adapter honours scheduler invocations only on that endpoint | [design-scheduled-jobs.md](design-scheduled-jobs.md) |
 | Registry access without user credentials | A stdio SigV4 MCP bridge signs Registry calls with the execution role, refuses non-`https` endpoints, and is scoped to one Registry ARN with four read-only actions | `runtime/.../sigv4_mcp_proxy.py`, [operations.md](operations.md) |

@@ -72,7 +72,7 @@ class KiroCrewRoutePolicy:
     Cognito subject hash on every invocation, so tenancy is enforced there — not
     by route filtering. `/api/chat` and `/api/terminal` already grant arbitrary
     in-sandbox execution, so filtering feature routes buys no isolation while
-    breaking most of the product. Upstream 0.7.2 registers hundreds of `/api/*` routes
+    breaking most of the product. Upstream 0.10.0 registers hundreds of `/api/*` routes
     and its browser bundle references 308 route families; an enumerated
     allowlist cannot track that surface, and every gap shows up as a 403 on a
     working feature.
@@ -83,7 +83,7 @@ class KiroCrewRoutePolicy:
     bundle, so denying them removes no functionality.
     """
 
-    VERSION: Final = "0.7.2"
+    VERSION: Final = "0.10.0"
     _SYNTHETIC: Final = (
         RouteRule(frozenset({"GET"}), "/api/auth/status", False),
         RouteRule(frozenset({"GET"}), "/api/auth/local-token", False),
@@ -126,6 +126,16 @@ class KiroCrewRoutePolicy:
         # as a new image. `/api/update-message` is an unrelated messaging route
         # and does not match this prefix.
         "/api/update",
+        # 0.10.0 adds a debug family (`/api/debug/processes` can include each
+        # process's environment). Upstream already refuses it without the
+        # internal secret and the bundle never calls it; denied here so that
+        # refusal never depends on upstream alone.
+        "/api/debug",
+        # 0.10.0 adds `POST /api/kas-bundle/install`, which downloads an agent
+        # engine into the persisted home. The software in a sandbox comes from
+        # the image digest only -- the same reason /api/update is denied. The
+        # read-only `GET /api/kas-bundle` status stays reachable.
+        "/api/kas-bundle/install",
     )
 
     def classify(self, method: str, path_with_query: str) -> RouteDisposition:

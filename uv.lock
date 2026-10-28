@@ -567,8 +567,8 @@ wheels = [
 
 [[package]]
 name = "kirocrew"
-version = "0.7.2"
-source = { url = "https://download.crew.kiro.dev/cli/stable/0.7.2/kirocrew-0.7.2-py3-none-any.whl" }
+version = "0.10.0"
+source = { url = "https://download.crew.kiro.dev/cli/stable/0.10.0/kirocrew-0.10.0-py3-none-any.whl" }
 dependencies = [
     { name = "aiohttp" },
     { name = "cron-descriptor" },
@@ -577,6 +577,7 @@ dependencies = [
     { name = "defusedxml" },
     { name = "jinja2" },
     { name = "jsonschema" },
+    { name = "markdown-it-py" },
     { name = "multidict" },
     { name = "numpy" },
     { name = "openpyxl" },
@@ -601,13 +602,13 @@ dependencies = [
     { name = "yarl" },
 ]
 wheels = [
-    { url = "https://download.crew.kiro.dev/cli/stable/0.7.2/kirocrew-0.7.2-py3-none-any.whl", hash = "sha256:ba966c8b2263a211d01c2630f6e0ec22efac746d0c9d2e16eea0fa90dc2ecc3a" },
+    { url = "https://download.crew.kiro.dev/cli/stable/0.10.0/kirocrew-0.10.0-py3-none-any.whl", hash = "sha256:bea234a0b2ae6e63a50b3c6000a0e9a954bf6bb19d84db6f3b9a93b95cc50196" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.9,<4" },
-    { name = "amazon-transcribe", marker = "extra == 'voice-aws'", specifier = ">=0.6,<1" },
+    { name = "amazon-transcribe", marker = "extra == 'voice-aws'", specifier = ">=0.6.3,<1" },
     { name = "black", marker = "extra == 'dev'", specifier = "==26.3.1" },
     { name = "boto3", marker = "extra == 'voice-aws'", specifier = ">=1.34,<2" },
     { name = "cron-descriptor", specifier = ">=1.4,<2" },
@@ -623,6 +624,7 @@ requires-dist = [
     { name = "jsonschema", marker = "extra == 'dev'", specifier = "==4.26.0" },
     { name = "kirocrew", extras = ["voice-aws"], marker = "extra == 'voice'" },
     { name = "lark-oapi", marker = "extra == 'feishu'", specifier = ">=1.4,<2" },
+    { name = "markdown-it-py", specifier = ">=3,<5" },
     { name = "multidict", specifier = ">=6.0,<7" },
     { name = "mypy", marker = "extra == 'dev'", specifier = "==1.14.1" },
     { name = "neonize", marker = "extra == 'whatsapp'", specifier = "==0.4.3.post0" },
@@ -637,12 +639,12 @@ requires-dist = [
     { name = "pyjwt", extras = ["crypto"], marker = "extra == 'dev'", specifier = "==2.13.0" },
     { name = "pyjwt", extras = ["crypto"], marker = "extra == 'teams'", specifier = "==2.13.0" },
     { name = "pysqlite3-binary", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = ">=0.5.4" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8,<10" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = "==9.0.3" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = "==0.20.3" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4,<7" },
     { name = "pytest-testmon", marker = "extra == 'dev'", specifier = ">=2" },
-    { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2" },
-    { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3" },
+    { name = "pytest-timeout", marker = "extra == 'dev'", specifier = "==2.2.0" },
+    { name = "pytest-xdist", marker = "extra == 'dev'", specifier = "==3.5.0" },
     { name = "python-docx", specifier = ">=1,<2" },
     { name = "pywhispercpp", marker = "extra == 'voice'", specifier = ">=1.5,<2" },
     { name = "pywinpty", marker = "sys_platform == 'win32'", specifier = ">=2.0,<4" },
@@ -653,9 +655,9 @@ requires-dist = [
     { name = "snowballstemmer", specifier = ">=1.0" },
     { name = "truststore", marker = "sys_platform == 'darwin'", specifier = "==0.10.4" },
     { name = "typing-extensions", specifier = ">=4.5.0" },
-    { name = "tzdata", marker = "sys_platform == 'win32'", specifier = ">=2024.1" },
+    { name = "tzdata", marker = "sys_platform == 'win32'", specifier = ">=2026.2" },
     { name = "tzlocal", marker = "sys_platform == 'win32'", specifier = ">=5.0" },
-    { name = "uv", specifier = ">=0.5,<1" },
+    { name = "uv", specifier = ">=0.6.7,<1" },
     { name = "websockets", specifier = ">=12,<16" },
     { name = "yarl", specifier = ">=1.9,<2" },
 ]
@@ -726,7 +728,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = "==1.40.21" },
-    { name = "kirocrew", url = "https://download.crew.kiro.dev/cli/stable/0.7.2/kirocrew-0.7.2-py3-none-any.whl" },
+    { name = "kirocrew", url = "https://download.crew.kiro.dev/cli/stable/0.10.0/kirocrew-0.10.0-py3-none-any.whl" },
 ]
 
 [[package]]

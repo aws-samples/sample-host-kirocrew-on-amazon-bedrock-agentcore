@@ -193,15 +193,38 @@ describe("pre-session gate", () => {
       remoteSession: true,
     });
 
-    const other = await browser.fetch(`${ORIGIN}/api/chat`, {
+    const other = browser.fetch(`${ORIGIN}/api/chat`, {
       method: "POST",
       body: "{}",
     });
-    expect(other.status).toBe(503);
-    expect(await other.json()).toMatchObject({
-      code: "KIROCREW_UNAVAILABLE",
-      retryable: true,
+    let settled = false;
+    void other.then(() => {
+      settled = true;
     });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Held, not refused: a refusal here is what left stale error banners.
+    expect(settled).toBe(false);
+    installKiroCrewBootstrap(browser, remote(new Channel()));
+    expect((await other).status).toBe(200);
+    expect(nativeFetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects a held request when its signal aborts", async (): Promise<void> => {
+    const nativeFetch = vi.fn<typeof fetch>(() =>
+      Promise.resolve(new Response("native")),
+    );
+    const browser = target(nativeFetch);
+    installPreSessionGate(browser, ORIGIN);
+    const controller = new AbortController();
+    const held = browser.fetch(`${ORIGIN}/api/status`, {
+      signal: controller.signal,
+    });
+    controller.abort(new DOMException("stop", "AbortError"));
+    await expect(held).rejects.toMatchObject({ name: "AbortError" });
+    const already = browser.fetch(`${ORIGIN}/api/status`, {
+      signal: controller.signal,
+    });
+    await expect(already).rejects.toMatchObject({ name: "AbortError" });
     expect(nativeFetch).not.toHaveBeenCalled();
   });
 
@@ -233,8 +256,10 @@ describe("pre-session gate", () => {
     expect(nativeFetch).not.toHaveBeenCalled();
 
     restore();
-    const gated = await browser.fetch(`${ORIGIN}/api/status`);
-    expect(gated.status).toBe(503);
+    const gated = browser.fetch(`${ORIGIN}/api/status`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    installKiroCrewBootstrap(browser, remote(new Channel()));
+    expect((await gated).status).toBe(200);
     expect(nativeFetch).not.toHaveBeenCalled();
   });
 });

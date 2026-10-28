@@ -97,10 +97,15 @@ export function unavailablePresentation(
  * Answer same-origin `/api/*` traffic BEFORE a session exists, so the upstream
  * SPA's boot-time probes (notably `GET /api/kiro-prerequisite`) never fall
  * through to CloudFront's SPA fallback and choke on `text/html`. Synthetic
- * routes get their canonical synthetic bodies; every other `/api/*` request
- * gets a retryable 503 JSON error. Once the real remote transport is
- * installed (`__KIROCREW_REMOTE_TRANSPORT__`), the gate steps aside; if the
- * transport is later uninstalled, the gate resumes automatically.
+ * routes get their canonical synthetic bodies. Every other `/api/*` request
+ * is HELD, not refused: the SPA loads before the sandbox is connected and
+ * does not retry what failed, so a refusal here left "KiroCrew is not
+ * connected yet" banners on screen long after the sandbox came up. A held
+ * request is replayed through the remote transport the moment it is
+ * installed (`__KIROCREW_REMOTE_TRANSPORT__`); while the sandbox is stopped
+ * the SPA sits behind the status panel, so waiting is invisible. Aborting
+ * the request's signal still rejects it. Once the transport is installed the
+ * gate steps aside; if it is later uninstalled, the gate resumes.
  */
 export function installPreSessionGate(
   target: BootstrapTarget,
@@ -130,19 +135,54 @@ export function installPreSessionGate(
     if (synthetic !== undefined) {
       return synthetic;
     }
-    return Response.json(
-      {
-        code: "KIROCREW_UNAVAILABLE",
-        message:
-          "KiroCrew is not connected yet. Sign in and start a session first.",
-        retryable: true,
-      },
-      { status: 503 },
-    );
+    const signal =
+      init?.signal ?? (input instanceof Request ? input.signal : undefined);
+    await untilTransport(target, signal ?? undefined);
+    return await target.fetch(input, init);
   };
   return (): void => {
     target.fetch = nativeFetch;
   };
+}
+
+const pendingTransport = new WeakMap<BootstrapTarget, (() => void)[]>();
+
+function untilTransport(
+  target: BootstrapTarget,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted === true) {
+      reject(signal.reason as Error);
+      return;
+    }
+    const waiters = pendingTransport.get(target) ?? [];
+    pendingTransport.set(target, waiters);
+    const release = (): void => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    };
+    const abort = (): void => {
+      const index = waiters.indexOf(release);
+      if (index >= 0) {
+        waiters.splice(index, 1);
+      }
+      reject(signal?.reason as Error);
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    waiters.push(release);
+  });
+}
+
+function releasePendingRequests(target: BootstrapTarget): void {
+  const waiters = pendingTransport.get(target);
+  if (waiters === undefined) {
+    return;
+  }
+  pendingTransport.delete(target);
+  for (const release of waiters) {
+    release();
+  }
 }
 
 export function installKiroCrewBootstrap(
@@ -199,6 +239,7 @@ export function installKiroCrewBootstrap(
 
   target.__KIROCREW_AGENTCORE_CAPABILITIES__ = KIROCREW_AGENTCORE_CAPABILITIES;
   target.__KIROCREW_REMOTE_TRANSPORT__ = true;
+  releasePendingRequests(target);
 
   return (): void => {
     target.fetch = nativeFetch;

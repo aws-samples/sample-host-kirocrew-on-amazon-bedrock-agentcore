@@ -35,6 +35,12 @@ def test_policy_accepts_only_documented_durable_roots() -> None:
         "memory/agent/notes.md",
         "projects/default/source.py",
         "user/report.txt",
+        # A repository's refs survive a restore, so its objects must too:
+        # without them HEAD names a commit that no longer exists and every
+        # unpushed commit is gone.
+        "projects/default/.git/HEAD",
+        "projects/default/.git/objects/pack/pack-1.pack",
+        "projects/default/.git/objects/ab/cdef0123",
     ]:
         assert policy.includes(PurePosixPath(path))
     for path in [

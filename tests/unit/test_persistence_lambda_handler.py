@@ -337,6 +337,27 @@ def test_object_names_presigning_and_listing() -> None:
         with pytest.raises(ValueError, match="Invalid checkpoint operation"):
             broker._presign(s3, SANDBOX, invalid)
 
+    other = "c" * 64
+    batch = broker._presign_batch(
+        s3, SANDBOX, {"method": "GET", "names": [f"{DIGEST}.bin", f"{other}.bin"]}
+    )
+    grants = cast(list[dict[str, object]], batch["grants"])
+    assert [grant["name"] for grant in grants] == [f"{DIGEST}.bin", f"{other}.bin"]
+    assert all(grant["method"] == "GET" for grant in grants)
+    assert [request[0] for request in s3.presign_requests[-2:]] == ["get_object"] * 2
+    for invalid_batch in (
+        {"method": "GET", "names": []},
+        {"method": "GET", "names": "x"},
+        {"method": "GET", "names": [1]},
+        {"method": "HEAD", "names": [f"{DIGEST}.bin"]},
+        {"method": "GET", "names": [f"{DIGEST}.bin"] * (broker._MAX_BATCH_GRANTS + 1)},
+    ):
+        with pytest.raises(ValueError, match="Invalid checkpoint batch operation"):
+            broker._presign_batch(s3, SANDBOX, invalid_batch)
+    # Batches are chunk-only: a manifest name is not a valid chunk object.
+    with pytest.raises(ValueError, match="Invalid checkpoint object name"):
+        broker._presign_batch(s3, SANDBOX, {"method": "PUT", "names": ["2.json.enc"]})
+
     prefix = f"sandboxes/{SANDBOX}/commits/"
     s3.pages = [
         {"Contents": [{"Key": f"{prefix}2.json"}, {"Key": 1}, {"Key": "other"}]},
@@ -478,6 +499,8 @@ def test_handler_dispatch_and_audit(monkeypatch: pytest.MonkeyPatch) -> None:
     assert broker.handler(event("markError"), object()) == {"error": True}
     assert broker.handler(event("dataKey"), object()) == {"data": True}
     assert broker.handler(event("presign"), object()) == {"presign": True}
+    monkeypatch.setattr(broker, "_presign_batch", lambda *_args: {"batch": True})
+    assert broker.handler(event("presignBatch"), object()) == {"batch": True}
     assert broker.handler(event("list"), object()) == {"list": True}
     assert broker.handler(event("checkpointReceipt"), object()) == {"receipt": True}
     with pytest.raises(ValueError, match="Unsupported"):

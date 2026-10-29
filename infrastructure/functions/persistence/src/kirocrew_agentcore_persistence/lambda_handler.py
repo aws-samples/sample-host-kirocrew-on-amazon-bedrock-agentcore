@@ -19,6 +19,9 @@ _INIT_OWNER = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9
 _RESTORE_OUTCOME = re.compile(r"^[a-z][a-z-]{0,31}$")
 _DIAGNOSTIC = re.compile(r"^[\x20-\x7e]{1,256}$")
 _URL_TTL: Final = timedelta(minutes=5)
+# One batch response carries ~1.5 KB per grant; 128 keeps it near 200 KB,
+# far under the 6 MB synchronous Lambda response limit.
+_MAX_BATCH_GRANTS: Final = 128
 _RECEIPT_TTL: Final = timedelta(minutes=10)
 # AgentCore can run two microVMs under one runtime session id and route the
 # session's traffic to the newer one, leaving the holder alive (heartbeating,
@@ -633,6 +636,32 @@ def _presign(s3: Any, sandbox_id: str, event: Mapping[str, object]) -> dict[str,
     }
 
 
+def _presign_batch(s3: Any, sandbox_id: str, event: Mapping[str, object]) -> dict[str, object]:
+    """Presign one method for many chunks in a single invocation.
+
+    Every invocation verifies the binding with KMS and reads the sandbox record
+    before it signs anything, which made one grant per chunk cost ~90 ms of
+    broker time: a 20,000-chunk restore spent most of its 200 s there. Signing
+    itself is local, so a batch pays that authorization once. Only chunks are
+    batched -- manifests and commits are one object per generation.
+    """
+    names = event.get("names")
+    method = event.get("method")
+    if (
+        not isinstance(names, list)
+        or not names
+        or len(names) > _MAX_BATCH_GRANTS
+        or not all(isinstance(name, str) for name in names)
+        or method not in {"GET", "PUT"}
+    ):
+        raise ValueError("Invalid checkpoint batch operation.")
+    grants = []
+    for name in cast(list[str], names):
+        grant = _presign(s3, sandbox_id, {"category": "chunks", "name": name, "method": method})
+        grants.append({"name": name, **grant})
+    return {"grants": grants}
+
+
 def _list(s3: Any, sandbox_id: str, event: Mapping[str, object]) -> dict[str, object]:
     category = event.get("category")
     if not isinstance(category, str) or category not in {"chunks", "manifests", "commits"}:
@@ -918,6 +947,8 @@ def handler(event: Mapping[str, object], _context_value: object) -> dict[str, ob
         return _data_key(s3, kms, sandbox_id)
     if operation == "presign":
         return _presign(s3, sandbox_id, event)
+    if operation == "presignBatch":
+        return _presign_batch(s3, sandbox_id, event)
     if operation == "list":
         return _list(s3, sandbox_id, event)
     if operation == "checkpointReceipt":

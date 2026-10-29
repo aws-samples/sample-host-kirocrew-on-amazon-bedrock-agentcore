@@ -430,3 +430,28 @@ def test_brokered_store_without_index_keeps_asking_per_chunk() -> None:
     objects.internal_delete(f"snapshots/{SANDBOX_ID}/chunks/{blob.digest}.bin")
     assert store.has_chunk(blob.digest) is False
     assert counting.list_calls == 0
+
+
+def test_brokered_store_forwards_chunk_announcements_to_a_batching_broker() -> None:
+    _clock, _objects, broker, _seed = components()
+
+    class AnnouncedBroker(CountingBroker):
+        def __init__(self, inner: PersistenceBroker) -> None:
+            super().__init__(inner)
+            self.announced: list[tuple[str, list[str], StorageOperation]] = []
+
+        def prefetch_chunks(
+            self, sandbox_id: str, digests: list[str], operation: StorageOperation
+        ) -> None:
+            self.announced.append((sandbox_id, list(digests), operation))
+
+    announced = AnnouncedBroker(broker)
+    store = BrokeredCheckpointStore(announced, SANDBOX_ID)  # type: ignore[arg-type]
+    store.prefetch_chunks(["a" * 64], StorageOperation.GET)
+    store.prefetch_uploads(["b" * 64])
+    assert announced.announced == [
+        (SANDBOX_ID, ["a" * 64], StorageOperation.GET),
+        (SANDBOX_ID, ["b" * 64], StorageOperation.PUT),
+    ]
+    # A broker without batching (the in-memory one) is simply not told.
+    BrokeredCheckpointStore(broker, SANDBOX_ID).prefetch_uploads(["c" * 64])

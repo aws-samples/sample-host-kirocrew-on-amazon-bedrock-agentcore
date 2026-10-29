@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -111,11 +112,15 @@ class CheckpointEngine:
         recovery_point_objective: timedelta = DEFAULT_RECOVERY_POINT_OBJECTIVE,
         failure_injector: Callable[[str], None] = lambda _step: None,
         runtime_version: str = "development",
+        upload_workers: int = 16,
     ) -> None:
         if recovery_point_objective <= timedelta(0) or not runtime_version:
             raise ValueError(
                 "Recovery-point objective must be positive and runtime version required."
             )
+        if upload_workers < 1:
+            raise ValueError("Upload workers must be positive.")
+        self._upload_workers = upload_workers
         self._workspace = workspace
         self._sandbox_id = sandbox_id
         self._runtime_version = runtime_version
@@ -208,13 +213,38 @@ class CheckpointEngine:
                 self._quiescer.resume()
 
     def _upload_chunks(self, built: BuiltManifest) -> None:
-        for digest, plaintext in sorted(built.chunks.items()):
-            if self._store.has_chunk(digest):
-                continue
-            blob = self._cipher.encrypt(plaintext)
-            if blob.digest != digest:
-                raise CheckpointError("Chunk digest changed during encryption.")
-            self._store.upload_chunk(digest, blob.ciphertext)
+        # Each new chunk costs a broker round trip for its presigned URL plus
+        # the PUT itself. One at a time that is about six chunks a second, so
+        # the first checkpoint after adding 20,000 files ran for nearly an hour
+        # -- far past the recovery-point objective, and past any reclaim. The
+        # existence check stays on this thread: it is answered from the
+        # store's cached prefix listing, and asking it here first loads that
+        # cache before any worker can race to load it.
+        missing = [
+            (digest, plaintext)
+            for digest, plaintext in sorted(built.chunks.items())
+            if not self._store.has_chunk(digest)
+        ]
+        if not missing:
+            return
+        executor = ThreadPoolExecutor(max_workers=min(self._upload_workers, len(missing)))
+        try:
+            futures = [
+                executor.submit(self._upload_chunk, digest, plaintext)
+                for digest, plaintext in missing
+            ]
+            for future in as_completed(futures):
+                future.result()
+        finally:
+            # A failed chunk fails the whole checkpoint; do not keep uploading
+            # chunks no commit will reference.
+            executor.shutdown(wait=True, cancel_futures=True)
+
+    def _upload_chunk(self, digest: str, plaintext: bytes) -> None:
+        blob = self._cipher.encrypt(plaintext)
+        if blob.digest != digest:
+            raise CheckpointError("Chunk digest changed during encryption.")
+        self._store.upload_chunk(digest, blob.ciphertext)
 
     def _write_local_state(self, generation: int, manifest_digest: str) -> None:
         directory = self._workspace / ".agentcore"

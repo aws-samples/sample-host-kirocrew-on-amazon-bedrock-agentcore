@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -366,3 +368,94 @@ def test_failed_checkpoint_keeps_the_previous_reuse_baseline(tmp_path: Path) -> 
     )
     succeeding.checkpoint(1)
     assert remembered == [1]
+
+
+class ConcurrencyRecordingStore(InMemoryCheckpointStore):
+    """Holds each upload open briefly so overlapping uploads can be counted."""
+
+    def __init__(self, *, fail_digest_prefix: str | None = None) -> None:
+        super().__init__()
+        self._lock = threading.Lock()
+        self._active = 0
+        self.peak = 0
+        self.upload_threads: set[int] = set()
+        self._fail_prefix = fail_digest_prefix
+
+    def upload_chunk(self, digest: str, ciphertext: bytes) -> None:
+        with self._lock:
+            self._active += 1
+            self.peak = max(self.peak, self._active)
+            self.upload_threads.add(threading.get_ident())
+        try:
+            time.sleep(0.02)
+            if (
+                self._fail_prefix is not None
+                and ciphertext
+                and digest.startswith(self._fail_prefix)
+            ):
+                raise OSError("simulated PUT failure")
+            super().upload_chunk(digest, ciphertext)
+        finally:
+            with self._lock:
+                self._active -= 1
+
+
+def _many_chunk_engine(workspace: Path, store: InMemoryCheckpointStore) -> CheckpointEngine:
+    files = workspace / "user/many"
+    files.mkdir(parents=True)
+    for index in range(40):
+        (files / f"{index}.txt").write_text(f"distinct content {index:04d}", encoding="utf-8")
+    journal = DirtyJournal(workspace)
+    journal.mark("user/many", datetime(2026, 8, 17, 16, 0, tzinfo=UTC))
+    return CheckpointEngine(
+        workspace,
+        SANDBOX_ID,
+        journal,
+        ManifestBuilder(workspace),
+        SandboxCipher(b"k" * 32, SANDBOX_ID),
+        store,
+        FakeQuiescer(),
+        FakeFlusher(),
+        clock=MutableClock(),
+        upload_workers=8,
+    )
+
+
+def test_new_chunks_upload_concurrently_and_all_commit(tmp_path: Path) -> None:
+    store = ConcurrencyRecordingStore()
+    checkpoint = _many_chunk_engine(tmp_path / "workspace", store)
+
+    receipt = checkpoint.checkpoint(1)
+
+    assert store.latest_committed() == receipt.generation == 1
+    assert len(store.chunks) == 40
+    assert store.peak > 1
+    assert threading.get_ident() not in store.upload_threads
+
+
+def test_one_failed_chunk_upload_fails_the_checkpoint(tmp_path: Path) -> None:
+    store = ConcurrencyRecordingStore(fail_digest_prefix="")
+    checkpoint = _many_chunk_engine(tmp_path / "workspace", store)
+
+    with pytest.raises(CheckpointError, match="did not commit"):
+        checkpoint.checkpoint(1)
+
+    assert store.latest_committed() is None
+    assert store.manifests == {}
+
+
+def test_engine_rejects_nonpositive_upload_workers(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    with pytest.raises(ValueError, match="Upload workers"):
+        CheckpointEngine(
+            workspace,
+            SANDBOX_ID,
+            DirtyJournal(workspace),
+            ManifestBuilder(workspace),
+            SandboxCipher(b"k" * 32, SANDBOX_ID),
+            InMemoryCheckpointStore(),
+            FakeQuiescer(),
+            FakeFlusher(),
+            upload_workers=0,
+        )

@@ -314,3 +314,55 @@ def test_direct_read_only_failure_is_preserved_and_resumes_processes(tmp_path: P
     with pytest.raises(ReadOnlyPersistenceError, match="durability unavailable"):
         checkpoint.checkpoint(1)
     assert quiescer.resume_count == 1
+
+
+def test_failed_checkpoint_keeps_the_previous_reuse_baseline(tmp_path: Path) -> None:
+    """A build becomes the reuse baseline only once its generation committed.
+
+    Reusing the entries of an uncommitted build would let a later generation
+    name chunks that never reached the store.
+    """
+    workspace = tmp_path / "workspace"
+    (workspace / "projects" / "app").mkdir(parents=True)
+    (workspace / "projects" / "app" / "a.txt").write_text("one")
+    builder = ManifestBuilder(workspace)
+    remembered: list[int] = []
+    original = builder.remember
+
+    def track(built: object) -> None:
+        remembered.append(built.manifest.generation)  # type: ignore[attr-defined]
+        original(built)  # type: ignore[arg-type]
+
+    builder.remember = track  # type: ignore[method-assign]
+
+    def fail_at_commit(step: str) -> None:
+        if step == "manifest_uploaded":
+            raise RuntimeError("store unavailable")
+
+    failing = CheckpointEngine(
+        workspace,
+        SANDBOX_ID,
+        DirtyJournal(workspace),
+        builder,
+        SandboxCipher(b"k" * 32, SANDBOX_ID),
+        InMemoryCheckpointStore(),
+        FakeQuiescer(),
+        FakeFlusher(),
+        failure_injector=fail_at_commit,
+    )
+    with pytest.raises(CheckpointError):
+        failing.checkpoint(1)
+    assert remembered == []
+
+    succeeding = CheckpointEngine(
+        workspace,
+        SANDBOX_ID,
+        DirtyJournal(workspace),
+        builder,
+        SandboxCipher(b"k" * 32, SANDBOX_ID),
+        InMemoryCheckpointStore(),
+        FakeQuiescer(),
+        FakeFlusher(),
+    )
+    succeeding.checkpoint(1)
+    assert remembered == [1]

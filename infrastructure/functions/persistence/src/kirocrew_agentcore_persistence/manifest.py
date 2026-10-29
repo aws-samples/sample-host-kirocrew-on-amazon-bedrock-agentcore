@@ -3,8 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import stat
-from dataclasses import dataclass
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Final, Literal
 
@@ -96,9 +99,38 @@ class PersistenceManifest:
 
 
 @dataclass(frozen=True, slots=True)
+class _FileStamp:
+    """What must be unchanged for a file's previous entry to be reused.
+
+    Size and mtime alone miss a rewrite that restores the mtime; ctime and
+    the inode catch that and a replace-by-rename.
+    """
+
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+    inode: int
+    mode: int
+
+    @classmethod
+    def of(cls, metadata: os.stat_result) -> _FileStamp:
+        return cls(
+            metadata.st_size,
+            metadata.st_mtime_ns,
+            metadata.st_ctime_ns,
+            metadata.st_ino,
+            metadata.st_mode,
+        )
+
+
+_RACY_WINDOW_NS: Final = 2_000_000_000
+
+
+@dataclass(frozen=True, slots=True)
 class BuiltManifest:
     manifest: PersistenceManifest
     chunks: dict[str, bytes]
+    stamps: dict[str, tuple[_FileStamp, ManifestEntry]] = field(default_factory=dict)
 
 
 class PersistencePolicy:
@@ -221,18 +253,41 @@ class ManifestBuilder:
         *,
         policy: PersistencePolicy | None = None,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
+        clock_ns: Callable[[], int] = time.time_ns,
     ) -> None:
         if chunk_size <= 0:
             raise ValueError("Chunk size must be positive.")
         self._workspace = workspace
         self._policy = policy or PersistencePolicy()
         self._chunk_size = chunk_size
+        self._clock_ns = clock_ns
+        # Entries from the last COMMITTED generation, keyed by path, with the
+        # stat fingerprint they were read under. A file whose fingerprint is
+        # unchanged reuses its entry without being read again: on a GB-sized
+        # workspace the full re-read and re-hash, done while the gateway is
+        # frozen, was most of a checkpoint's three minutes. Only `remember()`
+        # fills this, and only after the commit is durable, so a reused entry
+        # always names chunks that are already in the store.
+        self._committed: dict[str, tuple[_FileStamp, ManifestEntry]] = {}
+
+    def remember(self, built: BuiltManifest) -> None:
+        """Record a durably committed build as the baseline for the next one."""
+        self._committed = dict(built.stamps)
+
+    def forget(self) -> None:
+        """Drop the baseline, so the next build reads every file again."""
+        self._committed = {}
 
     def build(self, generation: int, sandbox_id: str, created_at: str) -> BuiltManifest:
         if generation <= 0 or not sandbox_id:
             raise ValueError("Positive generation and sandbox ID are required.")
         entries: list[ManifestEntry] = []
         chunks: dict[str, bytes] = {}
+        stamps: dict[str, tuple[_FileStamp, ManifestEntry]] = {}
+        # A file modified this close to the build may change again within the
+        # same timestamp tick without its stamp moving ("racy" in Git's terms),
+        # so it is read now and not offered as a baseline for the next build.
+        racy_after = self._clock_ns() - _RACY_WINDOW_NS
         for path in self._walk():
             relative = PurePosixPath(path.relative_to(self._workspace).as_posix())
             metadata = path.lstat()
@@ -276,6 +331,13 @@ class ManifestBuilder:
                     )
                 )
             elif stat.S_ISREG(metadata.st_mode):
+                stamp = _FileStamp.of(metadata)
+                key = relative.as_posix()
+                previous = self._committed.get(key)
+                if previous is not None and previous[0] == stamp:
+                    entries.append(previous[1])
+                    stamps[key] = previous
+                    continue
                 file_chunks = self._read_chunks(path)
                 chunk_digests: list[str] = []
                 whole_file = hashlib.sha256()
@@ -284,18 +346,19 @@ class ManifestBuilder:
                     chunks.setdefault(digest, data)
                     chunk_digests.append(digest)
                     whole_file.update(data)
-                entries.append(
-                    ManifestEntry(
-                        relative.as_posix(),
-                        "file",
-                        stat.S_IMODE(metadata.st_mode),
-                        metadata.st_mtime_ns,
-                        metadata.st_size,
-                        whole_file.hexdigest(),
-                        tuple(chunk_digests),
-                        None,
-                    )
+                entry = ManifestEntry(
+                    key,
+                    "file",
+                    stat.S_IMODE(metadata.st_mode),
+                    metadata.st_mtime_ns,
+                    metadata.st_size,
+                    whole_file.hexdigest(),
+                    tuple(chunk_digests),
+                    None,
                 )
+                entries.append(entry)
+                if metadata.st_mtime_ns < racy_after and metadata.st_ctime_ns < racy_after:
+                    stamps[key] = (stamp, entry)
         manifest = PersistenceManifest(
             MANIFEST_SCHEMA_VERSION,
             generation,
@@ -303,7 +366,7 @@ class ManifestBuilder:
             created_at,
             tuple(sorted(entries, key=lambda entry: entry.path)),
         )
-        return BuiltManifest(manifest, chunks)
+        return BuiltManifest(manifest, chunks, stamps)
 
     def _walk(self) -> list[Path]:
         return _walk_included_roots(self._workspace)

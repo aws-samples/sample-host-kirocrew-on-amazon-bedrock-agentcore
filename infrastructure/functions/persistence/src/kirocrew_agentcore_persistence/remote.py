@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import base64
 import json
+import threading
 import urllib.error
 import urllib.request
-from collections.abc import Mapping
-from datetime import datetime
+from collections import deque
+from collections.abc import Iterable, Mapping
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from urllib.parse import urlsplit
 
@@ -16,6 +18,12 @@ from kirocrew_agentcore_persistence.durability import (
     PresignedOperation,
     StorageOperation,
 )
+
+# Grants per batch call; the broker caps a batch at the same size.
+_BATCH_GRANTS = 128
+# A cached grant this close to expiry is not handed out: a large PUT or a slow
+# GET could still be in flight when the URL stops being valid.
+_GRANT_MARGIN = timedelta(seconds=60)
 
 
 def invoke_broker(
@@ -142,9 +150,36 @@ class LambdaBrokerClient:
 
 
 class LambdaPersistenceBroker:
-    def __init__(self, client: LambdaBrokerClient, sandbox_id: str) -> None:
+    def __init__(
+        self,
+        client: LambdaBrokerClient,
+        sandbox_id: str,
+        *,
+        clock: Any = lambda: datetime.now(UTC),
+    ) -> None:
         self._client = client
         self._sandbox_id = sandbox_id
+        self._clock = clock
+        # Chunk grants fetched ahead in batches. A caller that knows which
+        # chunks it is about to move announces them with ``prefetch_chunks``;
+        # the first grant it then asks for fetches that chunk and the next
+        # announced ones in one broker call, so N chunks cost N / 128 broker
+        # round trips instead of N. Fetching lazily, one batch at a time, keeps
+        # every grant well inside its five-minute life.
+        self._grant_lock = threading.Lock()
+        self._grants: dict[tuple[str, StorageOperation], PresignedOperation] = {}
+        self._wanted: dict[StorageOperation, deque[str]] = {}
+        self._batch_supported = True
+
+    def prefetch_chunks(
+        self, sandbox_id: str, digests: Iterable[str], operation: StorageOperation
+    ) -> None:
+        self._validate_sandbox(sandbox_id)
+        if operation not in {StorageOperation.GET, StorageOperation.PUT}:
+            return
+        with self._grant_lock:
+            if self._batch_supported:
+                self._wanted.setdefault(operation, deque()).extend(digests)
 
     def cipher(self, sandbox_id: str) -> SandboxCipher:
         self._validate_sandbox(sandbox_id)
@@ -169,7 +204,59 @@ class LambdaPersistenceBroker:
     def presign_chunk(
         self, sandbox_id: str, digest: str, operation: StorageOperation
     ) -> PresignedOperation:
+        self._validate_sandbox(sandbox_id)
+        with self._grant_lock:
+            grant = self._take_grant(digest, operation)
+            if grant is None and self._batch_supported and self._wanted.get(operation):
+                self._fetch_batch(digest, operation)
+                grant = self._take_grant(digest, operation)
+        if grant is not None:
+            return grant
         return self._presign(sandbox_id, "chunks", f"{digest}.bin", operation)
+
+    def _take_grant(self, digest: str, operation: StorageOperation) -> PresignedOperation | None:
+        grant = self._grants.pop((digest, operation), None)
+        if grant is None or grant.expires_at - self._clock() < _GRANT_MARGIN:
+            return None
+        return grant
+
+    def _fetch_batch(self, digest: str, operation: StorageOperation) -> None:
+        """Fetch ``digest`` plus the next announced chunks in one broker call.
+
+        A broker without the batch operation (an older deployment) answers with
+        an ordinary operation error; remember that and fall back to one grant
+        per chunk. A refused binding is not a missing feature and propagates.
+        """
+        wanted = self._wanted[operation]
+        names = [digest]
+        while wanted and len(names) < _BATCH_GRANTS:
+            candidate = wanted.popleft()
+            if candidate != digest and (candidate, operation) not in self._grants:
+                names.append(candidate)
+        try:
+            value = self._client.call(
+                "presignBatch",
+                method=operation.value,
+                names=[f"{name}.bin" for name in names],
+            )
+        except BrokerRefusalError:
+            raise
+        except BrokerAuthorizationError:
+            self._batch_supported = False
+            self._wanted.clear()
+            return
+        grants = value.get("grants")
+        if not isinstance(grants, list):
+            raise BrokerAuthorizationError("Persistence batch grant is invalid.")
+        for item in cast(list[object], grants):
+            if not isinstance(item, dict):
+                raise BrokerAuthorizationError("Persistence batch grant is invalid.")
+            entry = cast(dict[str, object], item)
+            name = entry.get("name")
+            if not isinstance(name, str) or not name.endswith(".bin"):
+                raise BrokerAuthorizationError("Persistence batch grant is invalid.")
+            grant = self._grant_from(entry, operation)
+            self._grants[(name.removesuffix(".bin"), operation)] = grant
 
     def presign_manifest(
         self, sandbox_id: str, generation: int, operation: StorageOperation
@@ -250,6 +337,10 @@ class LambdaPersistenceBroker:
             method=operation.value,
             name=name,
         )
+        return self._grant_from(value, operation)
+
+    @staticmethod
+    def _grant_from(value: Mapping[str, object], operation: StorageOperation) -> PresignedOperation:
         url = value.get("url")
         expires = value.get("expiresAt")
         headers = value.get("headers")

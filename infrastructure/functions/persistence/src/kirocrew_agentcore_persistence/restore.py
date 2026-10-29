@@ -21,6 +21,7 @@ from kirocrew_agentcore_persistence.durability import (
     BrokeredCheckpointStore,
     CommittedGeneration,
     ObjectNotFoundError,
+    StorageOperation,
 )
 from kirocrew_agentcore_persistence.manifest import (
     MANIFEST_SCHEMA_VERSION,
@@ -463,6 +464,11 @@ class RestoreEngine:
         remaining = Counter(
             digest for entry in manifest.entries if entry.type == "file" for digest in entry.chunks
         )
+        # Announce the chunks in submission order so their download grants are
+        # fetched in batches rather than one broker call per chunk.
+        prefetch = getattr(self._store, "prefetch_chunks", None)
+        if prefetch is not None:
+            prefetch(list(remaining), StorageOperation.GET)
         with ThreadPoolExecutor(max_workers=self._fetch_workers) as executor:
             futures = {digest: executor.submit(self._fetch_chunk, digest) for digest in remaining}
             directories: list[tuple[Path, ManifestEntry]] = []

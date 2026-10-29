@@ -285,3 +285,108 @@ def test_https_request_success_head_and_failures(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr("urllib.request.urlopen", url_error)
     with pytest.raises(BrokerAuthorizationError, match="operation failed"):
         broker.request(get, StorageOperation.GET)
+
+
+class ScriptedLambda:
+    """Answers each broker operation from a handler, recording every request."""
+
+    def __init__(self, answer: Any) -> None:
+        self.answer = answer
+        self.requests: list[dict[str, object]] = []
+
+    def invoke(self, **request: object) -> dict[str, object]:
+        body = json.loads(cast(bytes, request["Payload"]))
+        self.requests.append(body)
+        value, error = self.answer(body)
+        return {"Payload": Payload(value), **({"FunctionError": "Unhandled"} if error else {})}
+
+
+def _grant(name: str, expires: str = "2026-08-18T10:00:00Z") -> dict[str, object]:
+    return {
+        "name": name,
+        "url": f"https://bucket.s3.us-east-2.amazonaws.com/{name}",
+        "expiresAt": expires,
+        "headers": {},
+        "method": "GET",
+    }
+
+
+def _batch_broker(answer: Any) -> tuple[LambdaPersistenceBroker, ScriptedLambda]:
+    fake = ScriptedLambda(answer)
+    broker_client = LambdaBrokerClient(fake, "arn:broker", SANDBOX, SESSION, "binding")
+    now = datetime(2026, 8, 18, 9, 50, tzinfo=UTC)
+    return LambdaPersistenceBroker(broker_client, SANDBOX, clock=lambda: now), fake
+
+
+def _single(body: dict[str, object]) -> tuple[object, bool]:
+    return _grant(cast(str, body["name"])), False
+
+
+def test_announced_chunks_are_granted_in_batches() -> None:
+    def answer(body: dict[str, object]) -> tuple[object, bool]:
+        if body["operation"] == "presignBatch":
+            return {"grants": [_grant(name) for name in cast(list[str], body["names"])]}, False
+        return _single(body)
+
+    broker, fake = _batch_broker(answer)
+    digests = [f"{index:064x}" for index in range(300)]
+    broker.prefetch_chunks(SANDBOX, digests, StorageOperation.GET)
+    broker.prefetch_chunks(SANDBOX, ["x"], StorageOperation.HEAD)  # not batchable: ignored
+
+    urls = [broker.presign_chunk(SANDBOX, digest, StorageOperation.GET).url for digest in digests]
+
+    assert urls == [f"https://bucket.s3.us-east-2.amazonaws.com/{d}.bin" for d in digests]
+    # 300 chunks in three broker calls (128 + 128 + 44), not 300.
+    assert [len(cast(list[str], r["names"])) for r in fake.requests] == [128, 128, 44]
+    # An unannounced chunk still gets its own single grant.
+    broker.presign_chunk(SANDBOX, "f" * 64, StorageOperation.GET)
+    assert fake.requests[-1]["operation"] == "presign"
+
+
+def test_grant_close_to_expiry_is_not_used() -> None:
+    def answer(body: dict[str, object]) -> tuple[object, bool]:
+        if body["operation"] == "presignBatch":
+            names = cast(list[str], body["names"])
+            return {"grants": [_grant(name, "2026-08-18T09:50:30Z") for name in names]}, False
+        return _single(body)
+
+    broker, fake = _batch_broker(answer)
+    broker.prefetch_chunks(SANDBOX, ["a" * 64, "b" * 64], StorageOperation.GET)
+    broker.presign_chunk(SANDBOX, "a" * 64, StorageOperation.GET)
+    assert [r["operation"] for r in fake.requests] == ["presignBatch", "presign"]
+
+
+def test_broker_without_batch_falls_back_to_single_grants() -> None:
+    def answer(body: dict[str, object]) -> tuple[object, bool]:
+        if body["operation"] == "presignBatch":
+            return {"errorType": "ValueError"}, True
+        return _single(body)
+
+    broker, fake = _batch_broker(answer)
+    broker.prefetch_chunks(SANDBOX, ["a" * 64, "b" * 64], StorageOperation.GET)
+    broker.presign_chunk(SANDBOX, "a" * 64, StorageOperation.GET)
+    broker.presign_chunk(SANDBOX, "b" * 64, StorageOperation.GET)
+    broker.prefetch_chunks(SANDBOX, ["c" * 64], StorageOperation.GET)
+    broker.presign_chunk(SANDBOX, "c" * 64, StorageOperation.GET)
+    assert [r["operation"] for r in fake.requests] == [
+        "presignBatch",
+        "presign",
+        "presign",
+        "presign",
+    ]
+
+
+def test_refused_batch_propagates_and_bad_batches_are_rejected() -> None:
+    refused, _ = _batch_broker(lambda _body: ({"errorType": "PermissionError"}, True))
+    refused.prefetch_chunks(SANDBOX, ["a" * 64], StorageOperation.GET)
+    with pytest.raises(BrokerRefusalError):
+        refused.presign_chunk(SANDBOX, "a" * 64, StorageOperation.GET)
+
+    for bad in ({}, {"grants": [1]}, {"grants": [{"name": 1}]}, {"grants": [{"name": "x"}]}):
+        broker, _ = _batch_broker(lambda _body, bad=bad: (bad, False))
+        broker.prefetch_chunks(SANDBOX, ["a" * 64], StorageOperation.GET)
+        with pytest.raises(BrokerAuthorizationError, match="batch grant is invalid"):
+            broker.presign_chunk(SANDBOX, "a" * 64, StorageOperation.GET)
+
+    with pytest.raises(BrokerAuthorizationError, match="Cross-sandbox"):
+        broker.prefetch_chunks("sbx_other", ["a" * 64], StorageOperation.GET)

@@ -319,6 +319,16 @@ class BrokeredCheckpointStore:
         self._known_chunks: set[str] | None = None
         broker.encryption_context(sandbox_id)
 
+    def prefetch_chunks(self, digests: Iterable[str], operation: StorageOperation) -> None:
+        """Announce chunks about to be moved so the broker can grant them in batches."""
+        prefetch = getattr(self._broker, "prefetch_chunks", None)
+        if prefetch is not None:
+            prefetch(self._sandbox_id, digests, operation)
+
+    def prefetch_uploads(self, digests: Iterable[str]) -> None:
+        """Announce chunks a checkpoint is about to upload."""
+        self.prefetch_chunks(digests, StorageOperation.PUT)
+
     def has_chunk(self, digest: str) -> bool:
         # Existence is asked of the broker, which answers it with a prefix-scoped
         # listing rather than a presigned HeadObject: HeadObject supplies no

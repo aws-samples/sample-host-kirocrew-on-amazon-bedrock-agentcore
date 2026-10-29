@@ -227,6 +227,10 @@ class CheckpointEngine:
         ]
         if not missing:
             return
+        prefetch = getattr(self._store, "prefetch_uploads", None)
+        if prefetch is not None:
+            # Upload grants then come from the broker in batches too.
+            prefetch([digest for digest, _plaintext in missing])
         executor = ThreadPoolExecutor(max_workers=min(self._upload_workers, len(missing)))
         try:
             futures = [

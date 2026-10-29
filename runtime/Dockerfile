@@ -10,14 +10,14 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
 WORKDIR /build
 COPY --from=uv /uv /usr/local/bin/uv
+# Third-party wheels depend only on the lock and the workspace manifests, so
+# they are resolved before any source is copied: a code change then reuses
+# this layer instead of downloading every pinned wheel again.
 COPY pyproject.toml uv.lock ./
 COPY adapter/pyproject.toml adapter/pyproject.toml
-COPY adapter/src adapter/src
 COPY runtime/pyproject.toml runtime/pyproject.toml
-COPY runtime/src runtime/src
 COPY infrastructure/functions/control/pyproject.toml control/pyproject.toml
 COPY infrastructure/functions/persistence/pyproject.toml persistence/pyproject.toml
-COPY infrastructure/functions/persistence/src persistence/src
 COPY tools/headless-client/pyproject.toml headless-client/pyproject.toml
 RUN echo "${DEPENDENCY_LOCK_SHA256}  uv.lock" | sha256sum --check \
     && uv export --frozen --no-dev --no-emit-workspace \
@@ -26,8 +26,11 @@ RUN echo "${DEPENDENCY_LOCK_SHA256}  uv.lock" | sha256sum --check \
       --package kirocrew-agentcore-persistence \
       --format requirements-txt --output-file /requirements.lock \
     && python -m pip wheel --require-hashes --wheel-dir /wheels \
-      --requirement /requirements.lock \
-    && python -m pip wheel --no-deps --wheel-dir /wheels ./adapter ./runtime ./persistence
+      --requirement /requirements.lock
+COPY adapter/src adapter/src
+COPY runtime/src runtime/src
+COPY infrastructure/functions/persistence/src persistence/src
+RUN python -m pip wheel --no-deps --wheel-dir /wheels ./adapter ./runtime ./persistence
 
 FROM python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7 AS kiro-cli-builder
 ARG TARGETARCH

@@ -668,7 +668,9 @@ class KiroCrewSupervisor:
     def _mint_token_without_ready_line(self, environment: Mapping[str, str]) -> str | None:
         """Ask the upstream CLI for a dashboard token; ``None`` when it is not ready yet."""
         try:
-            output = self._token_command(self._executable, environment, 10.0)
+            # 30 s, not 10: on a loaded box right after a large restore the CLI
+            # itself takes longer than 10 s to start, and every attempt timed out.
+            output = self._token_command(self._executable, environment, 30.0)
             return _parse_token_output(output)
         except (subprocess.SubprocessError, OSError, GatewayError) as error:
             _LOGGER.info("Dashboard token mint not possible yet: %s", error)

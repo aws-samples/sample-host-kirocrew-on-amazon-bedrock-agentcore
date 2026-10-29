@@ -443,7 +443,7 @@ def test_readiness_falls_back_to_cli_token_when_ready_line_is_lost(
 
     def token_command(executable: str, env: Mapping[str, str], timeout: float) -> str:
         assert executable == "kirocrew"
-        assert timeout == 10.0
+        assert timeout == 30.0
         mints.append(env)
         outcome = next(outcome_iter)
         if isinstance(outcome, Exception):

@@ -1216,7 +1216,12 @@ async def build_runtime_application(
         ),
         LocalKiroCommandRunner(),
     )
-    startup_timeout = float(environment.get("KIROCREW_START_TIMEOUT", "60"))
+    # KiroCrew boot is measured from after the restore. On a restored
+    # workspace of ~20,000 project files the gateway was serving but too busy
+    # to answer the token CLI within 60 s, so every start failed and the
+    # sandbox could not be opened at all. 180 s leaves room for that boot; the
+    # environment variable still overrides it.
+    startup_timeout = float(environment.get("KIROCREW_START_TIMEOUT", "180"))
     backend = ProductionRuntimeBackend(
         loopback,
         readiness,

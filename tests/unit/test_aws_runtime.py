@@ -802,7 +802,9 @@ def test_periodic_checkpoints_commit_only_when_the_workspace_changed() -> None:
     asyncio.run(scenario())
 
 
-def test_shutdown_checkpoint_is_final_best_effort_and_bounded() -> None:
+def test_shutdown_checkpoint_is_final_best_effort_and_bounded(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     async def scenario() -> None:
         readiness = RuntimeReadiness(True, True, False)
         unconfigured = ProductionRuntimeBackend(cast(Any, FakeLoopbackBackend()), readiness)
@@ -825,6 +827,20 @@ def test_shutdown_checkpoint_is_final_best_effort_and_bounded() -> None:
 
         cast(Any, engine).checkpoint = broken
         await backend.checkpoint_on_shutdown()
+        assert len(broker_client.receipts) == 1
+
+        def revoked(generation: int, *, final: bool = False) -> CheckpointReceipt:
+            try:
+                raise BrokerRefusalError("Persistence broker refused the binding.")
+            except BrokerRefusalError as refusal:
+                raise RuntimeError("Checkpoint did not commit completely.") from refusal
+
+        cast(Any, engine).checkpoint = revoked
+        with caplog.at_level(logging.INFO, logger="kirocrew_agentcore_runtime.aws_runtime"):
+            caplog.clear()
+            await backend.checkpoint_on_shutdown()
+        assert "binding was revoked" in caplog.text
+        assert "did not commit" not in caplog.text
         assert len(broker_client.receipts) == 1
 
     asyncio.run(scenario())

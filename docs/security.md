@@ -85,6 +85,19 @@ stops being safe the moment downstream business permissions are added to it.
    can appear in `/aws/vendedlogs/bedrock-agentcore/...`. Kiro output is
    redacted by pattern (`redact_kiro_output`), which is best-effort, not a
    guarantee.
+7. **The agent runs as the same OS user as the runtime.** The adapter, the
+   runtime supervisor, the KiroCrew gateway and every agent shell run as uid
+   10001 in one microVM, so an agent can read the binding token and the
+   sandbox's unwrapped data key from the runtime process (`/proc`, ptrace).
+   This is accepted, not overlooked: both only unlock **this** sandbox's own
+   checkpoints, whose plaintext the agent already has on disk, and the broker
+   binds every operation to the token's sandbox and session, so neither reaches
+   another user's data. What the agent can additionally do with them is damage
+   its own sandbox's history (for example commit a bad generation), which is no
+   more than deleting the workspace. Splitting the agent onto a separate uid
+   would need the container to start as root and the checkpointer to pause and
+   read another user's processes and files; that cost buys nothing for
+   cross-user isolation, which the microVM boundary already provides.
 
 ## Hardening profiles
 

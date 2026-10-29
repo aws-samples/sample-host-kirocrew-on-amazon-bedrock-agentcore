@@ -13,7 +13,22 @@
 
 ## Exclusions
 
-The manifest rejects paths outside the included roots and excludes `.agentcore`, `.aws`, `.ssh`, caches, dependency caches, process IDs, sockets, temporary logs, run markers, environment files, FIFOs, device files, and other unsupported special files. Symlinks are recorded without following their targets.
+The manifest rejects paths outside the included roots and excludes `.agentcore`, `.aws`, `.ssh`, caches, dependency caches, process IDs, sockets, temporary logs, run markers, environment files, FIFOs, device files, and other unsupported special files. Symlinks are recorded without following their targets. Git repositories under the roots are captured whole, object store included, so unpushed commits survive a restore.
+
+## Why checkpoints are not Git commits
+
+A checkpoint "commit" is not a Git commit, and Git is not used to store workspaces, for four reasons:
+
+- **The content is not source code.** The durable roots hold the Kiro sign-in (`data.sqlite3`), the KiroCrew session and memory databases, and binary artifacts. SQLite files must be captured at a consistent instant with the writers paused, which a checkpoint does and `git add` does not.
+- **Everything leaves the microVM encrypted.** Chunks and manifests are encrypted in the sandbox with that sandbox's data key before upload. A Git remote would receive plaintext, or need an encrypting layer that is the checkpoint engine again.
+- **Two containers must not both win.** A commit is conditional on the generation the container restored from, enforced by the broker (write-once S3 objects plus a base-generation check). That is what stops a stale container from overwriting a newer one; a Git push has no equivalent the broker can enforce.
+- **The microVM holds no storage credentials.** Every read and write goes through short-lived presigned URLs from the broker. A Git remote would put a long-lived credential in the sandbox.
+
+Repositories the user works on are ordinary Git repositories inside `projects/`, pushed to their own remotes; the checkpoint simply carries the working copy.
+
+## Older generations
+
+Every committed generation keeps its manifest, so an earlier state exists in S3. There is no supported way to restore one: restore always takes the latest valid generation and falls back to the previous one only when the latest is corrupt.
 
 ## Checkpoint consistency
 
@@ -47,4 +62,4 @@ A rejected condition is a normal result (`applied: false`); the runtime maps it 
 
 Before KiroCrew starts, an existing sandbox restores from S3 whenever the mount is empty, its pointer differs from the latest commit, local integrity sampling fails, managed storage expired, or the runtime version changed. Restore decrypts and validates a manifest, reconstructs an isolated staging tree, enforces allowlisted paths/file-count/size/type limits, verifies every chunk and whole-file digest, then atomically swaps the tree into place. A corrupt latest generation falls back once to the preceding commit. A new logical sandbox may initialize empty; an existing sandbox with no valid retained generation returns `PERSISTENCE_RESTORE_FAILED`.
 
-The latest two committed generations are retained. Reference-aware garbage collection first marks old generations and unreferenced chunks, waits through a grace period, recomputes reachability, and only then sweeps objects that remain unreachable. A scheduled offline auditor decrypts both retained manifests, checks every referenced chunk exists without launching compute, records an audit result, and increments a failure metric.
+**Retention is not enforced today: every committed generation and every chunk is kept.** `RetentionManager` in `durability.py` implements reference-aware garbage collection (mark old generations and unreferenced chunks, wait through a grace period, recompute reachability, then sweep), but nothing in the runtime or the broker calls it, and the broker exposes no delete operation. Storage therefore grows with every generation; a long-lived sandbox measured 618 manifests (222 MB) and 8,285 chunks (1.8 GB). Wiring retention must respect the chunk-index invariant above: never delete from the prefix of a sandbox that may be running. The scheduled audit rule reaches the broker, whose audit operation is currently a placeholder.

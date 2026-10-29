@@ -75,7 +75,7 @@ shell 拦截、封装成协议信封，经 AgentCore 数据面送进沙盒内回
 | 进程内存 | microVM | gateway/adapter 运行态 | 会话内 |
 | 本地暂存 | microVM `/tmp/kirocrew-state` | gateway 的 SQLite WAL 工作集 | 会话内；checkpoint 时回写 workspace |
 | **Workspace（容器盘）** | `/mnt/workspace` | 用户全部文件（HOME、项目、登录库） | **临时**：会话结束即消失，只靠下一行的 checkpoint 持久（见下） |
-| **S3 checkpoint** | 我们账户的 S3 桶 | 加密 chunk + manifest，保留最近两代 | **持久权威** |
+| **S3 checkpoint** | 我们账户的 S3 桶 | 加密 chunk + manifest，目前所有代都保留（未接入回收） | **持久权威** |
 | DynamoDB / KMS | 托管服务 | 状态机、代数指针 / 数据密钥 | 持久 |
 
 ### 3.1 Workspace：临时容器盘（不再使用 managed session storage）
@@ -101,7 +101,7 @@ AgentCore 的 `filesystemConfigurations.sessionStorage`。这是 2026-09-06 的
 
 历史版本里这里区分"托管复制"与"自有 checkpoint"两条链路；现在只剩后者：
 沙盒内 runtime 主动执行、每沙盒独立数据密钥、VM 内加密后直连上传我们账户
-的 checkpoint 桶，保留两代 + GC。文中及配图凡出现 "managed session
+的 checkpoint 桶；回收逻辑已实现但未接入，目前所有代都保留。文中及配图凡出现 "managed session
 storage / 托管同步盘 / 热恢复命中" 的位置，一律按"无此层"理解。
 
 ## 4. 备份与恢复

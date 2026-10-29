@@ -1272,6 +1272,20 @@ def test_build_runtime_application_cleanup_and_serve(monkeypatch: pytest.MonkeyP
         for cleanup in machine.on_cleanup:
             await cleanup(machine)
 
+        # Without an override the gateway gets 180 s to boot after a restore:
+        # 60 s failed every start of a 20,000-file workspace.
+        default_env = {
+            key: value for key, value in environment.items() if key != "KIROCREW_START_TIMEOUT"
+        }
+        defaulted = await module.build_runtime_application(
+            {**default_env, "KIROCREW_CHECKPOINT_INTERVAL_SECONDS": "0"}
+        )
+        default_kwargs = cast(dict[str, Any], captured["kwargs"])
+        default_initializer = cast(AwsSessionInitializer, default_kwargs["session_initializer"])
+        assert default_initializer._startup_timeout == 180.0
+        for cleanup in defaulted.on_cleanup:
+            await cleanup(defaulted)
+
     asyncio.run(scenario())
 
     calls: list[tuple[object, str, int]] = []

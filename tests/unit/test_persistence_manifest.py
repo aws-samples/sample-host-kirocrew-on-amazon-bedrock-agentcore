@@ -5,6 +5,7 @@ import json
 import os
 import socket
 import stat
+import time
 from pathlib import Path, PurePosixPath
 from typing import cast
 
@@ -242,3 +243,91 @@ def test_checkpoint_leaves_out_symlinks_restore_would_refuse(
     assert "projects/default/escapes" in caplog.text
     assert safe_symlink_target(PurePosixPath("projects/default/x"), "../../user/y")
     assert not safe_symlink_target(PurePosixPath("projects/default/x"), "../../../y")
+
+
+def test_builder_reuses_entries_of_unchanged_files_after_a_commit(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    project = workspace / "projects" / "app"
+    project.mkdir(parents=True)
+    (project / "big.bin").write_bytes(b"A" * 64)
+    (project / "notes.txt").write_text("v1")
+    long_ago = 1_700_000_000_000_000_000
+    for name in ("big.bin", "notes.txt"):
+        os.utime(project / name, ns=(long_ago, long_ago))
+    later = time.time_ns() + 10 * 10**9
+    builder = ManifestBuilder(workspace, chunk_size=16, clock_ns=lambda: later)
+    reads: list[str] = []
+    original = builder._read_chunks
+
+    def counting(path: Path) -> list[bytes]:
+        reads.append(path.name)
+        return original(path)
+
+    builder._read_chunks = counting  # type: ignore[method-assign]
+
+    first = builder.build(1, SANDBOX_ID, "2026-10-29T00:00:00Z")
+    assert sorted(reads) == ["big.bin", "notes.txt"]
+    # Not yet remembered: an uncommitted build is no baseline.
+    reads.clear()
+    builder.build(2, SANDBOX_ID, "2026-10-29T00:01:00Z")
+    assert sorted(reads) == ["big.bin", "notes.txt"]
+
+    builder.remember(first)
+    (project / "notes.txt").write_text("v2")
+    os.utime(project / "notes.txt", ns=(long_ago + 5, long_ago + 5))
+    reads.clear()
+    second = builder.build(3, SANDBOX_ID, "2026-10-29T00:02:00Z")
+    assert reads == ["notes.txt"]
+    # The reused entry is the committed one; only the changed file brings chunks.
+    by_path = {entry.path: entry for entry in second.manifest.entries}
+    first_by_path = {entry.path: entry for entry in first.manifest.entries}
+    assert by_path["projects/app/big.bin"] == first_by_path["projects/app/big.bin"]
+    assert by_path["projects/app/notes.txt"] != first_by_path["projects/app/notes.txt"]
+    assert set(second.chunks) == set(by_path["projects/app/notes.txt"].chunks)
+
+    builder.forget()
+    reads.clear()
+    builder.build(4, SANDBOX_ID, "2026-10-29T00:03:00Z")
+    assert sorted(reads) == ["big.bin", "notes.txt"]
+
+
+def test_builder_does_not_trust_files_modified_within_the_racy_window(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    project = workspace / "projects" / "app"
+    project.mkdir(parents=True)
+    target = project / "hot.txt"
+    target.write_text("x")
+    now = target.stat().st_mtime_ns
+    builder = ManifestBuilder(workspace, clock_ns=lambda: now)
+    built = builder.build(1, SANDBOX_ID, "2026-10-29T00:00:00Z")
+    assert "projects/app/hot.txt" not in built.stamps
+    builder.remember(built)
+    reads: list[str] = []
+    original = builder._read_chunks
+
+    def counting(path: Path) -> list[bytes]:
+        reads.append(path.name)
+        return original(path)
+
+    builder._read_chunks = counting  # type: ignore[method-assign]
+    builder.build(2, SANDBOX_ID, "2026-10-29T00:01:00Z")
+    assert reads == ["hot.txt"]
+
+
+def test_builder_rereads_a_file_whose_inode_changed(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    project = workspace / "projects" / "app"
+    project.mkdir(parents=True)
+    target = project / "swap.txt"
+    target.write_text("old")
+    long_ago = 1_700_000_000_000_000_000
+    os.utime(target, ns=(long_ago, long_ago))
+    builder = ManifestBuilder(workspace, clock_ns=lambda: time.time_ns() + 10 * 10**9)
+    builder.remember(builder.build(1, SANDBOX_ID, "2026-10-29T00:00:00Z"))
+    replacement = project / "swap.tmp"
+    replacement.write_text("new")
+    os.utime(replacement, ns=(long_ago, long_ago))
+    replacement.replace(target)
+    built = builder.build(2, SANDBOX_ID, "2026-10-29T00:01:00Z")
+    entry = next(e for e in built.manifest.entries if e.path == "projects/app/swap.txt")
+    assert entry.chunks and set(entry.chunks) <= set(built.chunks)

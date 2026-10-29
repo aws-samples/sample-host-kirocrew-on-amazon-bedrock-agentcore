@@ -180,6 +180,9 @@ class CheckpointEngine:
             self._inject("manifest_uploaded")
             self._store.commit_generation(generation, manifest_blob.digest)
             self._inject("generation_committed")
+            # Only now are this build's chunks known durable, so only now may
+            # the next build reuse its entries without re-reading the files.
+            self._builder.remember(built)
             self._write_local_state(generation, manifest_blob.digest)
             self._inject("local_state_written")
             self._journal.clear_through(snapshot.through_sequence)

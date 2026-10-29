@@ -1185,7 +1185,11 @@ def test_build_runtime_application_cleanup_and_serve(monkeypatch: pytest.MonkeyP
         def __init__(self, *, region_name: str) -> None:
             assert region_name == "us-east-2"
 
-        def client(self, name: str) -> object:
+        def client(self, name: str, config: object | None = None) -> object:
+            if name == "lambda":
+                # Restore fetches chunks from 16 threads; a smaller pool queues them.
+                assert config is not None
+                assert config.max_pool_connections >= 16  # type: ignore[attr-defined]
             return clients[name]
 
     class LoopbackSession:

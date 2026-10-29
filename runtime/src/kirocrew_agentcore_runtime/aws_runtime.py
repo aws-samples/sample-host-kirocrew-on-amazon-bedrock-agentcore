@@ -16,6 +16,7 @@ from typing import Any, Protocol
 
 import boto3  # type: ignore[import-untyped]
 from aiohttp import ClientSession, web
+from botocore.config import Config as BotocoreConfig  # type: ignore[import-untyped]
 from cryptography.exceptions import InvalidSignature
 from kirocrew_agentcore_adapter.identity import (
     KiroAuthState,
@@ -1188,7 +1189,10 @@ async def build_runtime_application(
     region = _required(environment, "AWS_REGION")
     session = boto3.Session(region_name=region)
     kms = session.client("kms")
-    lambda_client = session.client("lambda")
+    # Restore asks the broker for a presigned URL per chunk from 16 threads at
+    # once; botocore's default pool of 10 connections made the rest wait and
+    # discard connections ("Connection pool is full") on every cold start.
+    lambda_client = session.client("lambda", config=BotocoreConfig(max_pool_connections=32))
     binding_verifier = KmsBindingVerifier(
         AwsKmsSignatureVerifier(kms, _required(environment, "BINDING_KEY_ARN")),
         _required(environment, "BINDING_AUDIENCE"),

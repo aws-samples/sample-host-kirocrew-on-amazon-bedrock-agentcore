@@ -114,7 +114,10 @@ def engine(
     )
 
 
-def test_empty_managed_mount_restores_authoritative_generation(tmp_path: Path) -> None:
+def test_empty_managed_mount_restores_authoritative_generation(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level("INFO", logger="kirocrew_agentcore_persistence.restore")
     _, _, broker, store = storage()
     source = tmp_path / "empty-mount-source"
     source.mkdir()
@@ -135,6 +138,10 @@ def test_empty_managed_mount_restores_authoritative_generation(tmp_path: Path) -
         == "runtime-v2"
     )
     assert (target / ".agentcore/restore-report.json").stat().st_mode & 0o777 == 0o600
+    # Per-phase timing is what tells a slow restore's download from its write.
+    timing = [r.getMessage() for r in caplog.records if "Restore timing" in r.getMessage()]
+    assert len(timing) == 1
+    assert "generation=1 " in timing[0] and "fetch_and_write=" in timing[0]
 
 
 def test_checkpoint_older_than_fourteen_days_still_restores(tmp_path: Path) -> None:

@@ -3,8 +3,10 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import logging
 import os
 import shutil
+import time
 from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -28,6 +30,8 @@ from kirocrew_agentcore_persistence.manifest import (
     PersistencePolicy,
     safe_symlink_target,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 MAX_RESTORE_FILES: Final = 100_000
 MAX_RESTORE_BYTES: Final = 50 * 1024 * 1024 * 1024
@@ -415,11 +419,13 @@ class RestoreEngine:
         return cast(dict[str, object], value) if isinstance(value, dict) else None
 
     def _restore_generation(self, committed: CommittedGeneration) -> None:
+        started = time.monotonic()
         manifest_blob = self._store.get_manifest(committed.generation)
         if manifest_blob.digest != committed.manifest_digest:
             raise IntegrityError("Committed manifest digest does not match object.")
         plaintext = self._cipher.decrypt(manifest_blob)
         manifest = self._decoder.decode(plaintext, self._sandbox_id, committed.generation)
+        manifest_done = time.monotonic()
         # Stage inside the workspace: in the fleet the workspace is the only
         # writable mount and its parent rejects writes, and .agentcore is
         # already excluded from checkpoints.
@@ -431,10 +437,23 @@ class RestoreEngine:
         stage.mkdir(parents=True, exist_ok=True)
         try:
             self._materialize(stage, manifest)
+            materialized = time.monotonic()
             self._write_state(stage, committed)
             self._install(stage, backup)
         finally:
             self._remove_tree(stage)
+        files = [entry for entry in manifest.entries if entry.type == "file"]
+        _LOGGER.info(
+            "Restore timing generation=%d files=%d chunks=%d bytes=%d "
+            "manifest=%.1fs fetch_and_write=%.1fs install=%.1fs",
+            committed.generation,
+            len(files),
+            len({digest for entry in files for digest in entry.chunks}),
+            sum(entry.size for entry in files),
+            manifest_done - started,
+            materialized - manifest_done,
+            time.monotonic() - materialized,
+        )
 
     def _materialize(self, stage: Path, manifest: PersistenceManifest) -> None:
         # Sequential chunk fetches took minutes for real workspaces, which

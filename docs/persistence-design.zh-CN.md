@@ -104,7 +104,7 @@ Stop safely 的全部时长"。
 | microVM 内存 | 沙盒进程 | gateway/adapter 运行态、dashboard token | 会话内，回收即失 |
 | 本地暂存 | `/tmp/kirocrew-state/crew` | gateway SQLite 工作集（WAL 需要，仅当 workspace 不支持 WAL 时启用） | 会话内；checkpoint 前由 `StagedStateFlusher` 镜像回 workspace |
 | workspace（容器盘） | `/mnt/workspace` | `home/.kiro`、`home/.config`、`home/.local/share/kiro-cli`、`projects`、`user` + `.agentcore/`（运行时元数据，不入 checkpoint） | **临时容器盘**（2026-09-06 起不再使用 managed session storage）：会话内保留，冷启动为空，靠 S3 checkpoint 恢复 |
-| S3 checkpoint | `snapshots/<sandboxId>/…` | 内容寻址加密 chunk + 加密 manifest，保留最近两代 | **持久权威**；KMS 每沙盒数据密钥，AES-256-GCM |
+| S3 checkpoint | `snapshots/<sandboxId>/…` | 内容寻址加密 chunk + 加密 manifest，目前所有代都保留 | **持久权威**；KMS 每沙盒数据密钥，AES-256-GCM |
 | DynamoDB | sandbox 表 | 沙盒状态机、租约、`lastCheckpointGeneration` 指针、init 属主 | 持久（控制面元数据） |
 | KMS | 每部署一把 key | 每沙盒 256-bit 数据密钥（不入 manifest） | 持久 |
 
@@ -133,8 +133,10 @@ FIFO / 设备文件；symlink 只记录目标不跟随。
 - **凭证边界**：persistence broker 自行推导 S3 key，预签名 URL ≤15 分钟，
   强制 KMS encryption-context 含已验证的 sandbox ID；运行时拿不到桶前缀、
   不能 list。绑定令牌 30 分钟。
-- **GC 与审计**：保留最近两代；引用感知 GC 先标记、过宽限期、复算可达性
-  再清扫；离线审计器定期解密两份 manifest 验证所有 chunk 存在。
+- **GC 与审计**：目前**没有回收**，所有代和数据块都保留。`durability.py` 里的
+  `RetentionManager` 实现了引用感知 GC（标记、过宽限期、复算可达性再清扫），
+  但运行时和 broker 都没有调用它；定时审计规则打到 broker 的 audit 分支，该
+  分支目前是空壳。
 
 ---
 

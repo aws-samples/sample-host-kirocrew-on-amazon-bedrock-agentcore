@@ -795,7 +795,17 @@ class ProductionRuntimeBackend:
             receipt, _ = await asyncio.wait_for(
                 self._commit_checkpoint(final=True), timeout_seconds
             )
-        except Exception:
+        except Exception as error:
+            if _caused_by_refusal(error):
+                # Stop safely commits its own checkpoint and then revokes the
+                # binding; a superseded container has lost it to the new holder.
+                # Either way the broker is right to refuse, and the generation
+                # already committed is the authoritative one -- not a failure.
+                _LOGGER.info(
+                    "Shutdown checkpoint skipped: the binding was revoked (sandbox stopped "
+                    "or taken over); the last committed generation stands."
+                )
+                return
             _LOGGER.warning("Final checkpoint on shutdown did not commit.", exc_info=True)
             return
         _LOGGER.info("Shutdown checkpoint committed generation %d.", receipt.generation)
@@ -1149,6 +1159,16 @@ class AwsSessionInitializer:
             self._init_owner,
         )
         return client, report, store, checkpoint_engine
+
+
+def _caused_by_refusal(error: BaseException) -> bool:
+    """Whether a broker refusal is anywhere in the exception's cause chain."""
+    current: BaseException | None = error
+    while current is not None:
+        if isinstance(current, BrokerRefusalError):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _gateway_ready(gateway: GatewayController) -> bool:

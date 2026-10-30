@@ -64,6 +64,8 @@ module "identity" {
   logout_urls   = [for path in var.oauth_logout_paths : "${module.frontend.url}${path}"]
   retain_data   = var.retain_persisted_data
   tags          = module.naming.tags
+
+  pre_token_lambda_arn = var.enable_tool_authorization ? module.tool_authorization[0].token_claims_lambda_arn : ""
 }
 
 module "runtime_microvm" {
@@ -227,6 +229,7 @@ module "tool_authorization" {
   user_pool_id          = module.identity.user_pool_id
   cognito_issuer        = module.identity.issuer
   cognito_app_client_id = module.identity.app_client_id
+  user_pool_arn         = module.identity.user_pool_arn
 }
 
 module "frontend" {

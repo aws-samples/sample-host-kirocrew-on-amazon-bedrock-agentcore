@@ -5,6 +5,12 @@ variable "logout_urls" { type = list(string) }
 variable "retain_data" { type = bool }
 variable "tags" { type = map(string) }
 
+variable "pre_token_lambda_arn" {
+  description = "Optional pre token generation trigger (event version V3_0). Empty leaves the pool without one."
+  type        = string
+  default     = ""
+}
+
 resource "aws_cognito_user_pool" "this" {
   name                = "${var.prefix}-users"
   deletion_protection = var.retain_data ? "ACTIVE" : "INACTIVE"
@@ -47,6 +53,17 @@ resource "aws_cognito_user_pool" "this" {
 
   user_pool_add_ons {
     advanced_security_mode = "ENFORCED"
+  }
+
+  # V3_0 is the only event version that runs for client-credentials tokens.
+  dynamic "lambda_config" {
+    for_each = var.pre_token_lambda_arn == "" ? [] : [var.pre_token_lambda_arn]
+    content {
+      pre_token_generation_config {
+        lambda_arn     = lambda_config.value
+        lambda_version = "V3_0"
+      }
+    }
   }
 
   tags = var.tags

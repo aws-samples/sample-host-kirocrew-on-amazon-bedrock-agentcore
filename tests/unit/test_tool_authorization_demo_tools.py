@@ -23,12 +23,12 @@ def _context(tool: str | None) -> Any:
 
 def test_each_demo_tool_answers_under_its_gateway_name() -> None:
     tools = _load()
-    assert tools.handler({}, _context("demo_tools___finance_report"))["tool"] == "finance_report"
-    assert tools.handler({}, _context("demo_tools___eng_status"))["tool"] == "eng_status"
+    assert tools.handler({}, _context("demo-tools___finance_report"))["tool"] == "finance_report"
+    assert tools.handler({}, _context("demo-tools___eng_status"))["tool"] == "eng_status"
 
 
 def test_unknown_or_missing_tool_name_is_an_error_not_a_default() -> None:
     tools = _load()
-    assert "error" in tools.handler({}, _context("demo_tools___other"))
+    assert "error" in tools.handler({}, _context("demo-tools___other"))
     assert "error" in tools.handler({}, _context(None))
     assert "error" in tools.handler({}, SimpleNamespace(client_context=None))

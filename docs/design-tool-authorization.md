@@ -1,6 +1,7 @@
 # Design: per-user and per-group tool authorization
 
-Status: proposal for #40. Nothing here is implemented.
+Status: proposal for #40. Phase 1 is implemented behind `enable_tool_authorization`
+(`infrastructure/modules/tool-authorization`); phases 2 and 3 are not.
 
 ## Problem
 
@@ -85,6 +86,20 @@ sandbox claims.
    both Cognito and our issuer; scheduled wakes get tool access.
 3. **Phase 3:** remove Registry and Gateway permissions from the Runtime role;
    Cedar to `ENFORCE`.
+
+### Phase 1 as built
+
+| Piece | What it is |
+|---|---|
+| Groups | `<prefix>-tools-finance`, `<prefix>-tools-eng` in the existing user pool |
+| Tools | one demo Lambda behind target `demo_tools`: `finance_report`, `eng_status` |
+| Gateway | MCP, `CUSTOM_JWT` against the user pool, `AllowedClients` = the browser client (Cognito access tokens carry `client_id`, not `aud`) |
+| Policies | one `permit` per group on `principal.getTag("cognito:groups")`, engine in `LOG_ONLY` |
+
+The Gateway role invokes only the demo Lambda and reaches only its own policy
+engine and gateway (matched by name, since the IDs exist only after the stack).
+Sandboxes are not pointed at this Gateway yet; phase 1 is exercised with a
+signed-in user's access token from outside the sandbox.
 
 ## Acceptance
 

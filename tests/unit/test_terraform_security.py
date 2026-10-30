@@ -340,3 +340,30 @@ def test_multi_owner_wake_key_is_dedicated_opt_in_and_purpose_bound() -> None:
     # The waker reads the table but never writes it.
     assert "dynamodb:PutItem" not in scheduler
     assert "dynamodb:UpdateItem" not in scheduler
+
+
+def test_tool_authorization_is_opt_in_log_only_and_group_scoped() -> None:
+    # Phase 1 of #40 must not change anything a sandbox already uses: it only
+    # exists when enabled, and its Cedar decisions are recorded, not enforced.
+    variables = terraform("variables.tf")
+    flag = variables[variables.index('variable "enable_tool_authorization"') :][:700]
+    assert "default     = false" in flag
+    root = terraform("main.tf")
+    assert "count  = var.enable_tool_authorization ? 1 : 0" in root
+
+    module = terraform("modules/tool-authorization/main.tf")
+    assert 'default     = "LOG_ONLY"' in module
+    assert "Mode = var.policy_mode" in module
+    assert 'AuthorizerType = "CUSTOM_JWT"' in module
+    assert "AllowedClients = [var.cognito_app_client_id]" in module
+    # Every permit is tied to one group claim, checked with hasTag first.
+    assert 'principal.hasTag(\\"cognito:groups\\") &&' in module
+    assert 'principal.getTag(\\"cognito:groups\\") like \\"*${p.group}*\\"' in module
+    assert "forbid(" not in module
+    # The Gateway role invokes only the demo tools and reaches only its own
+    # policy engine and gateway.
+    invoke = module[module.index('sid       = "InvokeDemoTools"') :][:200]
+    assert "resources = [aws_lambda_function.tools.arn]" in invoke
+    assert 'variable = "aws:SourceAccount"' in module
+    assert '"bedrock-agentcore:*"' not in module
+    assert "AdministratorAccess" not in module

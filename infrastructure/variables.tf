@@ -305,3 +305,9 @@ variable "wake_max_relays" {
     error_message = "Relays must be between 0 and 48."
   }
 }
+
+variable "enable_tool_authorization" {
+  description = "Phase 1 of per-group tool authorization (#40, docs/design-tool-authorization.md): a Gateway that authenticates with the user's Cognito access token, two demo tools and Cognito groups, and Cedar policies in LOG_ONLY so decisions are recorded but nothing is denied. Adds resources only; sandboxes do not use the Gateway yet."
+  type        = bool
+  default     = false
+}

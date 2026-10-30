@@ -218,6 +218,17 @@ module "scheduler" {
   tags                       = module.naming.tags
 }
 
+module "tool_authorization" {
+  source = "./modules/tool-authorization"
+  count  = var.enable_tool_authorization ? 1 : 0
+
+  prefix                = module.naming.prefix
+  tags                  = module.naming.tags
+  user_pool_id          = module.identity.user_pool_id
+  cognito_issuer        = module.identity.issuer
+  cognito_app_client_id = module.identity.app_client_id
+}
+
 module "frontend" {
   source = "./modules/frontend"
 

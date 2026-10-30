@@ -1,5 +1,5 @@
 import type { LifecycleModel, LifecycleView } from "./lifecycle.js";
-import { lifecyclePresentation } from "./lifecycle.js";
+import { lifecyclePresentation, restoreDetail } from "./lifecycle.js";
 
 const STYLE_ID = "kirocrew-agentcore-shell-style";
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -1260,7 +1260,7 @@ export function mountBrowserShell(
         : journey.reconnecting
           ? "Connection hiccup - re-establishing without losing progress."
           : journey.step === 2
-            ? "Restoring your encrypted workspace, then launching KiroCrew. Large workspaces can take a few minutes."
+            ? restoreDetail(model.sandbox?.restoreProgress)
             : "Allocating isolated AgentCore compute for your sandbox.";
     progress.dataset.active = String(journey !== undefined);
     elapsed.dataset.active = String(

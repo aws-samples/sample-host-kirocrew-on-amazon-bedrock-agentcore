@@ -29,6 +29,14 @@ export interface SandboxSnapshot {
   readonly lastCheckpointAt: string | null;
   readonly lastRestore: string | null;
   readonly updatedAt: string;
+  /** Present only while RESTORING, once the restore knows its manifest. */
+  readonly restoreProgress?: RestoreProgress;
+}
+
+export interface RestoreProgress {
+  readonly chunksDone: number;
+  readonly chunksTotal: number;
+  readonly files: number;
 }
 
 export type KiroAuthState =
@@ -222,6 +230,22 @@ export function classifyRuntimeError(
     return "terminal";
   }
   return "ignore";
+}
+
+export function restoreDetail(progress: RestoreProgress | undefined): string {
+  const fallback =
+    "Restoring your encrypted workspace, then launching KiroCrew. Large workspaces can take a few minutes.";
+  if (progress === undefined || progress.chunksTotal === 0) {
+    return fallback;
+  }
+  const percent = Math.floor(
+    (progress.chunksDone / progress.chunksTotal) * 100,
+  );
+  const files = progress.files.toLocaleString("en-US");
+  if (progress.chunksDone >= progress.chunksTotal) {
+    return `Restored ${files} files. Launching KiroCrew...`;
+  }
+  return `Restoring ${files} files: ${String(percent)}%. Large workspaces can take a few minutes.`;
 }
 
 export function lifecyclePresentation(

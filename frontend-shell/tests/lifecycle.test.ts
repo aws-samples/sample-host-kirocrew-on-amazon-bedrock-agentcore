@@ -6,6 +6,7 @@ import {
   classifyRuntimeError,
   needsStopResume,
   reduceLifecycle,
+  restoreDetail,
   type LifecycleModel,
   type SandboxSnapshot,
   type SandboxState,
@@ -293,5 +294,28 @@ describe("needsStopResume", () => {
     undefined,
   ] as const)("never stops a sandbox that is %s", (state) => {
     expect(needsStopResume(state, false)).toBe(false);
+  });
+});
+
+describe("restoreDetail", () => {
+  it("falls back to the generic line before the manifest is known", () => {
+    expect(restoreDetail(undefined)).toContain(
+      "Restoring your encrypted workspace",
+    );
+    expect(
+      restoreDetail({ chunksDone: 0, chunksTotal: 0, files: 0 }),
+    ).toContain("Restoring your encrypted workspace");
+  });
+
+  it("shows files and a floored percentage while chunks arrive", () => {
+    expect(restoreDetail({ chunksDone: 2, chunksTotal: 3, files: 22925 })).toBe(
+      "Restoring 22,925 files: 66%. Large workspaces can take a few minutes.",
+    );
+  });
+
+  it("says KiroCrew is launching once every chunk is in", () => {
+    expect(restoreDetail({ chunksDone: 3, chunksTotal: 3, files: 7 })).toBe(
+      "Restored 7 files. Launching KiroCrew...",
+    );
   });
 });

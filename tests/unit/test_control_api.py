@@ -818,3 +818,27 @@ def test_scheduler_stop_refuses_anything_it_cannot_fully_verify() -> None:
     # A subject with no sandbox at all.
     unknown = stop(cognitoSubject="00000000-0000-7000-8000-0000000000ff")
     assert unknown["statusCode"] == 404
+
+
+def test_sandbox_status_returns_restore_progress_only_while_restoring() -> None:
+    _, registry, _, _, _, _ = service()
+    base = registry.get_or_create(SUBJECT)
+    progress = '{"chunksDone":5,"chunksTotal":9,"files":3}'
+    restoring = replace(
+        base,
+        state=SandboxState.RESTORING,
+        wake_hints=(("restoreProgress", "S", progress),),
+    )
+    assert SandboxControlService._sandbox(restoring)["restoreProgress"] == {
+        "chunksDone": 5,
+        "chunksTotal": 9,
+        "files": 3,
+    }
+    ready = replace(restoring, state=SandboxState.READY)
+    assert "restoreProgress" not in SandboxControlService._sandbox(ready)
+    for bad in ("not json", "[1]", '{"chunksDone":-1,"chunksTotal":9,"files":3}'):
+        broken = replace(restoring, wake_hints=(("restoreProgress", "S", bad),))
+        assert "restoreProgress" not in SandboxControlService._sandbox(broken)
+    assert "restoreProgress" not in SandboxControlService._sandbox(
+        replace(restoring, wake_hints=())
+    )

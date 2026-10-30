@@ -53,7 +53,12 @@ from kirocrew_agentcore_persistence.remote import (
     LambdaPersistenceBroker,
     invoke_broker,
 )
-from kirocrew_agentcore_persistence.restore import RestoreEngine, RestoreError, RestoreReport
+from kirocrew_agentcore_persistence.restore import (
+    RestoreEngine,
+    RestoreError,
+    RestoreProgress,
+    RestoreReport,
+)
 
 from kirocrew_agentcore_runtime.cloudwatch_logs import CloudWatchLogHandler
 from kirocrew_agentcore_runtime.image_runtime import ImageMetadata
@@ -272,8 +277,17 @@ class BrokeredSandboxStateStore:
         self.session_token = token
         return token
 
-    def heartbeat_init(self, sandbox_id: str, runtime_session_id: str, init_owner: str) -> None:
-        self._apply("heartbeatInit", sandbox_id, runtime_session_id, initOwner=init_owner)
+    def heartbeat_init(
+        self,
+        sandbox_id: str,
+        runtime_session_id: str,
+        init_owner: str,
+        progress: Mapping[str, int] | None = None,
+    ) -> None:
+        values: dict[str, object] = {"initOwner": init_owner}
+        if progress is not None:
+            values["restoreProgress"] = dict(progress)
+        self._apply("heartbeatInit", sandbox_id, runtime_session_id, **values)
 
     def heartbeat_lease(
         self,
@@ -850,6 +864,8 @@ class AwsSessionInitializer:
         self._initialized_session: tuple[str, str, str] | None = None
         self._lease_heartbeat_task: asyncio.Task[None] | None = None
         self._init_owner = str(uuid.uuid4())
+        # The running restore's progress, published on each init heartbeat.
+        self._restore_progress = RestoreProgress()
         self._last_served = 0
         self._broker_client: LambdaBrokerClient | None = None
 
@@ -1040,15 +1056,20 @@ class AwsSessionInitializer:
                 _LOGGER.warning("Lease heartbeat failed.", exc_info=True)
 
     async def _init_heartbeat(self, sandbox_id: str, runtime_session_id: str) -> None:
-        """Extend the initialization lease while restore and startup run."""
+        """Extend the initialization lease while restore and startup run.
+
+        Every 10 s, not 20: each beat also carries the restore's progress, and
+        the page shows it, so a slower beat would make the bar visibly lag.
+        """
         while True:
-            await asyncio.sleep(20)
+            await asyncio.sleep(10)
             try:
                 await asyncio.to_thread(
                     self._state_store.heartbeat_init,
                     sandbox_id,
                     runtime_session_id,
                     self._init_owner,
+                    self._restore_progress.snapshot(),
                 )
             except asyncio.CancelledError:
                 raise
@@ -1109,12 +1130,14 @@ class AwsSessionInitializer:
         # is safe; only a store BEHIND the pointer indicates data loss.
         if expected is not None and (not committed or committed[-1].generation < expected):
             raise RestoreError("PERSISTENCE_RESTORE_FAILED")
+        self._restore_progress = RestoreProgress()
         report = RestoreEngine(
             self._workspace,
             claims.sandbox_id,
             self._metadata.kirocrew_version,
             store,
             cipher,
+            progress=self._restore_progress,
         ).restore(existing_sandbox=expected is not None)
         _LOGGER.info(
             "Restore outcome=%s generation=%s fallback=%s attempts=%s reasons=%s",

@@ -370,6 +370,9 @@ def test_brokered_state_store_maps_lifecycle_operations_and_adopts_the_session_t
     )
     store.mark_ready(SANDBOX, "session-1", report, OWNER)
     store.heartbeat_init(SANDBOX, "session-1", OWNER)
+    store.heartbeat_init(
+        SANDBOX, "session-1", OWNER, {"chunksDone": 1, "chunksTotal": 2, "files": 1}
+    )
     store.heartbeat_lease(SANDBOX, "session-1")
     store.heartbeat_lease(SANDBOX, "session-1", OWNER, 1_700_000_000)
     store.mark_error(SANDBOX, "session-1", init_owner=OWNER)
@@ -382,12 +385,16 @@ def test_brokered_state_store_maps_lifecycle_operations_and_adopts_the_session_t
         ("acquireInit", "binding"),
         ("markReady", "session-token"),
         ("heartbeatInit", "session-token"),
+        ("heartbeatInit", "session-token"),
         ("heartbeatLease", "session-token"),
         ("heartbeatLease", "session-token"),
         ("markError", "session-token"),
         ("markError", "session-token"),
         ("healReady", "session-token"),
     ]
+    beats = [r for r in lambda_client.requests if r["operation"] == "heartbeatInit"]
+    assert "restoreProgress" not in beats[0]
+    assert beats[1]["restoreProgress"] == {"chunksDone": 1, "chunksTotal": 2, "files": 1}
     requests = lambda_client.requests
     beats = [r for r in requests if r.get("operation") == "heartbeatLease"]
     assert "initOwner" not in beats[0] and "servedAt" not in beats[0]
@@ -395,11 +402,11 @@ def test_brokered_state_store_maps_lifecycle_operations_and_adopts_the_session_t
     assert all(r["sandboxId"] == SANDBOX and r["runtimeSessionId"] == "session-1" for r in requests)
     assert requests[1]["initOwner"] == OWNER
     assert requests[2]["restoreOutcome"] == "restored"
-    assert requests[6]["initOwner"] == OWNER
-    assert "initOwner" not in requests[7]
-    assert requests[7]["failureType"] == "RestoreError"
-    assert requests[7]["failureDetail"] == "PERSISTENCE_RESTORE_FAILED"
-    assert requests[7]["upstreamException"] == "OSError"
+    assert requests[7]["initOwner"] == OWNER
+    assert "initOwner" not in requests[8]
+    assert requests[8]["failureType"] == "RestoreError"
+    assert requests[8]["failureDetail"] == "PERSISTENCE_RESTORE_FAILED"
+    assert requests[8]["upstreamException"] == "OSError"
 
     # The broker's conditional outcome surfaces as a typed conflict.
     conflicted = BrokeredSandboxStateStore(FakeBrokerLambda({"applied": False}), "arn:broker")
@@ -548,10 +555,14 @@ def test_init_heartbeat_extends_the_lease_and_survives_beat_failures() -> None:
     async def scenario() -> None:
         initializer = StubAwsSessionInitializer()
         beats: list[str] = []
+        published: list[object] = []
+        initializer._restore_progress.begin(chunks=4, files=2)
+        initializer._restore_progress.advance()
 
-        def heartbeat(sandbox: str, session: str, owner: str) -> None:
+        def heartbeat(sandbox: str, session: str, owner: str, progress: object = None) -> None:
             del session, owner
             beats.append(sandbox)
+            published.append(progress)
             if len(beats) == 2:
                 raise RuntimeError("dynamo hiccup")
             if len(beats) == 3:
@@ -575,7 +586,8 @@ def test_init_heartbeat_extends_the_lease_and_survives_beat_failures() -> None:
         finally:
             asyncio.sleep = real_sleep
         assert beats == ["sandbox", "sandbox", "sandbox"]
-        assert sleeps == [20, 20, 20]
+        assert sleeps == [10, 10, 10]
+        assert published[0] == {"chunksDone": 1, "chunksTotal": 4, "files": 2}
 
     asyncio.run(scenario())
 
@@ -1058,7 +1070,9 @@ def test_initialize_sync_restore_composition(monkeypatch: pytest.MonkeyPatch) ->
             self.restoring.append((sandbox, session))
             return "session-token"
 
-        def heartbeat_init(self, sandbox: str, session: str, owner: str) -> None:
+        def heartbeat_init(
+            self, sandbox: str, session: str, owner: str, progress: object = None
+        ) -> None:
             return None
 
         def mark_ready(self, sandbox: str, session: str, report: object, owner: str) -> None:
@@ -1109,7 +1123,7 @@ def test_initialize_sync_restore_composition(monkeypatch: pytest.MonkeyPatch) ->
     report = RestoreReport("restored", 3, False, (), (3,), datetime(2026, 8, 18, tzinfo=UTC))
 
     class Restore:
-        def __init__(self, *_args: object) -> None:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
         def restore(self, *, existing_sandbox: bool) -> RestoreReport:

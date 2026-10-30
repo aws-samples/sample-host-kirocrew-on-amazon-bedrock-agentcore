@@ -965,3 +965,50 @@ def test_checkpoint_receipt_is_refused_to_a_superseded_instance() -> None:
             broker._checkpoint_receipt(
                 s3, kms, dynamo, SANDBOX, claims, {**request, "holderInstance": bad}
             )
+
+
+def test_init_heartbeat_publishes_valid_restore_progress() -> None:
+    dynamo = FakeDynamo(state="RESTORING")
+    progress = {"chunksDone": 5, "chunksTotal": 9, "files": 3}
+    assert broker._heartbeat_init(
+        dynamo, SANDBOX, {"initOwner": OWNER, "restoreProgress": progress}
+    ) == {"applied": True}
+    update = dynamo.updates[-1]
+    assert "restoreProgress = :progress" in str(update["UpdateExpression"])
+    values = update["ExpressionAttributeValues"]
+    assert values[":progress"] == {  # type: ignore[index]
+        "S": '{"chunksDone":5,"chunksTotal":9,"files":3}'
+    }
+
+
+@pytest.mark.parametrize(
+    "progress",
+    [
+        "50%",
+        {"chunksDone": 10, "chunksTotal": 9, "files": 3},
+        {"chunksDone": -1, "chunksTotal": 9, "files": 3},
+        {"chunksDone": True, "chunksTotal": 9, "files": 3},
+        {"chunksDone": 1, "chunksTotal": 9},
+        {"chunksDone": 1, "chunksTotal": 9, "files": 3, "extra": 1},
+        {"chunksDone": 1, "chunksTotal": 10**9, "files": 3},
+    ],
+)
+def test_init_heartbeat_drops_malformed_progress_but_still_extends(progress: object) -> None:
+    dynamo = FakeDynamo(state="RESTORING")
+    assert broker._heartbeat_init(
+        dynamo, SANDBOX, {"initOwner": OWNER, "restoreProgress": progress}
+    ) == {"applied": True}
+    update = str(dynamo.updates[-1]["UpdateExpression"])
+    assert "initExpiresAt" in update
+    assert "restoreProgress" not in update
+
+
+def test_acquire_init_clears_a_previous_starts_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kms = FakeKms()
+    claims = broker._binding(kms, token())
+    dynamo = FakeDynamo(state="STARTING")
+    monkeypatch.setenv("RUNTIME_SESSION_TOKEN_TTL_SECONDS", "3600")
+    broker._acquire_init(kms, dynamo, SANDBOX, claims, event("acquireInit", initOwner=OWNER))
+    assert "REMOVE restoreProgress" in str(dynamo.updates[-1]["UpdateExpression"])

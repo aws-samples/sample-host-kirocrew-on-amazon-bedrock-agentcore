@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import re
 from collections.abc import Callable, Mapping
@@ -12,6 +13,7 @@ import boto3  # type: ignore[import-untyped]
 from botocore.config import Config  # type: ignore[import-untyped]
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 
+_LOGGER = logging.getLogger(__name__)
 _SANDBOX = re.compile(r"^sbx_[0-9A-Z]{26}$")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _GENERATION_OBJECT = re.compile(r"^[1-9][0-9]*\.json(?:\.enc)?$")
@@ -307,7 +309,9 @@ def _acquire_init(
         (
             "SET #state = :restoring, initOwner = :owner, "
             "initExpiresAt = :expires, holderInstance = :owner, updatedAt = :updated "
-            "ADD stateVersion :one"
+            "ADD stateVersion :one "
+            # A previous start's progress must not show for this one.
+            "REMOVE restoreProgress"
         ),
         # READY is claimable once the start lease is dead. A container left
         # gone by idle reclaim publishes nothing, so without this the record
@@ -363,17 +367,51 @@ def _heartbeat_init(
 ) -> dict[str, object]:
     owner = _init_owner(event)
     now = datetime.now(UTC)
-    return _conditional_update(
-        dynamodb,
-        sandbox_id,
-        "SET initExpiresAt = :expires, updatedAt = :updated",
-        "initOwner = :owner",
-        {
-            ":expires": {"N": str(int(now.timestamp()) + 90)},
-            ":owner": {"S": owner},
-            ":updated": {"S": _iso(now)},
-        },
-    )
+    update = "SET initExpiresAt = :expires, updatedAt = :updated"
+    values: dict[str, dict[str, str]] = {
+        ":expires": {"N": str(int(now.timestamp()) + 90)},
+        ":owner": {"S": owner},
+        ":updated": {"S": _iso(now)},
+    }
+    progress = _restore_progress(event)
+    if progress is not None:
+        update += ", restoreProgress = :progress"
+        values[":progress"] = {"S": progress}
+    return _conditional_update(dynamodb, sandbox_id, update, "initOwner = :owner", values)
+
+
+_MAX_PROGRESS_COUNT: Final = 100_000_000
+
+
+def _restore_progress(event: Mapping[str, object]) -> str | None:
+    """Validate the optional restore progress an init heartbeat carries.
+
+    The page shows it while the sandbox is RESTORING, so a large workspace no
+    longer sits for minutes behind one unchanging line. Stored as a compact
+    JSON string the control plane carries through and returns as-is.
+
+    A malformed value is dropped, never raised: progress is display-only, and
+    failing the heartbeat would let the init lease lapse mid-restore.
+    """
+    value = event.get("restoreProgress")
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        _LOGGER.warning("Dropping malformed restore progress.")
+        return None
+    fields = ("chunksDone", "chunksTotal", "files")
+    numbers = {name: cast(dict[str, object], value).get(name) for name in fields}
+    if (
+        set(cast(dict[str, object], value)) != set(fields)
+        or not all(
+            type(number) is int and 0 <= number <= _MAX_PROGRESS_COUNT
+            for number in numbers.values()
+        )
+        or cast(int, numbers["chunksDone"]) > cast(int, numbers["chunksTotal"])
+    ):
+        _LOGGER.warning("Dropping malformed restore progress.")
+        return None
+    return json.dumps(numbers, separators=(",", ":"), sort_keys=True)
 
 
 def _served_at(event: Mapping[str, object], now: datetime) -> str | None:

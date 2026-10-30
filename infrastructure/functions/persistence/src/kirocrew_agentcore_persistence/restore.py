@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import shutil
+import threading
 import time
 from collections import Counter
 from collections.abc import Callable
@@ -297,6 +298,44 @@ def _remove_tree_tolerating_mounts(path: Path) -> None:
             raise
 
 
+class RestoreProgress:
+    """How far the running restore is, readable from another thread.
+
+    The runtime publishes it on each initialization heartbeat, so the page can
+    show "restoring 22,925 files: 54%" instead of one unchanging line for the
+    two or three minutes a large workspace takes.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._chunks_done = 0
+        self._chunks_total = 0
+        self._files = 0
+        self._started = False
+
+    def begin(self, chunks: int, files: int) -> None:
+        with self._lock:
+            self._chunks_done = 0
+            self._chunks_total = chunks
+            self._files = files
+            self._started = True
+
+    def advance(self) -> None:
+        with self._lock:
+            self._chunks_done = min(self._chunks_done + 1, self._chunks_total)
+
+    def snapshot(self) -> dict[str, int] | None:
+        """The current counts, or ``None`` before the manifest is known."""
+        with self._lock:
+            if not self._started:
+                return None
+            return {
+                "chunksDone": self._chunks_done,
+                "chunksTotal": self._chunks_total,
+                "files": self._files,
+            }
+
+
 class RestoreEngine:
     def __init__(
         self,
@@ -310,11 +349,13 @@ class RestoreEngine:
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         replace: Callable[[Path, Path], None] = _replace_path,
         fetch_workers: int = 16,
+        progress: RestoreProgress | None = None,
     ) -> None:
         if not runtime_version:
             raise ValueError("Runtime version is required.")
         if fetch_workers < 1:
             raise ValueError("At least one fetch worker is required.")
+        self._progress = progress or RestoreProgress()
         self._workspace = workspace
         self._sandbox_id = sandbox_id
         self._runtime_version = runtime_version
@@ -464,6 +505,9 @@ class RestoreEngine:
         remaining = Counter(
             digest for entry in manifest.entries if entry.type == "file" for digest in entry.chunks
         )
+        self._progress.begin(
+            len(remaining), sum(1 for entry in manifest.entries if entry.type == "file")
+        )
         # Announce the chunks in submission order so their download grants are
         # fetched in batches rather than one broker call per chunk.
         prefetch = getattr(self._store, "prefetch_chunks", None)
@@ -514,7 +558,9 @@ class RestoreEngine:
             os.utime(destination, ns=(entry.mtime_ns, entry.mtime_ns))
 
     def _fetch_chunk(self, digest: str) -> bytes:
-        return self._cipher.decrypt(EncryptedBlob(digest, self._store.get_chunk(digest)))
+        chunk = self._cipher.decrypt(EncryptedBlob(digest, self._store.get_chunk(digest)))
+        self._progress.advance()
+        return chunk
 
     def _install(self, stage: Path, backup: Path) -> None:
         """Swap the workspace contents for the staged tree, entry by entry.

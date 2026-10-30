@@ -111,6 +111,8 @@ _WAKE_HINT_ATTRIBUTES = (
     ("holderInstance", "S"),
     ("lastServedAt", "S"),
     ("wakeSubject", "S"),
+    # Published on each initialization heartbeat while a restore runs.
+    ("restoreProgress", "S"),
 )
 
 

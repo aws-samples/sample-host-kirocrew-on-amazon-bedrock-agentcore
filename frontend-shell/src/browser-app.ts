@@ -9,6 +9,7 @@ import {
   needsStopResume,
   type SandboxDetails,
   type SandboxHistoryEvent,
+  type RestoreProgress,
   type SandboxSnapshot,
   type SandboxState,
 } from "./lifecycle.js";
@@ -146,6 +147,37 @@ function parseSandbox(value: unknown): SandboxSnapshot {
     lastRestore:
       typeof value.lastRestore === "string" ? value.lastRestore : null,
     updatedAt: value.updatedAt,
+    ...(parseRestoreProgress(value.restoreProgress) ?? {}),
+  };
+}
+
+/**
+ * Optional and advisory: a malformed value is dropped rather than failing the
+ * status response, since the page only uses it to draw a progress line.
+ */
+function parseRestoreProgress(
+  value: unknown,
+): { restoreProgress: RestoreProgress } | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const { chunksDone, chunksTotal, files } = value;
+  if (
+    !Number.isSafeInteger(chunksDone) ||
+    !Number.isSafeInteger(chunksTotal) ||
+    !Number.isSafeInteger(files) ||
+    Number(chunksDone) < 0 ||
+    Number(files) < 0 ||
+    Number(chunksDone) > Number(chunksTotal)
+  ) {
+    return undefined;
+  }
+  return {
+    restoreProgress: {
+      chunksDone: Number(chunksDone),
+      chunksTotal: Number(chunksTotal),
+      files: Number(files),
+    },
   };
 }
 

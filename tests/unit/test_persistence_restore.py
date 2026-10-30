@@ -29,6 +29,7 @@ from kirocrew_agentcore_persistence.restore import (
     RestoreConditions,
     RestoreEngine,
     RestoreError,
+    RestoreProgress,
 )
 
 SANDBOX_ID = "sbx_01J00000000000000000000000"
@@ -869,3 +870,39 @@ def test_manifest_decoder_still_rejects_paths_outside_durable_roots() -> None:
     for path in ("../escape", "etc/passwd", "/absolute"):
         with pytest.raises(ManifestValidationError, match="outside durable roots"):
             decode(decoder, canonical_manifest([file_entry(path=path)]))
+
+
+def test_restore_progress_reaches_every_chunk_of_the_restored_generation(
+    tmp_path: Path,
+) -> None:
+    _, _, broker, store = storage()
+    source = tmp_path / "progress-source"
+    source.mkdir()
+    representative_workspace(source, "durable content")
+    create_generation(source, 1, broker, store)
+    target = tmp_path / "progress-target"
+    target.mkdir()
+    progress = RestoreProgress()
+    assert progress.snapshot() is None
+    RestoreEngine(
+        target,
+        SANDBOX_ID,
+        "runtime-v2",
+        store,
+        broker.cipher(SANDBOX_ID),
+        clock=MutableClock(),
+        progress=progress,
+    ).restore(existing_sandbox=True)
+    snapshot = progress.snapshot()
+    assert snapshot is not None
+    assert snapshot["files"] > 0
+    assert snapshot["chunksTotal"] > 0
+    assert snapshot["chunksDone"] == snapshot["chunksTotal"]
+
+
+def test_restore_progress_never_counts_past_its_total() -> None:
+    progress = RestoreProgress()
+    progress.begin(chunks=1, files=1)
+    progress.advance()
+    progress.advance()
+    assert progress.snapshot() == {"chunksDone": 1, "chunksTotal": 1, "files": 1}

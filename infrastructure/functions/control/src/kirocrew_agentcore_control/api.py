@@ -879,7 +879,7 @@ class SandboxControlService:
 
     @staticmethod
     def _sandbox(record: SandboxRecord) -> dict[str, object]:
-        return {
+        body: dict[str, object] = {
             "lastCheckpointAt": None,
             "lastRestore": record.last_restore,
             "sandboxId": record.sandbox_id,
@@ -887,6 +887,11 @@ class SandboxControlService:
             "stateVersion": record.state_version,
             "updatedAt": _timestamp(record.updated_at),
         }
+        if record.state is SandboxState.RESTORING:
+            progress = _restore_progress(record)
+            if progress is not None:
+                body["restoreProgress"] = progress
+        return body
 
     @staticmethod
     def _checkpoint(item: CheckpointMetadata) -> dict[str, object]:
@@ -951,6 +956,29 @@ def _headers(event: Mapping[str, object]) -> dict[str, str]:
         for key, item in value.items()
         if isinstance(key, str) and isinstance(item, str)
     }
+
+
+def _restore_progress(record: SandboxRecord) -> dict[str, int] | None:
+    """The broker-published restore progress, or ``None`` if absent or malformed.
+
+    The broker validates it on write; this only guards the read so a bad value
+    can never break the status endpoint the page polls.
+    """
+    raw = next(
+        (value for name, _kind, value in record.wake_hints if name == "restoreProgress"), None
+    )
+    if raw is None:
+        return None
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return None
+    fields = ("chunksDone", "chunksTotal", "files")
+    if not isinstance(value, dict) or not all(
+        type(value.get(name)) is int and value[name] >= 0 for name in fields
+    ):
+        return None
+    return {name: int(value[name]) for name in fields}
 
 
 def _timestamp(value: datetime) -> str:

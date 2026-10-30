@@ -350,7 +350,9 @@ def test_tool_authorization_is_opt_in_log_only_and_group_scoped() -> None:
     assert "default     = false" in flag
     root = terraform("main.tf")
     assert "count  = var.enable_tool_authorization ? 1 : 0" in root
-
+    assert "policy_mode           = var.tool_authorization_policy_mode" in root
+    mode = variables[variables.index('variable "tool_authorization_policy_mode"') :][:700]
+    assert 'default     = "LOG_ONLY"' in mode
     module = terraform("modules/tool-authorization/main.tf")
     assert 'default     = "LOG_ONLY"' in module
     assert "Mode = var.policy_mode" in module

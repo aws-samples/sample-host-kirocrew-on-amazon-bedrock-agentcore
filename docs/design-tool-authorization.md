@@ -47,7 +47,8 @@ scheduled wake has no user token at all.
 |---|---|---|---|---|
 | A. Forward the browser's Cognito access token into the sandbox, renew with the binding | yes | **no** (token expires; nobody renews at 3 a.m.) | no | phase 1 only |
 | B. Store the user's Cognito refresh token, encrypted | yes | yes | **yes, long-lived** | rejected |
-| C. **Control plane mints a short-lived user JWT** from our own issuer | yes | yes | no | **proposed** |
+| C. Control plane mints a short-lived user JWT from our own issuer | yes | yes | no | superseded by D |
+| D. **Broker gets a Cognito machine token for the owner** (client credentials + pre token generation trigger) | yes | yes | client secret, broker only | **proposed** |
 
 ### Option C
 
@@ -68,6 +69,44 @@ scheduled wake has no user token at all.
    invoke permissions. Discovery goes through the Gateway (its search tool, or an
    interceptor that filters `ListTools` by the same claims).
 
+Option C runs into a Gateway limit found while building phase 1: a Gateway's
+`CustomJWTAuthorizer` takes exactly ONE discovery URL, so it cannot trust
+Cognito for interactive calls and our own issuer for scheduled ones. Option C
+would need either a second Gateway or every call routed through our issuer, plus
+a JWKS we host and rotate ourselves.
+
+### Option D (proposed for phase 2)
+
+Keep Cognito as the only issuer, so the phase 1 Gateway works unchanged:
+
+1. A second app client in the existing user pool, confidential (has a secret),
+   `client_credentials` only, one custom scope such as `kirocrew-tools/invoke`.
+   The secret sits in Secrets Manager; only the broker role may read it.
+2. A pre token generation trigger on event version `V3_0` (the pool is on the
+   Plus tier, which customises machine access tokens). For
+   `TokenGeneration_ClientCredentials` from that client only, it reads the owner
+   the broker names in `aws_client_metadata`, checks the user exists and is
+   enabled, and adds the owner's current groups as a claim. Every other trigger
+   source passes through unchanged.
+3. The sandbox asks the broker for a tool token (new operation `tools.token`).
+   The broker already verified the binding token, so it knows the owner; it
+   unseals the owner's Cognito subject from the wake enrollment (#39) and calls
+   the token endpoint with that subject as client metadata. The token lives
+   15 minutes; the sandbox caches it and asks again before expiry.
+4. The Gateway adds the machine client to `AllowedClients`. Cedar policies read
+   the group claim the trigger added, so the same `permit` rules cover both
+   paths; interactive calls can move to this path as well.
+
+What changes about trust: anyone holding the machine client's secret can name
+any user, the same power option C gives whoever can sign with its key. The
+secret is readable only by the broker role, and the broker only names the owner
+of the sandbox whose binding token it verified. The sandbox never sees the
+secret.
+
+Still to confirm on the test Gateway before building on it: that Cognito
+accepts the custom group claim name on a machine token (`cognito:groups` itself
+may be reserved), and that Cedar sees it as a principal tag.
+
 Why this is safe: group membership is read at mint time, so removing a user
 from a group takes effect within 15 minutes; disabling the user stops new tokens
 at once. The signing key never leaves KMS. A token copied out of a sandbox is
@@ -82,8 +121,8 @@ sandbox claims.
 1. **Phase 1 (interactive only, small):** option A behind a flag, Gateway with
    Cognito as the JWT authorizer, Cedar policies in `LOG_ONLY`. Proves the
    policies and the group model with real traffic.
-2. **Phase 2:** option C issuer + broker operation; switch the Gateway to trust
-   both Cognito and our issuer; scheduled wakes get tool access.
+2. **Phase 2:** option D: machine client, pre token generation trigger, broker
+   `tools.token`; scheduled wakes get tool access through the same Gateway.
 3. **Phase 3:** remove Registry and Gateway permissions from the Runtime role;
    Cedar to `ENFORCE`.
 

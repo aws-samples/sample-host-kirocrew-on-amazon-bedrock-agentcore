@@ -1,5 +1,9 @@
 import type { LifecycleModel, LifecycleView } from "./lifecycle.js";
-import { lifecyclePresentation, restoreDetail } from "./lifecycle.js";
+import {
+  lifecyclePresentation,
+  restoreDetail,
+  startupStep,
+} from "./lifecycle.js";
 
 const STYLE_ID = "kirocrew-agentcore-shell-style";
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -1214,20 +1218,19 @@ export function mountBrowserShell(
   ): { step: 0 | 1 | 2; reconnecting: boolean } | undefined => {
     const fresh =
       model.startedAt !== undefined && Date.now() - model.startedAt < 600_000;
+    const step = startupStep(
+      model.sandbox?.state,
+      model.sandbox?.restoreProgress,
+    );
     if (model.view === "starting" && fresh) {
-      return {
-        step: model.sandbox?.state === "STARTING" ? 1 : 0,
-        reconnecting: false,
-      };
+      return { step: 0, reconnecting: false };
     }
     if (model.view === "restoring" && fresh) {
-      return { step: 2, reconnecting: false };
+      return { step: step === 0 ? 1 : step, reconnecting: false };
     }
     if (model.view === "reconnecting" && fresh) {
       // A dropped data-plane connection mid-startup is routine; keep the
       // startup card steady instead of flipping to a warning and back.
-      const state = model.sandbox?.state;
-      const step = state === "RESTORING" ? 2 : 1;
       return { step, reconnecting: true };
     }
     return undefined;
@@ -1259,7 +1262,7 @@ export function mountBrowserShell(
         ? (model.error?.message ?? presentation.detail)
         : journey.reconnecting
           ? "Connection hiccup - re-establishing without losing progress."
-          : journey.step === 2
+          : journey.step > 0
             ? restoreDetail(model.sandbox?.restoreProgress)
             : "Allocating isolated AgentCore compute for your sandbox.";
     progress.dataset.active = String(journey !== undefined);

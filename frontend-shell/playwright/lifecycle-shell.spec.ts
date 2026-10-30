@@ -28,6 +28,11 @@ interface LifecycleFixture {
     readonly lastCheckpointAt: string | null;
     readonly lastRestore: string | null;
     readonly updatedAt: string;
+    readonly restoreProgress?: {
+      readonly chunksDone: number;
+      readonly chunksTotal: number;
+      readonly files: number;
+    };
   };
   readonly checkpointFreshness?: string;
   readonly restoreOutcome?: string;
@@ -677,7 +682,29 @@ test("startup journey stays on one steady card with visible progress", async ({
   });
   await expect(title).toHaveText("Starting your sandbox");
   await expect(steps.nth(0)).toHaveAttribute("data-state", "done");
+  await expect(steps.nth(1)).toHaveAttribute("data-state", "active");
+  await expect(steps.nth(2)).toHaveAttribute("data-state", "pending");
+
+  // Every chunk restored: the remaining wait is KiroCrew booting.
+  await render(page, {
+    view: "restoring",
+    activeRequestAccepted: false,
+    startedAt: Date.now() - 70000,
+    sandbox: {
+      sandboxId: "sbx_0123456789ABCDEFGHJKMNPQ",
+      state: "RESTORING",
+      stateVersion: 3,
+      lastCheckpointAt: null,
+      lastRestore: null,
+      updatedAt: new Date().toISOString(),
+      restoreProgress: { chunksDone: 4, chunksTotal: 4, files: 12 },
+    },
+  });
+  await expect(steps.nth(1)).toHaveAttribute("data-state", "done");
   await expect(steps.nth(2)).toHaveAttribute("data-state", "active");
+  await expect(page.locator(".kcac-detail")).toContainText(
+    "Launching KiroCrew",
+  );
 
   // A dropped connection mid-startup must not flip the card to a warning.
   await render(page, {

@@ -355,10 +355,13 @@ def test_tool_authorization_is_opt_in_log_only_and_group_scoped() -> None:
     assert 'default     = "LOG_ONLY"' in module
     assert "Mode = var.policy_mode" in module
     assert 'AuthorizerType = "CUSTOM_JWT"' in module
-    assert "AllowedClients = [var.cognito_app_client_id]" in module
+    clients = "var.cognito_app_client_id, aws_cognito_user_pool_client.machine.id"
+    allowed = f"AllowedClients = [{clients}]"
+    assert allowed in module
     # Every permit is tied to one group claim, checked with hasTag first.
-    assert 'principal.hasTag(\\"cognito:groups\\") &&' in module
-    assert 'principal.getTag(\\"cognito:groups\\") like \\"*${p.group}*\\"' in module
+    for claim in ("cognito:groups", "kirocrew_groups"):
+        assert f'principal.hasTag(\\"{claim}\\") &&' in module
+        assert f'principal.getTag(\\"{claim}\\") like \\"*${{p.group}}*\\"' in module
     assert "forbid(" not in module
     # The Gateway role invokes only the demo tools and reaches only its own
     # policy engine and gateway.
@@ -377,3 +380,23 @@ def test_tool_authorization_names_match_the_agentcore_name_patterns() -> None:
     assert target is not None
     assert re.fullmatch(r"([0-9a-zA-Z][-]?){1,100}", target.group(1))
     assert re.search(r'engine_name\s*=\s*"\$\{local\.base_name\}_tools_policy"', module)
+
+
+def test_tool_machine_tokens_are_client_credentials_only_and_short_lived() -> None:
+    # The machine client can name any owner, so it must not grow other flows,
+    # and the trigger that adds groups may only read users and their groups.
+    module = terraform("modules/tool-authorization/main.tf")
+    machine = module[module.index('resource "aws_cognito_user_pool_client" "machine"') :][:900]
+    assert "generate_secret                      = true" in machine
+    assert 'allowed_oauth_flows                  = ["client_credentials"]' in machine
+    assert "access_token_validity                = 15" in machine
+    assert "explicit_auth_flows" not in machine
+
+    claims = module[module.index('data "aws_iam_policy_document" "token_claims"') :][:600]
+    reads = '["cognito-idp:AdminGetUser", "cognito-idp:AdminListGroupsForUser"]'
+    assert f"actions   = {reads}" in claims
+    assert "resources = [var.user_pool_arn]" in claims
+
+    identity = terraform("modules/identity/main.tf")
+    assert 'lambda_version = "V3_0"' in identity
+    assert 'var.pre_token_lambda_arn == "" ? [] :' in identity

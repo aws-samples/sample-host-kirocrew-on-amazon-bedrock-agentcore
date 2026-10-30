@@ -12,6 +12,7 @@ variable "tags" { type = map(string) }
 variable "user_pool_id" { type = string }
 variable "cognito_issuer" { type = string }
 variable "cognito_app_client_id" { type = string }
+variable "user_pool_arn" { type = string }
 
 variable "policy_mode" {
   description = "Gateway policy engine mode. Phase 1 keeps LOG_ONLY; ENFORCE belongs to phase 3."
@@ -122,6 +123,110 @@ resource "aws_lambda_function" "tools" {
   depends_on       = [aws_iam_role_policy.tools_logs]
 }
 
+# --- Machine tokens for sandboxes (phase 2) ---------------------------------
+# The broker asks for a client-credentials token naming the sandbox owner; the
+# pre token generation trigger adds that owner's current groups. One issuer
+# (this user pool) serves both interactive and scheduled calls, because a
+# Gateway's JWT authorizer trusts exactly one discovery URL.
+
+# Literal on purpose: the user pool's trigger points at the Lambda below, so
+# nothing the Lambda is built from may depend on the pool.
+locals {
+  tool_resource_server = "kirocrew.tools"
+  tool_scope           = "${local.tool_resource_server}/invoke"
+}
+
+resource "aws_cognito_resource_server" "tools" {
+  identifier   = local.tool_resource_server
+  name         = "KiroCrew tool Gateway"
+  user_pool_id = var.user_pool_id
+
+  scope {
+    scope_name        = "invoke"
+    scope_description = "Call tools through the tool-authorization Gateway on behalf of a sandbox owner"
+  }
+}
+
+resource "aws_cognito_user_pool_client" "machine" {
+  name         = "${var.prefix}-tools-machine"
+  user_pool_id = var.user_pool_id
+
+  generate_secret                      = true
+  allowed_oauth_flows_user_pool_client = true
+  allowed_oauth_flows                  = ["client_credentials"]
+  allowed_oauth_scopes                 = [local.tool_scope]
+  depends_on                           = [aws_cognito_resource_server.tools]
+  supported_identity_providers         = ["COGNITO"]
+  prevent_user_existence_errors        = "ENABLED"
+  enable_token_revocation              = true
+  access_token_validity                = 15
+
+  token_validity_units {
+    access_token = "minutes"
+  }
+}
+
+data "archive_file" "token_claims" {
+  type        = "zip"
+  source_file = "${path.module}/src/token_claims.py"
+  output_path = "${path.root}/.terraform/${var.prefix}-token-claims.zip"
+}
+
+resource "aws_iam_role" "token_claims" {
+  name               = "${var.prefix}-token-claims"
+  assume_role_policy = data.aws_iam_policy_document.lambda_trust.json
+  tags               = var.tags
+}
+
+resource "aws_cloudwatch_log_group" "token_claims" {
+  name              = "/aws/lambda/${var.prefix}-token-claims"
+  retention_in_days = 14
+  tags              = var.tags
+}
+
+data "aws_iam_policy_document" "token_claims" {
+  statement {
+    sid       = "Logs"
+    actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = ["${aws_cloudwatch_log_group.token_claims.arn}:*"]
+  }
+  statement {
+    sid       = "ReadOwnerAndGroups"
+    actions   = ["cognito-idp:AdminGetUser", "cognito-idp:AdminListGroupsForUser"]
+    resources = [var.user_pool_arn]
+  }
+}
+
+resource "aws_iam_role_policy" "token_claims" {
+  role   = aws_iam_role.token_claims.id
+  policy = data.aws_iam_policy_document.token_claims.json
+}
+
+resource "aws_lambda_function" "token_claims" {
+  function_name    = "${var.prefix}-token-claims"
+  role             = aws_iam_role.token_claims.arn
+  runtime          = "python3.12"
+  handler          = "token_claims.handler"
+  architectures    = ["arm64"]
+  timeout          = 5
+  filename         = data.archive_file.token_claims.output_path
+  source_code_hash = data.archive_file.token_claims.output_base64sha256
+  tags             = var.tags
+  environment {
+    variables = { TOOL_SCOPE = local.tool_scope }
+  }
+  # No depends_on the role policy: that policy names the pool, and the pool
+  # names this function. Cognito invokes the trigger only after apply.
+}
+
+resource "aws_lambda_permission" "token_claims" {
+  statement_id  = "AllowCognitoPreTokenGeneration"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.token_claims.function_name
+  principal     = "cognito-idp.amazonaws.com"
+  source_arn    = var.user_pool_arn
+}
+
 # --- Gateway service role ---------------------------------------------------
 
 data "aws_iam_policy_document" "gateway_trust" {
@@ -215,7 +320,7 @@ locals {
               CustomJWTAuthorizer = {
                 DiscoveryUrl = "${var.cognito_issuer}/.well-known/openid-configuration"
                 # Cognito access tokens carry `client_id`, not `aud`.
-                AllowedClients = [var.cognito_app_client_id]
+                AllowedClients = [var.cognito_app_client_id, aws_cognito_user_pool_client.machine.id]
               }
             }
             PolicyEngineConfiguration = {
@@ -280,8 +385,10 @@ locals {
                       "  resource == AgentCore::Gateway::\"$${GatewayArn}\"",
                       ")",
                       "when {",
-                      "  principal.hasTag(\"cognito:groups\") &&",
-                      "  principal.getTag(\"cognito:groups\") like \"*${p.group}*\"",
+                      "  (principal.hasTag(\"cognito:groups\") &&",
+                      "   principal.getTag(\"cognito:groups\") like \"*${p.group}*\") ||",
+                      "  (principal.hasTag(\"kirocrew_groups\") &&",
+                      "   principal.getTag(\"kirocrew_groups\") like \"*${p.group}*\")",
                       "};",
                     ]),
                     { GatewayArn = local.gateway_ref },
@@ -321,3 +428,6 @@ output "gateway_url" { value = aws_cloudformation_stack.tools.outputs["GatewayUr
 output "policy_engine_arn" { value = aws_cloudformation_stack.tools.outputs["PolicyEngineArn"] }
 output "finance_group" { value = aws_cognito_user_group.finance.name }
 output "eng_group" { value = aws_cognito_user_group.eng.name }
+output "token_claims_lambda_arn" { value = aws_lambda_function.token_claims.arn }
+output "machine_client_id" { value = aws_cognito_user_pool_client.machine.id }
+output "tool_scope" { value = local.tool_scope }

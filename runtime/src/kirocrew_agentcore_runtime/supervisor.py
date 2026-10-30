@@ -166,14 +166,16 @@ _SQLITE_SIDECAR_SUFFIXES: Final = ("-wal", "-shm")
 _STAGING_DIRECTORY_NAME: Final = "crew"
 
 
-#: Container-local, never under the persisted workspace, so a checkpoint
-#: cannot carry the owner's tool token.
-_DEFAULT_TOOL_TOKEN_FILE: Final = "/tmp/kirocrew-agentcore/tool-gateway.token"  # noqa: S105,S108 - a path, container-local by design
-
-
 def tool_token_file(environment: Mapping[str, str]) -> str:
-    """Where the runtime keeps the current tool-Gateway bearer token."""
-    return environment.get("TOOL_GATEWAY_TOKEN_FILE", "").strip() or _DEFAULT_TOOL_TOKEN_FILE
+    """Where the runtime keeps the current tool-Gateway bearer token.
+
+    Under the container's temporary directory, never under the persisted
+    workspace, so a checkpoint cannot carry the owner's token.
+    """
+    configured = environment.get("TOOL_GATEWAY_TOKEN_FILE", "").strip()
+    if configured:
+        return configured
+    return str(Path(tempfile.gettempdir()) / "kirocrew-agentcore" / "tool-gateway.token")
 
 
 def supports_sqlite_wal(directory: Path) -> bool:

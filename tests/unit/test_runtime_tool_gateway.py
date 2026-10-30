@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import tempfile
 import urllib.error
 import urllib.request
 from email.message import Message
@@ -184,7 +185,7 @@ def test_tool_gateway_is_pinned_next_to_other_servers(
         "--endpoint",
         ENDPOINT,
         "--token-file",
-        "/tmp/kirocrew-agentcore/tool-gateway.token",  # noqa: S108 - asserted default
+        str(Path(tempfile.gettempdir()) / "kirocrew-agentcore" / "tool-gateway.token"),
     ]
 
 

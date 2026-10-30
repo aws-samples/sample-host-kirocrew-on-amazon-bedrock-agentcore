@@ -92,7 +92,7 @@ sandbox claims.
 | Piece | What it is |
 |---|---|
 | Groups | `<prefix>-tools-finance`, `<prefix>-tools-eng` in the existing user pool |
-| Tools | one demo Lambda behind target `demo_tools`: `finance_report`, `eng_status` |
+| Tools | one demo Lambda behind target `demo-tools`: `finance_report`, `eng_status` |
 | Gateway | MCP, `CUSTOM_JWT` against the user pool, `AllowedClients` = the browser client (Cognito access tokens carry `client_id`, not `aud`) |
 | Policies | one `permit` per group on `principal.getTag("cognito:groups")`, engine in `LOG_ONLY` |
 

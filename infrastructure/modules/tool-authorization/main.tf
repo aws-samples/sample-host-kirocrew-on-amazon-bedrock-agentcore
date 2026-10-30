@@ -39,10 +39,11 @@ data "aws_cloudformation_type" "policy_engine" {
 locals {
   # AgentCore names allow letters, digits and underscores; the policy engine
   # ID is "<name>-<10 chars>", which the IAM statements below match.
-  base_name        = replace(var.prefix, "-", "_")
-  engine_name      = "${local.base_name}_tools_policy"
-  gateway_name     = "${var.prefix}-tools"
-  target_name      = "demo_tools"
+  base_name    = replace(var.prefix, "-", "_")
+  engine_name  = "${local.base_name}_tools_policy"
+  gateway_name = "${var.prefix}-tools"
+  # Target names allow letters, digits and single hyphens only.
+  target_name      = "demo-tools"
   finance_group    = "${var.prefix}-tools-finance"
   eng_group        = "${var.prefix}-tools-eng"
   arn_prefix       = "arn:aws:bedrock-agentcore:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}"

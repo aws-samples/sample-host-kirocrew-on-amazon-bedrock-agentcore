@@ -367,3 +367,13 @@ def test_tool_authorization_is_opt_in_log_only_and_group_scoped() -> None:
     assert 'variable = "aws:SourceAccount"' in module
     assert '"bedrock-agentcore:*"' not in module
     assert "AdministratorAccess" not in module
+
+
+def test_tool_authorization_names_match_the_agentcore_name_patterns() -> None:
+    # CloudFormation validates these before creating anything; a name that
+    # breaks the pattern rolls the whole stack back.
+    module = terraform("modules/tool-authorization/main.tf")
+    target = re.search(r'target_name\s*=\s*"([^"]+)"', module)
+    assert target is not None
+    assert re.fullmatch(r"([0-9a-zA-Z][-]?){1,100}", target.group(1))
+    assert re.search(r'engine_name\s*=\s*"\$\{local\.base_name\}_tools_policy"', module)

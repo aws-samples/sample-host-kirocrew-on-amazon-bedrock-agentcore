@@ -13,6 +13,8 @@ import boto3  # type: ignore[import-untyped]
 from botocore.config import Config  # type: ignore[import-untyped]
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 
+from kirocrew_agentcore_persistence import tool_token
+
 _LOGGER = logging.getLogger(__name__)
 _SANDBOX = re.compile(r"^sbx_[0-9A-Z]{26}$")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
@@ -991,4 +993,6 @@ def handler(event: Mapping[str, object], _context_value: object) -> dict[str, ob
         return _list(s3, sandbox_id, event)
     if operation == "checkpointReceipt":
         return _checkpoint_receipt(s3, kms, dynamodb, sandbox_id, claims, event)
+    if operation == "toolToken":
+        return tool_token.issue(kms, dynamodb, boto3.client("secretsmanager"), sandbox_id)
     raise ValueError("Unsupported persistence broker operation.")

@@ -13,6 +13,7 @@ variable "user_pool_id" { type = string }
 variable "cognito_issuer" { type = string }
 variable "cognito_app_client_id" { type = string }
 variable "user_pool_arn" { type = string }
+variable "cognito_domain" { type = string }
 
 variable "policy_mode" {
   description = "Gateway policy engine mode. Phase 1 keeps LOG_ONLY; ENFORCE belongs to phase 3."
@@ -164,6 +165,25 @@ resource "aws_cognito_user_pool_client" "machine" {
   token_validity_units {
     access_token = "minutes"
   }
+}
+
+# The broker reads this to ask Cognito for a tool token on a sandbox owner's
+# behalf. Only the broker role is granted GetSecretValue on it.
+resource "aws_secretsmanager_secret" "machine_client" {
+  name                    = "${var.prefix}/tools/machine-client"
+  description             = "Client-credentials app client the persistence broker uses to request tool tokens."
+  recovery_window_in_days = 7
+  tags                    = var.tags
+}
+
+resource "aws_secretsmanager_secret_version" "machine_client" {
+  secret_id = aws_secretsmanager_secret.machine_client.id
+  secret_string = jsonencode({
+    clientId      = aws_cognito_user_pool_client.machine.id
+    clientSecret  = aws_cognito_user_pool_client.machine.client_secret
+    tokenEndpoint = "https://${var.cognito_domain}.auth.${data.aws_region.current.region}.amazoncognito.com/oauth2/token"
+    scope         = local.tool_scope
+  })
 }
 
 data "archive_file" "token_claims" {
@@ -431,3 +451,4 @@ output "eng_group" { value = aws_cognito_user_group.eng.name }
 output "token_claims_lambda_arn" { value = aws_lambda_function.token_claims.arn }
 output "machine_client_id" { value = aws_cognito_user_pool_client.machine.id }
 output "tool_scope" { value = local.tool_scope }
+output "machine_client_secret_arn" { value = aws_secretsmanager_secret.machine_client.arn }

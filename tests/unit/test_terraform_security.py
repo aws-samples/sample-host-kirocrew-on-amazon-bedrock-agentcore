@@ -400,3 +400,21 @@ def test_tool_machine_tokens_are_client_credentials_only_and_short_lived() -> No
     identity = terraform("modules/identity/main.tf")
     assert 'lambda_version = "V3_0"' in identity
     assert 'var.pre_token_lambda_arn == "" ? [] :' in identity
+
+
+def test_broker_tool_token_grants_are_opt_in_and_narrow() -> None:
+    # The broker may read exactly the machine-client secret and open the sealed
+    # owner subject under its wake purpose, and only when tool tokens are on.
+    persistence = terraform("modules/persistence/main.tf")
+    secret = persistence[persistence.index('sid       = "ReadToolMachineClient"') - 140 :][:400]
+    assert "for_each = var.enable_tool_tokens ? [var.tool_token_secret_arn] : []" in secret
+    assert 'actions   = ["secretsmanager:GetSecretValue"]' in secret
+    unseal = persistence[persistence.index('sid       = "UnsealOwnerForToolToken"') - 140 :][:600]
+    assert "var.enable_tool_tokens ? aws_kms_key.wake_subjects[*].arn : []" in unseal
+    assert 'actions   = ["kms:Decrypt"]' in unseal
+    assert 'values   = ["kirocrew-wake-subject"]' in unseal
+    assert "!var.enable_tool_tokens || (var.create_wake_subject_key" in persistence
+
+    tools = terraform("modules/tool-authorization/main.tf")
+    assert 'resource "aws_secretsmanager_secret" "machine_client"' in tools
+    assert 'tokenEndpoint = "https://${var.cognito_domain}.auth.' in tools

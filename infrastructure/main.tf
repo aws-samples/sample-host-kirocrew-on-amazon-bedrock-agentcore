@@ -42,6 +42,9 @@ module "persistence" {
   create_wake_subject_key   = local.multi_owner_wake
 
   runtime_session_token_ttl_seconds = var.runtime_max_lifetime_seconds
+
+  enable_tool_tokens    = var.enable_tool_authorization
+  tool_token_secret_arn = var.enable_tool_authorization ? module.tool_authorization[0].machine_client_secret_arn : ""
 }
 
 module "runtime_common" {
@@ -230,6 +233,7 @@ module "tool_authorization" {
   cognito_issuer        = module.identity.issuer
   cognito_app_client_id = module.identity.app_client_id
   user_pool_arn         = module.identity.user_pool_arn
+  cognito_domain        = module.identity.domain
 }
 
 module "frontend" {

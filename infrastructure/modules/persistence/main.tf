@@ -16,6 +16,19 @@ variable "create_wake_subject_key" {
 # token can never outlive the microVM it was issued to.
 variable "runtime_session_token_ttl_seconds" { type = number }
 
+# Secret holding the tool Gateway's machine client; the broker's toolToken
+# operation exists only when enable_tool_tokens is set (a plain bool, because the
+# secret ARN is unknown until apply). Tool tokens name the owner sealed under the wake-subject
+# key, so a non-empty value also requires that key.
+variable "enable_tool_tokens" {
+  type    = bool
+  default = false
+}
+variable "tool_token_secret_arn" {
+  type    = string
+  default = ""
+}
+
 resource "aws_kms_key" "snapshots" {
   description             = "${var.prefix} checkpoint envelope encryption"
   enable_key_rotation     = true
@@ -240,6 +253,29 @@ data "aws_iam_policy_document" "broker" {
     actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
     resources = ["${aws_cloudwatch_log_group.broker.arn}:*"]
   }
+  dynamic "statement" {
+    for_each = var.enable_tool_tokens ? [var.tool_token_secret_arn] : []
+    content {
+      sid       = "ReadToolMachineClient"
+      actions   = ["secretsmanager:GetSecretValue"]
+      resources = [statement.value]
+    }
+  }
+  # Opening the owner subject for a tool token, pinned to the same purpose the
+  # control plane seals it under.
+  dynamic "statement" {
+    for_each = var.enable_tool_tokens ? aws_kms_key.wake_subjects[*].arn : []
+    content {
+      sid       = "UnsealOwnerForToolToken"
+      actions   = ["kms:Decrypt"]
+      resources = [statement.value]
+      condition {
+        test     = "StringEquals"
+        variable = "kms:EncryptionContext:purpose"
+        values   = ["kirocrew-wake-subject"]
+      }
+    }
+  }
 }
 
 data "aws_region" "current" {}
@@ -268,7 +304,7 @@ resource "aws_lambda_function" "broker" {
   memory_size      = 1024
 
   environment {
-    variables = {
+    variables = merge({
       BINDING_AUDIENCE  = var.binding_audience
       BINDING_KEY_ARN   = aws_kms_key.bindings.arn
       CHECKPOINT_BUCKET = aws_s3_bucket.snapshots.id
@@ -276,11 +312,22 @@ resource "aws_lambda_function" "broker" {
       SANDBOX_TABLE     = aws_dynamodb_table.sandboxes.name
 
       RUNTIME_SESSION_TOKEN_TTL_SECONDS = var.runtime_session_token_ttl_seconds
-    }
+      },
+      var.enable_tool_tokens ? {
+        TOOL_TOKEN_SECRET_ARN = var.tool_token_secret_arn
+        WAKE_SUBJECT_KEY_ARN  = one(aws_kms_key.wake_subjects[*].arn)
+    } : {})
   }
   tracing_config { mode = "Active" }
   tags       = var.tags
   depends_on = [aws_cloudwatch_log_group.broker, aws_iam_role_policy.broker]
+
+  lifecycle {
+    precondition {
+      condition     = !var.enable_tool_tokens || (var.create_wake_subject_key && var.tool_token_secret_arn != "")
+      error_message = "Tool tokens name the owner sealed for scheduled wakes; enable multi-owner wake as well."
+    }
+  }
 }
 
 resource "aws_cloudwatch_event_rule" "integrity_audit" {

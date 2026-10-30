@@ -311,3 +311,13 @@ variable "enable_tool_authorization" {
   type        = bool
   default     = false
 }
+
+variable "tool_authorization_policy_mode" {
+  description = "Cedar policy engine mode for the tool Gateway (#40 phase 3a). LOG_ONLY records decisions without denying; ENFORCE denies tool calls no policy permits. Switch to ENFORCE only after the LOG_ONLY decisions match the intended group rules."
+  type        = string
+  default     = "LOG_ONLY"
+  validation {
+    condition     = contains(["LOG_ONLY", "ENFORCE"], var.tool_authorization_policy_mode)
+    error_message = "tool_authorization_policy_mode must be LOG_ONLY or ENFORCE."
+  }
+}

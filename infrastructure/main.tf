@@ -238,6 +238,7 @@ module "tool_authorization" {
   cognito_app_client_id = module.identity.app_client_id
   user_pool_arn         = module.identity.user_pool_arn
   cognito_domain        = module.identity.domain
+  policy_mode           = var.tool_authorization_policy_mode
 }
 
 module "frontend" {

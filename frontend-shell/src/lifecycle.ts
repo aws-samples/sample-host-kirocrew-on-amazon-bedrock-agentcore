@@ -248,6 +248,31 @@ export function restoreDetail(progress: RestoreProgress | undefined): string {
   return `Restoring ${files} files: ${String(percent)}%. Large workspaces can take a few minutes.`;
 }
 
+/**
+ * Which startup checklist step is active: 0 "Requesting compute",
+ * 1 "Restoring workspace", 2 "Starting KiroCrew".
+ *
+ * Compute is still being allocated while the sandbox is STARTING; the
+ * workspace restore runs while it is RESTORING; once every chunk is in place
+ * the remaining wait is KiroCrew booting.
+ */
+export function startupStep(
+  sandboxState: SandboxState | undefined,
+  progress: RestoreProgress | undefined,
+): 0 | 1 | 2 {
+  if (sandboxState !== "RESTORING") {
+    return 0;
+  }
+  if (
+    progress !== undefined &&
+    progress.chunksTotal > 0 &&
+    progress.chunksDone >= progress.chunksTotal
+  ) {
+    return 2;
+  }
+  return 1;
+}
+
 export function lifecyclePresentation(
   view: LifecycleView,
 ): (typeof VIEW_COPY)[LifecycleView] {

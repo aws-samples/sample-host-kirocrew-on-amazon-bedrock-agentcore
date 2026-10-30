@@ -7,6 +7,7 @@ import {
   needsStopResume,
   reduceLifecycle,
   restoreDetail,
+  startupStep,
   type LifecycleModel,
   type SandboxSnapshot,
   type SandboxState,
@@ -317,5 +318,31 @@ describe("restoreDetail", () => {
     expect(restoreDetail({ chunksDone: 3, chunksTotal: 3, files: 7 })).toBe(
       "Restored 7 files. Launching KiroCrew...",
     );
+  });
+});
+
+describe("startupStep", () => {
+  const progress = (
+    done: number,
+    total: number,
+  ): { chunksDone: number; chunksTotal: number; files: number } => ({
+    chunksDone: done,
+    chunksTotal: total,
+    files: 10,
+  });
+
+  it("keeps 'Requesting compute' active until the restore begins", () => {
+    expect(startupStep(undefined, undefined)).toBe(0);
+    expect(startupStep("STARTING", undefined)).toBe(0);
+  });
+
+  it("highlights 'Restoring workspace' while chunks are still arriving", () => {
+    expect(startupStep("RESTORING", undefined)).toBe(1);
+    expect(startupStep("RESTORING", progress(0, 0))).toBe(1);
+    expect(startupStep("RESTORING", progress(5, 10))).toBe(1);
+  });
+
+  it("moves to 'Starting KiroCrew' once every chunk is restored", () => {
+    expect(startupStep("RESTORING", progress(10, 10))).toBe(2);
   });
 });

@@ -17,11 +17,13 @@ locals {
     && var.enable_machine_runtime
     && var.deployment_mode == "microvm"
   )
-  binding_audience            = "urn:kirocrew:agentcore:${local.account_id}:${local.region}:${module.naming.prefix}"
-  cognito_domain_prefix       = "${module.naming.prefix}-${local.account_id}-${local.region}"
-  cognito_domain              = "https://${local.cognito_domain_prefix}.auth.${local.region}.amazoncognito.com"
-  runtime_image_uri           = "${module.runtime_common.ecr_repository_url}@${var.runtime_image_digest}"
-  agent_registry_arn          = var.agent_registry_id == "" ? "" : "arn:${local.partition}:agent-registry:${var.agent_registry_region}:${local.account_id}:registry/${var.agent_registry_id}"
+  binding_audience      = "urn:kirocrew:agentcore:${local.account_id}:${local.region}:${module.naming.prefix}"
+  cognito_domain_prefix = "${module.naming.prefix}-${local.account_id}-${local.region}"
+  cognito_domain        = "https://${local.cognito_domain_prefix}.auth.${local.region}.amazoncognito.com"
+  runtime_image_uri     = "${module.runtime_common.ecr_repository_url}@${var.runtime_image_digest}"
+  agent_registry_arn    = var.agent_registry_id == "" ? "" : "arn:${local.partition}:agent-registry:${var.agent_registry_region}:${local.account_id}:registry/${var.agent_registry_id}"
+  # Empty disables the sandbox's tool-Gateway bridge and token refresh.
+  tool_gateway_url            = var.enable_tool_authorization ? module.tool_authorization[0].gateway_url : ""
   agent_registry_mcp_endpoint = var.agent_registry_id == "" ? "" : "https://agent-registry.${var.agent_registry_region}.api.aws/registry/${var.agent_registry_id}/mcp"
   runtime_arn                 = var.deployment_mode == "microvm" ? module.runtime_microvm[0].runtime_arn : "arn:${local.partition}:bedrock-agentcore:${local.region}:${local.account_id}:runtime/${module.naming.prefix}*"
   runtime_qualifier           = var.deployment_mode == "microvm" ? module.runtime_microvm[0].endpoint_qualifier : "DEFAULT"
@@ -88,6 +90,7 @@ module "runtime_microvm" {
   environment_variables = {
     AGENT_REGISTRY_MCP_ENDPOINT = local.agent_registry_mcp_endpoint
     AGENT_REGISTRY_REGION       = var.agent_registry_region
+    TOOL_GATEWAY_URL            = local.tool_gateway_url
     AWS_REGION                  = local.region
     BINDING_AUDIENCE            = local.binding_audience
     BINDING_KEY_ARN             = module.persistence.binding_key_arn
@@ -134,6 +137,7 @@ module "runtime_microvm_machine" {
   environment_variables = {
     AGENT_REGISTRY_MCP_ENDPOINT = local.agent_registry_mcp_endpoint
     AGENT_REGISTRY_REGION       = var.agent_registry_region
+    TOOL_GATEWAY_URL            = local.tool_gateway_url
     AWS_REGION                  = local.region
     BINDING_AUDIENCE            = local.binding_audience
     BINDING_KEY_ARN             = module.persistence.binding_key_arn

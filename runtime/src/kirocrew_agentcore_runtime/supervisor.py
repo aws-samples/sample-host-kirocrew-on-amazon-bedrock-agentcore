@@ -166,6 +166,18 @@ _SQLITE_SIDECAR_SUFFIXES: Final = ("-wal", "-shm")
 _STAGING_DIRECTORY_NAME: Final = "crew"
 
 
+def tool_token_file(environment: Mapping[str, str]) -> str:
+    """Where the runtime keeps the current tool-Gateway bearer token.
+
+    Under the container's temporary directory, never under the persisted
+    workspace, so a checkpoint cannot carry the owner's token.
+    """
+    configured = environment.get("TOOL_GATEWAY_TOKEN_FILE", "").strip()
+    if configured:
+        return configured
+    return str(Path(tempfile.gettempdir()) / "kirocrew-agentcore" / "tool-gateway.token")
+
+
 def supports_sqlite_wal(directory: Path) -> bool:
     """Whether *directory* can host the SQLite WAL journal the upstream gateway requires.
 
@@ -313,6 +325,7 @@ class KiroCrewSupervisor:
         self._scrub_runtime_residue(self._state_home)
         self._pin_loop_stall_budget(self._state_home)
         self._pin_agent_registry_mcp(self._state_home)
+        self._pin_tool_gateway_mcp(self._state_home)
         self._output_tail.clear()
         self._exit_reported = False
         environment = self._build_environment()
@@ -351,15 +364,57 @@ class KiroCrewSupervisor:
 
     @staticmethod
     def _pin_agent_registry_mcp(state_home: Path) -> None:
-        """Register the SigV4 Agent Registry bridge in KiroCrew's own MCP store.
-
-        KiroCrew reads user MCP servers from ``$KIROCREW_HOME/mcp.json`` (not
-        from ``config.local.json``), so the entry must live there for Kiro
-        sessions to see it. Other servers in the file are left untouched.
-        """
+        """Register the SigV4 Agent Registry bridge in KiroCrew's own MCP store."""
         endpoint = os.environ.get("AGENT_REGISTRY_MCP_ENDPOINT", "").strip()
         if not endpoint:
             return
+        KiroCrewSupervisor._pin_mcp_server(
+            state_home,
+            "agent-registry",
+            [
+                "-m",
+                "kirocrew_agentcore_runtime.sigv4_mcp_proxy",
+                "--endpoint",
+                endpoint,
+                "--service",
+                "agent-registry",
+                "--region",
+                os.environ.get("AGENT_REGISTRY_REGION", "us-east-1"),
+            ],
+        )
+
+    @staticmethod
+    def _pin_tool_gateway_mcp(state_home: Path) -> None:
+        """Register the tool Gateway bridge, which signs as the sandbox owner.
+
+        The bearer token lives in a container-local file the runtime refreshes
+        from the persistence broker; it is never written under the persisted
+        workspace, so a checkpoint cannot carry it.
+        """
+        endpoint = os.environ.get("TOOL_GATEWAY_URL", "").strip()
+        if not endpoint:
+            return
+        KiroCrewSupervisor._pin_mcp_server(
+            state_home,
+            "tool-gateway",
+            [
+                "-m",
+                "kirocrew_agentcore_runtime.bearer_mcp_proxy",
+                "--endpoint",
+                endpoint,
+                "--token-file",
+                tool_token_file(os.environ),
+            ],
+        )
+
+    @staticmethod
+    def _pin_mcp_server(state_home: Path, name: str, args: list[str]) -> None:
+        """Pin one stdio MCP server in ``$KIROCREW_HOME/mcp.json``.
+
+        KiroCrew reads user MCP servers from that file (not from
+        ``config.local.json``), so the entry must live there for Kiro sessions
+        to see it. Other servers in the file are left untouched.
+        """
         path = state_home / _MCP_STORE_FILENAME
         document: dict[str, object] = {}
         if path.is_file():
@@ -376,17 +431,8 @@ class KiroCrewSupervisor:
         if not isinstance(servers, dict):
             servers = {}
         server_section = cast(dict[str, object], servers)
-        server_section["agent-registry"] = {
-            "args": [
-                "-m",
-                "kirocrew_agentcore_runtime.sigv4_mcp_proxy",
-                "--endpoint",
-                endpoint,
-                "--service",
-                "agent-registry",
-                "--region",
-                os.environ.get("AGENT_REGISTRY_REGION", "us-east-1"),
-            ],
+        server_section[name] = {
+            "args": args,
             "command": "/usr/local/bin/python",
             "disabled": False,
         }

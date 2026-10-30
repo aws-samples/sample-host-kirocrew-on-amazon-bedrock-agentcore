@@ -12,7 +12,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
 
 import boto3  # type: ignore[import-untyped]
 from aiohttp import ClientSession, web
@@ -68,6 +68,7 @@ from kirocrew_agentcore_runtime.supervisor import (
     KiroCrewSupervisor,
     RuntimeMetadata,
     WorkspaceLayout,
+    tool_token_file,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -357,6 +358,31 @@ class BrokeredSandboxStateStore:
         if init_owner is not None:
             values["initOwner"] = init_owner
         self._apply("markError", sandbox_id, runtime_session_id, **values)
+
+    def tool_token(self, sandbox_id: str, runtime_session_id: str) -> tuple[str, int]:
+        """A bearer token for the tool Gateway, naming this sandbox's owner."""
+        value = self._call("toolToken", sandbox_id, runtime_session_id)
+        token = value.get("accessToken")
+        expires_in = value.get("expiresIn")
+        if not isinstance(token, str) or not token or type(expires_in) is not int:
+            raise SessionInitializationError("Tool token response is invalid.")
+        return token, expires_in
+
+
+def write_tool_token(path: Path, token: str) -> None:
+    """Replace the token file atomically, readable only by this user."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    staged = path.with_name(f".{path.name}.{os.getpid()}")
+    descriptor = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="ascii") as handle:
+        handle.write(token)
+    staged.replace(path)
+
+
+#: Refresh this long before expiry; Cognito's tool tokens live 15 minutes.
+_TOOL_TOKEN_MARGIN_SECONDS: Final = 300
+_TOOL_TOKEN_RETRY_SECONDS: Final = 60
+_TOOL_TOKEN_REFUSED_RETRY_SECONDS: Final = 600
 
 
 def _organization_login(payload: Mapping[str, object]) -> OrganizationLogin | None:
@@ -863,6 +889,7 @@ class AwsSessionInitializer:
         self._lock = asyncio.Lock()
         self._initialized_session: tuple[str, str, str] | None = None
         self._lease_heartbeat_task: asyncio.Task[None] | None = None
+        self._tool_token_task: asyncio.Task[None] | None = None
         self._init_owner = str(uuid.uuid4())
         # The running restore's progress, published on each init heartbeat.
         self._restore_progress = RestoreProgress()
@@ -940,6 +967,10 @@ class AwsSessionInitializer:
                 self._lease_heartbeat_task = asyncio.create_task(
                     self._lease_heartbeat(claims.sandbox_id, claims.runtime_session_id)
                 )
+                if os.environ.get("TOOL_GATEWAY_URL", "").strip():
+                    self._tool_token_task = asyncio.create_task(
+                        self._tool_token_refresh(claims.sandbox_id, claims.runtime_session_id)
+                    )
             except InitOwnershipError as error:
                 # A live owner is initializing elsewhere, or the record is not
                 # claimable yet. Walk away without touching the record and
@@ -1054,6 +1085,30 @@ class AwsSessionInitializer:
                 return
             except Exception:
                 _LOGGER.warning("Lease heartbeat failed.", exc_info=True)
+
+    async def _tool_token_refresh(self, sandbox_id: str, runtime_session_id: str) -> None:
+        """Keep a current tool-Gateway token in the container-local token file.
+
+        The broker refuses when the owner has no sealed subject yet (they have
+        not started the sandbox since multi-owner wake was turned on) or is no
+        longer active; that is retried slowly rather than treated as fatal,
+        because the rest of the sandbox works without tools.
+        """
+        path = Path(tool_token_file(os.environ))
+        while True:
+            try:
+                token, expires_in = await asyncio.to_thread(
+                    self._state_store.tool_token, sandbox_id, runtime_session_id
+                )
+                await asyncio.to_thread(write_tool_token, path, token)
+                delay = max(_TOOL_TOKEN_RETRY_SECONDS, expires_in - _TOOL_TOKEN_MARGIN_SECONDS)
+            except BrokerRefusalError:
+                _LOGGER.warning("Tool token refused for this sandbox's owner; retrying later.")
+                delay = _TOOL_TOKEN_REFUSED_RETRY_SECONDS
+            except Exception:
+                _LOGGER.warning("Tool token refresh failed.", exc_info=True)
+                delay = _TOOL_TOKEN_RETRY_SECONDS
+            await asyncio.sleep(delay)
 
     async def _init_heartbeat(self, sandbox_id: str, runtime_session_id: str) -> None:
         """Extend the initialization lease while restore and startup run.
@@ -1320,11 +1375,11 @@ async def build_runtime_application(
             )
 
     async def shutdown(_application: web.Application) -> None:
-        lease_task = initializer._lease_heartbeat_task
-        if lease_task is not None:
-            lease_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await lease_task
+        for background in (initializer._lease_heartbeat_task, initializer._tool_token_task):
+            if background is not None:
+                background.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await background
         for task in periodic_checkpoints:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

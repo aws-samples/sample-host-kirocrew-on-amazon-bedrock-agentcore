@@ -1,15 +1,18 @@
 # Design: per-user and per-group tool authorization
 
-Status: proposal for #40. Phase 1 is implemented behind `enable_tool_authorization`
-(`infrastructure/modules/tool-authorization`); phases 2 and 3 are not.
+Status: #40. Phases 1 and 2 are implemented behind `enable_tool_authorization`
+(`infrastructure/modules/tool-authorization`). Phase 3 is partly done: the policy
+engine can run in `ENFORCE` (`tool_authorization_policy_mode`); moving governed
+tools behind the Gateway is per tool and open.
 
 ## Problem
 
-Every sandbox runs under one shared Runtime execution role. That role lists the
-AgentCore Registry and calls the Gateway, so every user sees every registered
-tool and can call any of them. A finance-only MCP server is visible and callable
-from an engineer's sandbox. "Listed in Registry" and "allowed to call" are the
-same thing today.
+Every sandbox runs under one shared Runtime execution role. That role can read
+the AgentCore Registry (search, list, get records), so every user sees every
+registered tool. The Registry is a catalog: it does not proxy tool calls. Once an
+agent has a record, it connects to that MCP server directly, so nothing stops a
+finance-only server from being called from an engineer's sandbox. "Listed in
+Registry" and "allowed to call" are not separated today.
 
 ## Goal
 
@@ -67,7 +70,8 @@ scheduled wake has no user token at all.
    policies `permit` per tool on `principal.getTag("groups")`.
 5. The Runtime execution role loses `bedrock-agentcore:*Registry*` and Gateway
    invoke permissions. Discovery goes through the Gateway (its search tool, or an
-   interceptor that filters `ListTools` by the same claims).
+   interceptor that filters `ListTools` by the same claims). (Superseded: see
+   "Phase 3 revised" below. Removing Registry read does not stop any call.)
 
 Option C runs into a Gateway limit found while building phase 1: a Gateway's
 `CustomJWTAuthorizer` takes exactly ONE discovery URL, so it cannot trust
@@ -123,8 +127,35 @@ sandbox claims.
    policies and the group model with real traffic.
 2. **Phase 2:** option D: machine client, pre token generation trigger, broker
    `tools.token`; scheduled wakes get tool access through the same Gateway.
-3. **Phase 3:** remove Registry and Gateway permissions from the Runtime role;
-   Cedar to `ENFORCE`.
+3. **Phase 3:** Cedar to `ENFORCE`; put every tool that needs per-user control
+   behind the tool Gateway (see "Phase 3 revised").
+
+### Phase 3 revised
+
+The original phase 3 removed Registry and Gateway permissions from the Runtime
+role. An inventory of the dev deployment showed that would not enforce anything:
+
+- The Runtime role holds four Registry **read** actions (search, list, get,
+  batch get) and no `InvokeGateway`. The Registry MCP endpoint exposes only those
+  catalog operations; it never forwards a tool call.
+- The registry held five approved records: four public MCP servers that need no
+  credential (AWS Knowledge, Context7, DeepWiki, metabot.gg) and one Gateway. An
+  agent can reach the public ones without the Registry at all.
+- So dropping Registry read only hides the catalog. Hiding a tool is not denying
+  it (see "Where enforcement belongs").
+
+Phase 3 is therefore:
+
+1. `tool_authorization_policy_mode = "ENFORCE"` (done, #77). Verified in a
+   sandbox: a finance-group user's `ListTools` returns only `finance_report`, and
+   a direct call to `eng_status` returns `-32002 Tool Execution Denied`.
+2. For each tool that must be limited by user or group: add it as a target of
+   the tool Gateway with a Cedar `permit`, and give it no other way in (it accepts
+   only the Gateway's credential, or lives in a private network). A public MCP
+   server cannot be governed this way and stays a Kiro MCP governance decision.
+3. Keep Registry read on the Runtime role as the discovery catalog. Records for
+   governed tools point at the tool Gateway, so discovering one does not grant a
+   call.
 
 ### Phase 1 as built
 

@@ -365,6 +365,11 @@ export function reduceLifecycle(
         "restoreOutcome",
         event.sandbox.lastRestore ?? undefined,
       );
+      if (event.sandbox.state === "READY" || event.sandbox.state === "BUSY") {
+        // Startup is over. Dropping startedAt keeps a later connection drop
+        // from being drawn as the startup card ("Starting your sandbox").
+        next = withoutProperty(next, "startedAt");
+      }
       if (event.sandbox.state !== "ERROR") {
         return withoutProperty(next, "error");
       }
@@ -450,7 +455,7 @@ export function reduceLifecycle(
     case "details":
       return { ...model, details: event.value };
     case "stop-requested":
-      return { ...model, view: "stopping" };
+      return { ...withoutProperty(model, "startedAt"), view: "stopping" };
   }
 }
 

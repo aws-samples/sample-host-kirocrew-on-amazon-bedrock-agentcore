@@ -307,7 +307,7 @@ variable "wake_max_relays" {
 }
 
 variable "enable_tool_authorization" {
-  description = "Phase 1 of per-group tool authorization (#40, docs/design-tool-authorization.md): a Gateway that authenticates with the user's Cognito access token, two demo tools and Cognito groups, and Cedar policies in LOG_ONLY so decisions are recorded but nothing is denied. Adds resources only; sandboxes do not use the Gateway yet."
+  description = "Per-group tool authorization (#40, docs/design-tool-authorization.md): a Gateway that authenticates Cognito access tokens (the browser user's, or a 15-minute token the persistence broker mints for the sandbox owner), two demo tools and Cognito groups, and Cedar policies whose mode tool_authorization_policy_mode sets. Every sandbox gets a tool-gateway MCP server that calls the Gateway as its owner."
   type        = bool
   default     = false
 }

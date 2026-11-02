@@ -42,6 +42,7 @@ shell 拦截、封装成协议信封，经 AgentCore 数据面送进沙盒内回
 | 沙盒内运行时 | microVM 内进程 | 协议适配器（校验信封、路由策略）、supervisor（管 gateway 进程）、checkpoint/restore 引擎、kiro-cli 登录管理 |
 | Persistence Broker | **Lambda**（不对浏览器暴露） | 备份/恢复的授权门卫：验 binding token、发预签名 URL、托管沙盒数据密钥、记账 |
 | S3 / DynamoDB / KMS | 托管服务 | 加密 checkpoint 存储 / 沙盒状态与代数指针 / 签名密钥与每沙盒数据密钥 |
+| 工具 Gateway（可选） | AgentCore Gateway + Cedar 策略引擎 | `enable_tool_authorization` 打开后，沙盒里的 `tool-gateway` MCP 以主人身份（Broker 签发的 15 分钟 Cognito 令牌）调用工具，按用户组放行或拒绝；详见 [design-tool-authorization.md](design-tool-authorization.md) |
 
 关键的面分离：**聊天与终端流量不经过任何 Lambda**——浏览器直连 AgentCore
 数据面进入 microVM。Lambda 只出现在低频控制面动作（启停、授权、记账）里，

@@ -76,9 +76,13 @@ KiroCrew 原本面向本地运行：浏览器中的 SPA 通过 HTTP、服务器�
    [docs/design-scheduled-jobs.md](docs/design-scheduled-jobs.md)。
 7. **工具发现（可选）。** 设置 `agent_registry_id` 后，VM 内的 SigV4 MCP 桥用 Runtime 执行角色签名，
    把一个 AWS Agent Registry 提供给 KiroCrew。详见 [docs/operations.md](docs/operations.md)。
+8. **按组的工具授权（可选）。** 打开 `enable_tool_authorization` 后，VM 内的 `tool-gateway` MCP 服务以
+   沙箱主人的身份调用 AgentCore Gateway，令牌是持久化 Broker 替主人向 Cognito 申请的，15 分钟有效。
+   Cedar 策略按用户组和工具判定，模式为 `LOG_ONLY`（只记录，默认）或 `ENFORCE`（真正拦截）。定时任务
+   走同一条路。详见 [docs/design-tool-authorization.md](docs/design-tool-authorization.md)。
 
 图中 **蓝色** 表示协议与聊天流，**红色** 表示沙箱生命周期控制，**绿色** 表示持久化，
-**紫色** 表示用户认证，**青色** 表示工具发现。
+**紫色** 表示用户认证，**青色** 表示工具发现，**橙色** 表示工具授权。
 
 ### 沙箱、Session 与 microVM
 
@@ -222,8 +226,8 @@ Cognito 注册或登录。登录后点击 **Start**。新沙箱首次启动约�
 
 ## 成本与清理
 
-整套资源包括 AgentCore Runtime 会话（按活跃会话计费）、两个 Lambda 函数、一张 DynamoDB
-表、S3 检查点存储、每个部署一把 KMS 密钥，以及一个 CloudFront 分发。空闲沙箱会缩容到零，
+整套资源包括 AgentCore Runtime 会话（按活跃会话计费）、若干 Lambda 函数（控制、认证、持久化 Broker、Waker）、
+一张 DynamoDB 表、S3 检查点存储、几把 KMS 密钥，以及一个 CloudFront 分发。空闲沙箱会缩容到零，
 但检查点和分发会一直存在，直到销毁整套资源。
 
 ```bash

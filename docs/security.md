@@ -72,9 +72,16 @@ stops being safe the moment downstream business permissions are added to it.
 2. **Public egress.** The runtime uses `NetworkMode = "PUBLIC"`. A developer
    workbench needs the internet (Kiro service, Git, package registries, MCP), but
    it also means a prompt-injected command can reach any destination.
-3. **No deterministic per-tool authorization.** Apart from the denied routes,
-   every KiroCrew route is tunneled; tool approval is KiroCrew's own application
-   layer. Agent Registry is **discovery only** and grants nothing.
+3. **Per-tool authorization covers only tools behind the tool Gateway.** With
+   `enable_tool_authorization`, each sandbox gets a `tool-gateway` MCP server
+   that calls an AgentCore Gateway as its owner (a 15-minute Cognito token the
+   broker mints for the record's owner), and Cedar decides per user group and
+   tool; `tool_authorization_policy_mode = "ENFORCE"` blocks what no policy
+   permits, `LOG_ONLY` (the default) only records the decision. Everything else
+   is outside it: other MCP servers a user adds, public MCP endpoints, and the
+   shell all run under KiroCrew's own approval layer. Agent Registry is
+   **discovery only**; revoking its read actions would hide the catalog, not stop
+   a call. See [design-tool-authorization.md](design-tool-authorization.md).
 4. **Third-party tokens share the Kiro sign-in's fate.** Anything a user signs in
    to inside the sandbox is checkpointed with the workspace.
 5. **Checkpoint retention is not enforced yet.** `RetentionManager` has no
@@ -119,8 +126,9 @@ changes):
 
 - VPC network mode with default-deny egress to an allowlist (Kiro, Bedrock,
   Gateway, approved repositories and package mirrors).
-- Route high-risk tools through AgentCore Gateway with policy (Cedar) evaluated on
-  user, tool, resource and arguments, plus human confirmation for destructive or
+- Put high-risk tools behind the tool Gateway (`enable_tool_authorization`,
+  `tool_authorization_policy_mode = "ENFORCE"`) with Cedar policies on user
+  group, tool, resource and arguments, plus human confirmation for destructive or
   outbound actions. Downstream systems still validate business state.
 - Keep the execution role minimal; put downstream permissions on Gateway targets
   and credential providers, never on the shared role.

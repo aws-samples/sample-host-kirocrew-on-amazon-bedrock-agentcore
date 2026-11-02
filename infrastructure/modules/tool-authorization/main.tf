@@ -1,11 +1,11 @@
-# Phase 1 of #40 (docs/design-tool-authorization.md): a Gateway that
-# authenticates with the user's Cognito access token and evaluates Cedar
-# policies per group in LOG_ONLY mode. Nothing is denied yet: the policy
-# engine only records what it WOULD decide, so real traffic can prove the
-# policies and the group model before anything is enforced.
+# Per-group tool authorization (#40, docs/design-tool-authorization.md): a
+# Gateway that authenticates Cognito access tokens and evaluates Cedar policies
+# per group. Sandboxes reach it through the `tool-gateway` MCP server with a
+# 15-minute token the persistence broker mints for the sandbox owner (machine
+# client + pre-token-generation trigger below). `policy_mode` LOG_ONLY only
+# records what the engine WOULD decide; ENFORCE denies what no policy permits.
 #
-# Off by default (`enable_tool_authorization`). It adds new resources only and
-# changes nothing the sandboxes already use.
+# Off by default (`enable_tool_authorization`).
 
 variable "prefix" { type = string }
 variable "tags" { type = map(string) }
@@ -16,7 +16,7 @@ variable "user_pool_arn" { type = string }
 variable "cognito_domain" { type = string }
 
 variable "policy_mode" {
-  description = "Gateway policy engine mode. Phase 1 keeps LOG_ONLY; ENFORCE belongs to phase 3."
+  description = "Gateway policy engine mode: LOG_ONLY records decisions, ENFORCE denies calls no policy permits."
   type        = string
   default     = "LOG_ONLY"
   validation {

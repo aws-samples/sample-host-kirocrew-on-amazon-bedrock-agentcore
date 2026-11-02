@@ -70,7 +70,7 @@
 
 ![启动进度](images/08-starting-progress.png)
 
-首次启动约 1 分钟；之后的启动只需恢复检查点，通常 20 秒左右。就绪后面板自动收起成右上角的小圆片 **Sandbox**，绿点表示运行中；页面顶部 KiroCrew 自己的状态也会变成 **Gateway connected**。
+恢复工作区时，第二步旁边会显示进度，例如 **Restoring 22,997 files: 54%**；文件全部恢复后显示 **Restored 22,997 files. Launching KiroCrew...**。首次启动约 1 分钟。之后每次启动都要恢复上一次的检查点，耗时取决于工作区有多大：小工作区 30 秒左右，2 万个以上文件的要 3 到 4 分钟。就绪后面板自动收起成右上角的小圆片 **Sandbox**，绿点表示运行中；页面顶部 KiroCrew 自己的状态也会变成 **Gateway connected**。
 
 ![沙箱就绪，面板收起为圆片](images/09-ready-pill.png)
 

@@ -5,7 +5,7 @@ FROM node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5
 
 FROM python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7 AS python-builder
 
-ARG DEPENDENCY_LOCK_SHA256=249e4ec84bacb6cec05f7ca5a583703673ee6c9e7d2682ce396fa7bf8751b8f6
+ARG DEPENDENCY_LOCK_SHA256=c877bf0ffa13f928399daa7c2f68c070235c1c304be79ebe71c2326b5167e6ae
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
 WORKDIR /build
@@ -64,7 +64,7 @@ ARG NPM_VERSION=10.9.8
 ARG UV_VERSION=0.13.4
 ARG PROTOCOL_VERSION=kirocrew-agentcore.v1
 ARG BASE_IMAGE_DIGEST=sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7
-ARG DEPENDENCY_LOCK_SHA256=249e4ec84bacb6cec05f7ca5a583703673ee6c9e7d2682ce396fa7bf8751b8f6
+ARG DEPENDENCY_LOCK_SHA256=c877bf0ffa13f928399daa7c2f68c070235c1c304be79ebe71c2326b5167e6ae
 LABEL org.opencontainers.image.title="kirocrew-agentcore-runtime" \
       org.opencontainers.image.description="Unmodified KiroCrew on Amazon Bedrock AgentCore Runtime" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \

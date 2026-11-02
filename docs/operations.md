@@ -45,6 +45,38 @@ expose one Agent Registry to every sandbox as the `agent-registry` MCP server.
 - The Registry may live in another region than the runtime; it stores
   records, it does not proxy traffic.
 
+## Optional: per-group tool authorization (tool Gateway)
+
+Set `enable_tool_authorization = true` to deploy an AgentCore Gateway whose
+tools are authorized per Cognito group by Cedar policies. The design and the
+phases are in [design-tool-authorization.md](design-tool-authorization.md).
+
+- **What it creates:** two Cognito groups (finance, engineering), a demo Lambda
+  with one tool per group, the Gateway (Cognito JWT authorizer), a policy engine
+  with one permit policy per group, a machine app client whose secret only the
+  persistence broker can read, and a pre-token-generation trigger.
+- **How a sandbox calls it:** every sandbox gets a `tool-gateway` MCP server in
+  `$KIROCREW_HOME/mcp.json`. The runtime asks the broker (`toolToken`) for a
+  15-minute access token for the sandbox's owner, writes it to a `0600` file
+  outside the checkpointed roots, and refreshes it 5 minutes before expiry. A
+  stdio proxy sends each MCP request with the current token. Scheduled jobs use
+  the same path, so they run with the owner's groups when no browser is open.
+- **Who the token belongs to:** the broker reads the owner from the sandbox
+  record (the identity the control plane stored at the owner's last Start),
+  never from the request. The trigger refuses unknown, disabled or unconfirmed
+  users and copies the owner's current groups into the token. In audit logs the
+  caller is the machine client; the user is the `kirocrew_owner` claim.
+- **Mode:** `tool_authorization_policy_mode` is `LOG_ONLY` by default (decisions
+  are recorded, nothing is denied). Set it to `ENFORCE` once the recorded
+  decisions match the intended rules; then `tools/list` hides tools the caller
+  may not use and a direct call is refused with `Tool Execution Denied`.
+  Switching modes updates the Gateway in place; its URL does not change.
+- **Where decisions show up:** CloudWatch metrics `AllowDecisions` and
+  `DenyDecisions` per tool in the `AWS/Bedrock-AgentCore` namespace. Per-call
+  traces need CloudWatch Transaction Search enabled.
+- **Prerequisite:** the owner must have pressed Start at least once after
+  scheduled wake was enabled, because that is when the identity is stored.
+
 ## Where the logs are
 
 | What | Where |
@@ -253,6 +285,11 @@ group, not the platform vended group.
 | `docs/persistence.md` | Checkpoint/restore contract (English, normative) |
 | `docs/persistence-design.zh-CN.md` | 持久化设计（中文详解） |
 | `docs/architecture-design.zh-CN.md` | 整体架构设计（中文详解） |
+| `docs/security.md` (`security.zh-CN.md`) | Security model, credential inventory, known gaps, hardening profiles |
+| `docs/design-scheduled-jobs.md` | Scheduled wake: waker, enrollment, unattended runtime |
+| `docs/design-tool-authorization.md` | Per-group tool authorization: tool Gateway, Cedar, broker-minted owner tokens |
+| `docs/design-vpc-network-mode.md` | VPC network mode (design) |
+| `docs/user-guide/` | End-user walkthrough with screenshots |
 | `docs/operations.md` | This runbook |
 | `CLAUDE.md` (`AGENTS.md`) | Agent onboarding: build/verify/deploy commands and the invariants above |
 

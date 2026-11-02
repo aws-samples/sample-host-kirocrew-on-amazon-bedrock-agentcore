@@ -68,6 +68,6 @@ output "scheduled_wake" {
 }
 
 output "tool_authorization_gateway_url" {
-  description = "MCP endpoint of the tool-authorization Gateway (#40 phase 1), or null when disabled."
+  description = "MCP endpoint of the tool-authorization Gateway (#40), or null when disabled."
   value       = var.enable_tool_authorization ? module.tool_authorization[0].gateway_url : null
 }

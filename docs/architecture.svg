@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1480 910" width="1480" height="910">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1480 1000" width="1480" height="1000">
   <style>
     text { font-family: 'Helvetica Neue', Helvetica, Arial, 'PingFang SC', 'Microsoft YaHei', 'Microsoft JhengHei', 'SimHei', sans-serif; }
     .zone-title { font-size: 15px; font-weight: 600; fill: #111827; }
@@ -22,25 +22,26 @@
     <marker id="arrow-purple" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
       <polygon points="0 0, 10 3.5, 0 7" fill="#9333ea"/>
     </marker>
+    <marker id="arrow-orange" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#ea580c"/></marker>
     <marker id="arrow-teal" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
       <polygon points="0 0, 10 3.5, 0 7" fill="#0d9488"/>
     </marker>
   </defs>
 
-  <rect width="1480" height="910" fill="#ffffff"/>
+  <rect width="1480" height="1000" fill="#ffffff"/>
 
   <!-- Title -->
   <text x="60" y="50" font-size="22" font-weight="600" fill="#111827">KiroCrew on Amazon Bedrock AgentCore</text>
-  <text x="60" y="76" font-size="13" fill="#6b7280">Unmodified SPA + gateway, bridged over the AgentCore data plane &#183; one microVM sandbox per user &#183; state survives stop/start &#183; scheduled wake</text>
+  <text x="60" y="76" font-size="13" fill="#6b7280">Unmodified SPA + gateway, bridged over the AgentCore data plane &#183; one microVM sandbox per user &#183; state survives stop/start &#183; scheduled wake &#183; per-group tool authorization</text>
 
   <!-- ================= Containers ================= -->
-  <rect data-graph-role="container" x="40" y="100" width="380" height="700" rx="12" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
+  <rect data-graph-role="container" x="40" y="100" width="380" height="790" rx="12" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
   <text x="60" y="128" class="zone-title">User's browser</text>
 
-  <rect data-graph-role="container" x="480" y="100" width="440" height="700" rx="12" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
+  <rect data-graph-role="container" x="480" y="100" width="440" height="790" rx="12" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
   <text x="500" y="128" class="zone-title">AWS (your Region)</text>
 
-  <rect data-graph-role="container" x="980" y="100" width="460" height="700" rx="12" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
+  <rect data-graph-role="container" x="980" y="100" width="460" height="790" rx="12" fill="#f9fafb" stroke="#d1d5db" stroke-width="1.5"/>
   <text x="1000" y="128" class="zone-title">AgentCore microVM (per-user sandbox)</text>
 
   <!-- ================= Browser nodes ================= -->
@@ -180,10 +181,25 @@
 
   <!-- Bridge -> Registry (bottom corridor) -->
   <path d="M 1010 715 L 965 715 L 965 770 L 595 770 L 595 736" stroke="#0d9488" stroke-width="1.5" fill="none" marker-end="url(#arrow-teal)"/>
-  <text x="780" y="788" text-anchor="middle" class="edge-label">SigV4 &#183; runtime execution role</text>
+  <text x="780" y="764" text-anchor="middle" class="edge-label">SigV4 &#183; runtime execution role</text>
+
+  <!-- ================= Added: per-group tool authorization ================= -->
+  <rect x="500" y="790" width="400" height="80" rx="8" fill="#fff7ed" stroke="#fed7aa" stroke-width="1.5"/>
+  <text x="516" y="816" class="node-title">Tool Gateway + Cedar policy engine</text>
+  <text x="516" y="836" class="node-sub-s">optional &#183; Cognito JWT &#183; per-group permit policies</text>
+  <text x="516" y="852" class="node-sub-s">LOG_ONLY or ENFORCE &#183; Lambda tool targets</text>
+
+  <rect x="1010" y="790" width="400" height="80" rx="8" fill="#fff7ed" stroke="#fed7aa" stroke-width="1.5"/>
+  <text x="1030" y="816" class="node-title">tool-gateway MCP proxy</text>
+  <text x="1030" y="836" class="node-sub">stdio MCP server &#183; owner's 15-min token</text>
+  <text x="1030" y="852" class="node-sub">minted by the persistence broker (toolToken)</text>
+
+  <!-- Proxy -> Tool Gateway -->
+  <path d="M 1010 830 L 906 830" stroke="#ea580c" stroke-width="1.5" fill="none" marker-end="url(#arrow-orange)"/>
+  <text x="958" y="822" text-anchor="middle" class="edge-label">as owner</text>
 
   <!-- ================= Legend ================= -->
-  <g data-graph-role="legend" transform="translate(60, 840)">
+  <g data-graph-role="legend" transform="translate(60, 920)">
     <line x1="0" y1="8" x2="30" y2="8" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arrow-blue)"/>
     <text x="38" y="12" class="legend-text">Protocol / chat streaming (SSE, WS)</text>
     <line x1="290" y1="8" x2="320" y2="8" stroke="#dc2626" stroke-width="1.5" marker-end="url(#arrow-red)"/>
@@ -194,5 +210,7 @@
     <text x="868" y="12" class="legend-text">User authentication (Cognito / Kiro device flow)</text>
     <line x1="1170" y1="8" x2="1200" y2="8" stroke="#0d9488" stroke-width="1.5" marker-end="url(#arrow-teal)"/>
     <text x="1208" y="12" class="legend-text">Tool discovery</text>
+    <line x1="0" y1="40" x2="30" y2="40" stroke="#ea580c" stroke-width="1.5" marker-end="url(#arrow-orange)"/>
+    <text x="38" y="44" class="legend-text">Tool authorization (as the sandbox owner)</text>
   </g>
 </svg>

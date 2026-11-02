@@ -70,7 +70,7 @@ Click **Start sandbox**. The panel shows three steps with elapsed time: Requesti
 
 ![Startup progress](images/08-starting-progress.png)
 
-The first start takes about a minute; later starts only restore a checkpoint and usually take around 20 seconds. When ready, the panel collapses into a small **Sandbox** pill in the upper right with a green dot, and KiroCrew's own header switches to **Gateway connected**.
+While the workspace is restored the second step shows its progress, for example **Restoring 22,997 files: 54%**, then **Restored 22,997 files. Launching KiroCrew...** once every file is back. The first start takes about a minute. Later starts restore your last checkpoint, so they depend on how much is in your workspace: a small workspace is ready in about 30 seconds, one with 20,000+ files in 3-4 minutes. When ready, the panel collapses into a small **Sandbox** pill in the upper right with a green dot, and KiroCrew's own header switches to **Gateway connected**.
 
 ![Sandbox ready, panel collapsed to a pill](images/09-ready-pill.png)
 

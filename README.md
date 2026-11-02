@@ -95,10 +95,16 @@ A request makes the following journey:
 7. **Tool discovery (optional).** When `agent_registry_id` is set, a SigV4 MCP
    bridge inside the VM exposes one AWS Agent Registry to KiroCrew, signed with
    the runtime execution role. See [docs/operations.md](docs/operations.md).
+8. **Per-group tool authorization (optional).** With `enable_tool_authorization`,
+   a `tool-gateway` MCP server in the VM calls an AgentCore Gateway as the
+   sandbox's owner, using a 15-minute Cognito token the persistence broker mints
+   for that owner. Cedar policies decide per user group and tool, in `LOG_ONLY`
+   (record only, the default) or `ENFORCE`. Scheduled jobs use the same path. See
+   [docs/design-tool-authorization.md](docs/design-tool-authorization.md).
 
 The diagram uses **blue** for protocol and chat streaming, **red** for sandbox
-lifecycle, **green** for persistence, **purple** for user authentication, and
-**teal** for tool discovery.
+lifecycle, **green** for persistence, **purple** for user authentication,
+**teal** for tool discovery, and **orange** for tool authorization.
 
 ### Sandbox, session, and microVM
 
@@ -278,9 +284,9 @@ checkpoint in seconds.
 
 ## Costs and cleanup
 
-The stack runs AgentCore Runtime sessions (billed per active session), two Lambda
-functions, a DynamoDB table, S3 checkpoint storage, a KMS key per deployment, and a
-CloudFront distribution. Idle sandboxes scale to zero, but checkpoints and the
+The stack runs AgentCore Runtime sessions (billed per active session), several
+Lambda functions (control, auth, persistence broker, waker), a DynamoDB table, S3 checkpoint storage, a few KMS keys, and a CloudFront
+distribution. Idle sandboxes scale to zero, but checkpoints and the
 distribution persist until you destroy the stack.
 
 ```bash

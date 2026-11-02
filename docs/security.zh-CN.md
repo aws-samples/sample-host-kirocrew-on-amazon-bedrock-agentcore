@@ -60,8 +60,12 @@ MCP）。这决定了威胁模型：
    而不是已定义的 `kirocrew.control/invoke`。
 2. **公网出口。** Runtime 使用 `NetworkMode = "PUBLIC"`。开发工作台需要联网（Kiro 服务、Git、包仓库、
    MCP），但这也意味着被提示注入的命令可以访问任意目标。
-3. **没有确定性的逐工具授权。** 除被拒绝的路由外，KiroCrew 路由全部隧穿；工具审批依靠 KiroCrew 自身的
-   应用层。Agent Registry **只负责发现**，不授予任何权限。
+3. **逐工具授权只覆盖挂在工具 Gateway 后面的工具。** 打开 `enable_tool_authorization` 后，每个沙箱多一个
+   `tool-gateway` MCP 服务，以沙箱主人的身份调用 AgentCore Gateway（令牌由 Broker 按记录里的主人向
+   Cognito 申请，15 分钟有效），由 Cedar 按用户组和工具判定；`tool_authorization_policy_mode = "ENFORCE"`
+   时没有策略放行的调用会被直接拒绝，默认的 `LOG_ONLY` 只记录判定结果。用户自己加的其他 MCP 服务、公开
+   MCP 服务和终端命令都不在这个范围内，仍由 KiroCrew 自身的审批层管理。Agent Registry **只负责发现**，
+   收回它的读权限只会藏起目录，挡不住调用。详见 [design-tool-authorization.md](design-tool-authorization.md)。
 4. **第三方令牌与 Kiro 登录态一起落盘。** 用户在沙箱内登录的任何服务，都会随工作区进入检查点。
 5. **检查点保留策略尚未生效。** `RetentionManager` 没有生产调用方（容器侧删除被有意禁止），定时触发的
    `audit` Broker 操作目前是空实现。在 Broker 侧清理实现之前，旧代数会持续累积。
@@ -91,7 +95,7 @@ MCP）。这决定了威胁模型：
 **受限 Agent**（发邮件、CRM、GitHub 写操作、AWS 变更等业务动作）：
 
 - VPC 网络模式，出口默认拒绝，只放行白名单（Kiro、Bedrock、Gateway、批准的仓库与软件源）。
-- 高风险工具统一经 AgentCore Gateway，按用户、工具、资源、参数执行策略（Cedar）判定；删除、外发类动作
+- 高风险工具挂到工具 Gateway 后面（`enable_tool_authorization`，并设 `tool_authorization_policy_mode = "ENFORCE"`），按用户组、工具、资源、参数执行 Cedar 策略判定；删除、外发类动作
   加人工确认。下游系统仍负责业务状态校验。
 - 执行角色保持最小；下游权限放在 Gateway Target 和凭证提供方一侧，不叠加到共享角色。
 - 应用日志、AgentCore Observability trace 和 CloudTrail 用同一请求 ID 串联；敏感字段与 Prompt 正文

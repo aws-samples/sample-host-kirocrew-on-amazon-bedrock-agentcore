@@ -346,3 +346,42 @@ describe("startupStep", () => {
     expect(startupStep("RESTORING", progress(10, 10))).toBe(2);
   });
 });
+
+describe("startup card does not outlive startup", () => {
+  it("drops startedAt once the sandbox is ready", () => {
+    const started = reduceLifecycle(INITIAL, {
+      type: "start-requested",
+      at: 1,
+    });
+    expect(started.startedAt).toBe(1);
+    const ready = reduceLifecycle(started, {
+      type: "sandbox",
+      sandbox: sandbox("READY"),
+    });
+    expect(ready.startedAt).toBeUndefined();
+  });
+
+  it("drops startedAt when the user stops, so a lost connection is not a restart", () => {
+    const started = reduceLifecycle(INITIAL, {
+      type: "start-requested",
+      at: 1,
+    });
+    const stopping = reduceLifecycle(started, { type: "stop-requested" });
+    expect(stopping.startedAt).toBeUndefined();
+    const lost = reduceLifecycle(stopping, { type: "connection-lost" });
+    expect(lost.view).toBe("reconnecting");
+    expect(lost.startedAt).toBeUndefined();
+  });
+
+  it("keeps startedAt while still restoring", () => {
+    const started = reduceLifecycle(INITIAL, {
+      type: "start-requested",
+      at: 1,
+    });
+    const restoring = reduceLifecycle(started, {
+      type: "sandbox",
+      sandbox: sandbox("RESTORING"),
+    });
+    expect(restoring.startedAt).toBe(1);
+  });
+});

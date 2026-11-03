@@ -22,6 +22,9 @@ from pathlib import Path
 from typing import IO, Final, Protocol, cast
 from urllib.parse import parse_qs, urlsplit
 
+from .team_context import SyncResult, TeamContextSync
+from .team_context import config_from_environment as team_context_config
+
 _LOGGER = logging.getLogger(__name__)
 
 _READY_PREFIX: Final = "KIROCREW_READY:"
@@ -326,6 +329,7 @@ class KiroCrewSupervisor:
         self._pin_loop_stall_budget(self._state_home)
         self._pin_agent_registry_mcp(self._state_home)
         self._pin_tool_gateway_mcp(self._state_home)
+        self.sync_team_context()
         self._output_tail.clear()
         self._exit_reported = False
         environment = self._build_environment()
@@ -361,6 +365,23 @@ class KiroCrewSupervisor:
         self._token = DashboardToken(token, self._monotonic() + _DEFAULT_TOKEN_TTL_SECONDS)
         self._ready = True
         return ready
+
+    def sync_team_context(self) -> SyncResult | None:
+        """Mirror the team steering repository, when one is configured.
+
+        Runs before the gateway starts so its first session already sees the
+        team's steering, and again from the runtime's refresh loop. Never
+        raises: a team repository that cannot be reached must not keep a
+        sandbox from starting.
+        """
+        config = team_context_config(os.environ)
+        if config is None:
+            return None
+        try:
+            return TeamContextSync(self._layout.home, config).sync()
+        except Exception:
+            _LOGGER.warning("Team context sync failed unexpectedly.", exc_info=True)
+            return None
 
     @staticmethod
     def _pin_agent_registry_mcp(state_home: Path) -> None:

@@ -91,6 +91,9 @@ module "runtime_microvm" {
     AGENT_REGISTRY_MCP_ENDPOINT = local.agent_registry_mcp_endpoint
     AGENT_REGISTRY_REGION       = var.agent_registry_region
     TOOL_GATEWAY_URL            = local.tool_gateway_url
+    TEAM_CONTEXT_REPO_URL       = var.team_context_repo_url
+    TEAM_CONTEXT_REF            = var.team_context_ref
+    TEAM_CONTEXT_SUBDIR         = var.team_context_subdir
     AWS_REGION                  = local.region
     BINDING_AUDIENCE            = local.binding_audience
     BINDING_KEY_ARN             = module.persistence.binding_key_arn
@@ -138,6 +141,9 @@ module "runtime_microvm_machine" {
     AGENT_REGISTRY_MCP_ENDPOINT = local.agent_registry_mcp_endpoint
     AGENT_REGISTRY_REGION       = var.agent_registry_region
     TOOL_GATEWAY_URL            = local.tool_gateway_url
+    TEAM_CONTEXT_REPO_URL       = var.team_context_repo_url
+    TEAM_CONTEXT_REF            = var.team_context_ref
+    TEAM_CONTEXT_SUBDIR         = var.team_context_subdir
     AWS_REGION                  = local.region
     BINDING_AUDIENCE            = local.binding_audience
     BINDING_KEY_ARN             = module.persistence.binding_key_arn

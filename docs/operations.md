@@ -77,6 +77,25 @@ phases are in [design-tool-authorization.md](design-tool-authorization.md).
 - **Prerequisite:** the owner must have pressed Start at least once after
   scheduled wake was enabled, because that is when the identity is stored.
 
+## Optional: team context (shared steering and knowledge)
+
+Set `team_context_repo_url` to an `https://` Git repository (public for now)
+laid out like [`examples/team-context`](../examples/team-context); set
+`team_context_subdir` when the content is not at the repository root and
+`team_context_ref` for a branch other than `main`. Every sandbox then:
+
+- mirrors the repository read-only into `~/.kiro/team-context/repo` before the
+  gateway starts and every 30 minutes;
+- installs `steering/*.md` as global steering `~/.kiro/steering/team--<name>.md`
+  (a user's own steering files are never touched);
+- keeps the last good copy when the repository cannot be reached.
+
+Add `~/.kiro/team-context/repo/<subdir>/knowledge` once as a KiroCrew knowledge
+folder source to search the shared documents. Change the content with a pull
+request on the repository; edits made inside a sandbox's mirror are discarded.
+Each sync logs `Team context synced revision=... installed=N removed=N skipped=N`.
+Design and next phases: [design-team-context.md](design-team-context.md).
+
 ## Where the logs are
 
 | What | Where |
@@ -289,6 +308,7 @@ group, not the platform vended group.
 | `docs/design-scheduled-jobs.md` | Scheduled wake: waker, enrollment, unattended runtime |
 | `docs/design-tool-authorization.md` | Per-group tool authorization: tool Gateway, Cedar, broker-minted owner tokens |
 | `docs/design-vpc-network-mode.md` | VPC network mode (design) |
+| `docs/design-team-context.md` | Team context: shared steering and knowledge mirrored from one Git repository |
 | `docs/user-guide/` | End-user walkthrough with screenshots |
 | `docs/operations.md` | This runbook |
 | `CLAUDE.md` (`AGENTS.md`) | Agent onboarding: build/verify/deploy commands and the invariants above |

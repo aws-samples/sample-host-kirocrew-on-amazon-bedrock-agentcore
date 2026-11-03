@@ -70,6 +70,9 @@ from kirocrew_agentcore_runtime.supervisor import (
     WorkspaceLayout,
     tool_token_file,
 )
+from kirocrew_agentcore_runtime.team_context import (
+    refresh_seconds as team_context_refresh_seconds,
+)
 
 _LOGGER = logging.getLogger(__name__)
 # When this container process started; restore timing is measured from here.
@@ -890,6 +893,7 @@ class AwsSessionInitializer:
         self._initialized_session: tuple[str, str, str] | None = None
         self._lease_heartbeat_task: asyncio.Task[None] | None = None
         self._tool_token_task: asyncio.Task[None] | None = None
+        self._team_context_task: asyncio.Task[None] | None = None
         self._init_owner = str(uuid.uuid4())
         # The running restore's progress, published on each init heartbeat.
         self._restore_progress = RestoreProgress()
@@ -971,6 +975,8 @@ class AwsSessionInitializer:
                     self._tool_token_task = asyncio.create_task(
                         self._tool_token_refresh(claims.sandbox_id, claims.runtime_session_id)
                     )
+                if os.environ.get("TEAM_CONTEXT_REPO_URL", "").strip():
+                    self._team_context_task = asyncio.create_task(self._team_context_refresh())
             except InitOwnershipError as error:
                 # A live owner is initializing elsewhere, or the record is not
                 # claimable yet. Walk away without touching the record and
@@ -1109,6 +1115,18 @@ class AwsSessionInitializer:
                 _LOGGER.warning("Tool token refresh failed.", exc_info=True)
                 delay = _TOOL_TOKEN_RETRY_SECONDS
             await asyncio.sleep(delay)
+
+    async def _team_context_refresh(self) -> None:
+        """Re-sync the team steering repository on a slow timer.
+
+        The gateway synced once before it started; this keeps a long-lived
+        sandbox current. Steering is read per session, so a change merged in
+        the team repository reaches the next new session after a refresh.
+        """
+        interval = team_context_refresh_seconds(os.environ)
+        while True:
+            await asyncio.sleep(interval)
+            await asyncio.to_thread(self._supervisor.sync_team_context)
 
     async def _init_heartbeat(self, sandbox_id: str, runtime_session_id: str) -> None:
         """Extend the initialization lease while restore and startup run.
@@ -1375,7 +1393,11 @@ async def build_runtime_application(
             )
 
     async def shutdown(_application: web.Application) -> None:
-        for background in (initializer._lease_heartbeat_task, initializer._tool_token_task):
+        for background in (
+            initializer._lease_heartbeat_task,
+            initializer._tool_token_task,
+            initializer._team_context_task,
+        ):
             if background is not None:
                 background.cancel()
                 with contextlib.suppress(asyncio.CancelledError):

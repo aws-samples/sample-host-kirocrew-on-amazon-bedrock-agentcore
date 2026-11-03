@@ -321,3 +321,25 @@ variable "tool_authorization_policy_mode" {
     error_message = "tool_authorization_policy_mode must be LOG_ONLY or ENFORCE."
   }
 }
+
+variable "team_context_repo_url" {
+  description = "Team context (docs/design-team-context.md): an https:// Git repository of shared steering and knowledge. Every sandbox mirrors it read-only into ~/.kiro/team-context and installs its steering/*.md as global steering named team--<name>.md, at start and every 30 minutes. Empty disables it. Public repositories only for now; changes go through pull requests on the repository."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.team_context_repo_url == "" || can(regex("^https://[^\\s]+$", var.team_context_repo_url))
+    error_message = "team_context_repo_url must be empty or an https:// URL."
+  }
+}
+
+variable "team_context_ref" {
+  description = "Branch or tag of the team context repository to mirror."
+  type        = string
+  default     = "main"
+}
+
+variable "team_context_subdir" {
+  description = "Directory inside the team context repository that holds steering/ and knowledge/. Empty means the repository root."
+  type        = string
+  default     = ""
+}

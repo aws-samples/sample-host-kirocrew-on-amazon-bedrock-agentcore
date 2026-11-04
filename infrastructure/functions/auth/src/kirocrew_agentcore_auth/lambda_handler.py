@@ -92,9 +92,7 @@ class EmailPolicy:
 # The one sentence every password rejection from the pool answers with. It
 # states the requirement instead of naming "complexity requirements", and it
 # mirrors the pool's password_policy in infrastructure/modules/identity.
-_STRENGTH_REQUIREMENT = (
-    "Passwords need at least 12 characters, including an uppercase letter, a lowercase letter and a number."
-)
+_STRENGTH_REQUIREMENT = "Passwords need at least 12 characters, including an uppercase letter, a lowercase letter and a number."
 
 
 def _password(value: object) -> str:

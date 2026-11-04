@@ -249,7 +249,8 @@ def test_registration_rolls_back_the_half_created_user_on_password_rejection() -
     # The message names the requirement rather than "complexity requirements",
     # so the form can show it verbatim.
     assert str(error.value) == (
-        "Passwords need at least 12 characters, including an uppercase letter, a lowercase letter and a number."
+        "Passwords need at least 12 characters, including an uppercase letter, "
+        "a lowercase letter and a number."
     )
     assert fake.deleted == ["dev@amazon.com"]
     assert fake.code_requests == []  # no code for an account that failed
@@ -412,7 +413,8 @@ def test_reset_password_confirms_the_code_and_maps_failures() -> None:
         subject.reset_password("dev@amazon.com", "123456", "not-compliant-but-long")
     assert weak.value.code == "INVALID_PASSWORD"
     assert str(weak.value) == (
-        "Passwords need at least 12 characters, including an uppercase letter, a lowercase letter and a number."
+        "Passwords need at least 12 characters, including an uppercase letter, "
+        "a lowercase letter and a number."
     )
 
     fake.confirm_error = client_error("TooManyFailedAttemptsException")

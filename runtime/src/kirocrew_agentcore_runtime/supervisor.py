@@ -44,6 +44,13 @@ _READY_LINE_GRACE_SECONDS: Final = 3.0
 # snapshot phase is short now, but a large workspace can still exceed 25s of
 # hashing, so the sandbox pins the budget at the upstream maximum.
 _LOOP_STALL_EXIT_AFTER_SECONDS: Final = 300
+# From KiroCrew 0.11 an install with no engine choice defaults to KAS. This image
+# ships only kiro-cli (spelled "kiro" in config.json), so the choice is pinned.
+_KIRO_CLI_ACP_BACKEND: Final = "kiro"
+_LOCAL_CONFIG_PINS: Final[tuple[tuple[str, str, object], ...]] = (
+    ("dashboard", "loop_stall_exit_after_secs", _LOOP_STALL_EXIT_AFTER_SECONDS),
+    ("agent", "acp_backend", _KIRO_CLI_ACP_BACKEND),
+)
 _LOCAL_CONFIG_FILENAME: Final = "config.local.json"
 _MCP_STORE_FILENAME: Final = "mcp.json"
 _OUTPUT_TAIL_LINES: Final = 20
@@ -326,7 +333,7 @@ class KiroCrewSupervisor:
         self._chdir(self._layout.root)
         self._state_home = self._resolve_state_home()
         self._scrub_runtime_residue(self._state_home)
-        self._pin_loop_stall_budget(self._state_home)
+        self._pin_local_config(self._state_home)
         self._pin_agent_registry_mcp(self._state_home)
         self._pin_tool_gateway_mcp(self._state_home)
         self.sync_team_context()
@@ -466,13 +473,21 @@ class KiroCrewSupervisor:
         path.chmod(0o600)
 
     @staticmethod
-    def _pin_loop_stall_budget(state_home: Path) -> None:
-        """Raise the gateway's loop-stall hard-exit budget through its local config overlay.
+    def _pin_local_config(state_home: Path) -> None:
+        """Pin the gateway settings this image depends on through its local config overlay.
 
         ``config.local.json`` is deep-merged over ``config.json`` by the upstream
-        loader and is never rewritten by its setup flow, so the pin survives
-        upgrades and checkpoints. Other keys the user placed there are preserved;
-        an unreadable overlay is left alone rather than clobbered.
+        loader and is never rewritten by its setup flow, so the pins survive
+        upgrades and checkpoints. Pinned:
+
+        * ``dashboard.loop_stall_exit_after_secs`` -- the upstream maximum, so a
+          checkpoint freeze is not mistaken for a stalled event loop.
+        * ``agent.acp_backend = "kiro"`` -- the image ships only kiro-cli, the
+          panel's Kiro sign-in drives kiro-cli, and engine installs are denied by
+          the route policy, so the agent never relies on the KAS default.
+
+        Other keys the user placed there are preserved; an unreadable overlay is
+        left alone rather than clobbered.
         """
         path = state_home / _LOCAL_CONFIG_FILENAME
         overlay: dict[str, object] = {}
@@ -486,14 +501,20 @@ class KiroCrewSupervisor:
                 _LOGGER.warning("Gateway local config overlay is not an object; leaving it as is.")
                 return
             overlay = cast(dict[str, object], loaded)
-        dashboard = overlay.get("dashboard")
-        if not isinstance(dashboard, dict):
-            dashboard = {}
-        section = cast(dict[str, object], dashboard)
-        if section.get("loop_stall_exit_after_secs") == _LOOP_STALL_EXIT_AFTER_SECONDS:
+        changed = False
+        for section_name, key, value in _LOCAL_CONFIG_PINS:
+            current = overlay.get(section_name)
+            if isinstance(current, dict):
+                section = cast(dict[str, object], current)
+                if section.get(key) == value:
+                    continue
+            else:
+                section = {}
+            section[key] = value
+            overlay[section_name] = section
+            changed = True
+        if not changed:
             return
-        section["loop_stall_exit_after_secs"] = _LOOP_STALL_EXIT_AFTER_SECONDS
-        overlay["dashboard"] = section
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(overlay, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         path.chmod(0o600)

@@ -312,6 +312,12 @@ variable "enable_tool_authorization" {
   default     = false
 }
 
+variable "enable_frontend_waf" {
+  description = "Attach an AWS WAFv2 web ACL to the CloudFront distribution. The two AWS managed rule groups (Common, KnownBadInputs) run in COUNT so they surface matches in CloudWatch without blocking live users; a per-IP rate rule blocks floods of the unauthenticated login/register/reset endpoints. CLOUDFRONT-scoped WAF is created in us-east-1 via the aws.us_east_1 provider alias."
+  type        = bool
+  default     = false
+}
+
 variable "tool_authorization_policy_mode" {
   description = "Cedar policy engine mode for the tool Gateway (#40 phase 3a). LOG_ONLY records decisions without denying; ENFORCE denies tool calls no policy permits. Switch to ENFORCE only after the LOG_ONLY decisions match the intended group rules."
   type        = string

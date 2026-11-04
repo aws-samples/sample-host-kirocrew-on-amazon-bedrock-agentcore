@@ -139,7 +139,7 @@ hardening profiles, is in [docs/security.md](docs/security.md).
   mint the gateway's own credential (`/api/token`) or seize gateway lifecycle from
   the supervisor (`/api/shutdown`) are denied. Host-native features that cannot
   exist in a microVM answer `501`. The policy is pinned in
-  `contracts/kirocrew/0.10.0-route-allowlist.json` and enforced by contract tests on
+  `contracts/kirocrew/0.11.1-route-allowlist.json` and enforced by contract tests on
   both the Python adapter and the TypeScript shell.
 - **Binding tokens** authorize invocations for 30 minutes and are renewed
   transparently while the sandbox's lease is alive, so a long-open page keeps
@@ -226,7 +226,7 @@ bounded.
 
 ```bash
 make image-publish \
-  IMAGE_RELEASE_TAG=0.10.0-microvm-r1 \
+  IMAGE_RELEASE_TAG=0.11.1-microvm-r1 \
   EXPECTED_AWS_ACCOUNT_ID=<AWS_ACCOUNT_ID> \
   AWS_REGION=$AWS_REGION \
   ECR_REPOSITORY_URI=<AWS_ACCOUNT_ID>.dkr.ecr.$AWS_REGION.amazonaws.com/kirocrew-agentcore-dev-runtime

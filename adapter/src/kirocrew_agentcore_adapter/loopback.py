@@ -72,7 +72,7 @@ class KiroCrewRoutePolicy:
     Cognito subject hash on every invocation, so tenancy is enforced there — not
     by route filtering. `/api/chat` and `/api/terminal` already grant arbitrary
     in-sandbox execution, so filtering feature routes buys no isolation while
-    breaking most of the product. Upstream 0.10.0 registers hundreds of `/api/*` routes
+    breaking most of the product. Upstream 0.11.1 registers hundreds of `/api/*` routes
     and its browser bundle references 308 route families; an enumerated
     allowlist cannot track that surface, and every gap shows up as a 403 on a
     working feature.
@@ -83,7 +83,7 @@ class KiroCrewRoutePolicy:
     bundle, so denying them removes no functionality.
     """
 
-    VERSION: Final = "0.10.0"
+    VERSION: Final = "0.11.1"
     _SYNTHETIC: Final = (
         RouteRule(frozenset({"GET"}), "/api/auth/status", False),
         RouteRule(frozenset({"GET"}), "/api/auth/local-token", False),

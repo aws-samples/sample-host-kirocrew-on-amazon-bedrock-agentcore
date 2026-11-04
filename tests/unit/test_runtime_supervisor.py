@@ -950,6 +950,7 @@ def test_start_pins_the_gateway_loop_stall_budget_and_preserves_user_overrides(
     supervisor.start(timeout_seconds=2)
     written = json.loads(overlay.read_text(encoding="utf-8"))
     assert written == {
+        "agent": {"acp_backend": "kiro"},
         "agents": {"max": 3},
         "dashboard": {"loop_stall_exit_after_secs": 300, "theme": "dark"},
     }
@@ -957,20 +958,30 @@ def test_start_pins_the_gateway_loop_stall_budget_and_preserves_user_overrides(
 
     # Already pinned: the overlay is left untouched byte for byte.
     before = overlay.read_bytes()
-    KiroCrewSupervisor._pin_loop_stall_budget(layout.kirocrew_home)
+    KiroCrewSupervisor._pin_local_config(layout.kirocrew_home)
     assert overlay.read_bytes() == before
 
-    # A non-object dashboard section is replaced; a fresh home gets a new overlay.
-    overlay.write_text(json.dumps({"dashboard": "oops"}), encoding="utf-8")
-    KiroCrewSupervisor._pin_loop_stall_budget(layout.kirocrew_home)
+    # A KAS choice left in the overlay is pinned back to kiro-cli; sibling keys stay.
+    overlay.write_text(
+        json.dumps({"agent": {"acp_backend": "kas", "model": "m"}}), encoding="utf-8"
+    )
+    KiroCrewSupervisor._pin_local_config(layout.kirocrew_home)
     assert json.loads(overlay.read_text(encoding="utf-8")) == {
-        "dashboard": {"loop_stall_exit_after_secs": 300}
+        "agent": {"acp_backend": "kiro", "model": "m"},
+        "dashboard": {"loop_stall_exit_after_secs": 300},
     }
+
+    # A non-object section is replaced; a fresh home gets a new overlay.
+    overlay.write_text(json.dumps({"dashboard": "oops", "agent": 1}), encoding="utf-8")
+    KiroCrewSupervisor._pin_local_config(layout.kirocrew_home)
+    pinned = {
+        "agent": {"acp_backend": "kiro"},
+        "dashboard": {"loop_stall_exit_after_secs": 300},
+    }
+    assert json.loads(overlay.read_text(encoding="utf-8")) == pinned
     fresh = tmp_path / "fresh-home"
-    KiroCrewSupervisor._pin_loop_stall_budget(fresh)
-    assert json.loads((fresh / "config.local.json").read_text(encoding="utf-8")) == {
-        "dashboard": {"loop_stall_exit_after_secs": 300}
-    }
+    KiroCrewSupervisor._pin_local_config(fresh)
+    assert json.loads((fresh / "config.local.json").read_text(encoding="utf-8")) == pinned
 
 
 @pytest.mark.parametrize("content", ["{not json", "[1, 2]"])
@@ -982,7 +993,7 @@ def test_unreadable_or_non_object_overlay_is_left_alone(
     overlay = home / "config.local.json"
     overlay.write_text(content, encoding="utf-8")
     with caplog.at_level(logging.WARNING):
-        KiroCrewSupervisor._pin_loop_stall_budget(home)
+        KiroCrewSupervisor._pin_local_config(home)
     assert overlay.read_text(encoding="utf-8") == content
     assert "leaving it as is" in caplog.text
 

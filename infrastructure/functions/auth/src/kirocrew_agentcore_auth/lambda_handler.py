@@ -93,7 +93,8 @@ class EmailPolicy:
 # states the requirement instead of naming "complexity requirements", and it
 # mirrors the pool's password_policy in infrastructure/modules/identity.
 _STRENGTH_REQUIREMENT = (
-    "Passwords need at least 8 characters, including a lowercase letter and a number."
+    "Passwords need at least 12 characters, including an uppercase letter, "
+    "a lowercase letter and a number."
 )
 
 

@@ -8,6 +8,19 @@ variable "region" { type = string }
 variable "dns_suffix" { type = string }
 variable "public_config" { type = any }
 variable "tags" { type = map(string) }
+variable "enable_waf" {
+  type    = bool
+  default = false
+}
+
+terraform {
+  required_providers {
+    aws = {
+      source                = "hashicorp/aws"
+      configuration_aliases = [aws.us_east_1]
+    }
+  }
+}
 
 locals {
   asset_files = fileset(var.asset_directory, "**")
@@ -178,6 +191,93 @@ resource "aws_cloudfront_origin_request_policy" "control" {
   }
 }
 
+# Front-door WAF for the CloudFront distribution. CLOUDFRONT-scoped WAFv2 lives
+# only in us-east-1, hence the aliased provider. Off by default so a plain
+# deployment of this sample adds nothing; our environments turn it on.
+#
+# The two AWS managed groups run in COUNT first: they catch real attacks but also
+# occasionally flag legitimate app traffic, and this fleet has live users. Counting
+# surfaces what they would block (CloudWatch sampled requests) without locking
+# anyone out; flip override_action to none once the sampled requests look clean.
+# The per-IP rate rule BLOCKS from the start -- it only trips on flooding the
+# unauthenticated login/register/reset endpoints, which no real user does.
+resource "aws_wafv2_web_acl" "frontend" {
+  count    = var.enable_waf ? 1 : 0
+  provider = aws.us_east_1
+  name     = "${var.prefix}-frontend"
+  scope    = "CLOUDFRONT"
+
+  default_action {
+    allow {}
+  }
+
+  rule {
+    name     = "aws-common"
+    priority = 1
+    override_action {
+      count {}
+    }
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesCommonRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.prefix}-common"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "aws-known-bad-inputs"
+    priority = 2
+    override_action {
+      count {}
+    }
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesKnownBadInputsRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.prefix}-known-bad-inputs"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "per-ip-rate-limit"
+    priority = 3
+    action {
+      block {}
+    }
+    statement {
+      rate_based_statement {
+        limit                 = 2000
+        aggregate_key_type    = "IP"
+        evaluation_window_sec = 300
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.prefix}-rate-limit"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "${var.prefix}-frontend-waf"
+    sampled_requests_enabled   = true
+  }
+
+  tags = var.tags
+}
+
 resource "aws_cloudfront_distribution" "frontend" {
   enabled             = true
   is_ipv6_enabled     = true
@@ -185,6 +285,7 @@ resource "aws_cloudfront_distribution" "frontend" {
   price_class         = "PriceClass_100"
   http_version        = "http2and3"
   wait_for_deployment = true
+  web_acl_id          = var.enable_waf ? aws_wafv2_web_acl.frontend[0].arn : null
   tags                = var.tags
 
   origin {

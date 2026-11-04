@@ -250,6 +250,11 @@ module "tool_authorization" {
 module "frontend" {
   source = "./modules/frontend"
 
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
+
   prefix          = module.naming.prefix
   global_suffix   = module.naming.global_suffix
   asset_directory = abspath("${path.module}/${var.frontend_asset_directory}")
@@ -258,6 +263,7 @@ module "frontend" {
   cognito_domain  = local.cognito_domain
   region          = local.region
   dns_suffix      = local.dns_suffix
+  enable_waf      = var.enable_frontend_waf
   public_config = {
     auth = {
       basePath       = "/auth/v1"

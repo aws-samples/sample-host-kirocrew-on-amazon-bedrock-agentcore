@@ -6,6 +6,17 @@ provider "aws" {
   }
 }
 
+# CLOUDFRONT-scoped WAFv2 web ACLs can only be created in us-east-1, regardless of
+# where the rest of the stack lives. Used only by the frontend module's WAF.
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+
+  default_tags {
+    tags = local.tags
+  }
+}
+
 provider "awscc" {
   region = var.aws_region
 }

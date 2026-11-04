@@ -34,16 +34,19 @@ resource "aws_cognito_user_pool" "this" {
     enabled = true
   }
 
-  # A rule a person can hold in their head: length, a letter, a number. Cognito
-  # has no "any letter" class, so the letter is required as a lowercase one --
-  # every message about this policy says exactly that rather than pointing at
-  # unnamed "complexity requirements".
+  # Length does the real work: 12 characters plus upper, lower and a digit. The
+  # rule is still one a person can hold in their head -- a long passphrase with a
+  # capital and a number clears it -- and every message about this policy says
+  # exactly that rather than pointing at unnamed "complexity requirements".
+  # Symbols stay optional: at 12+ characters they add little and are the part
+  # users most often fat-finger. Raised from 8 after an exposure review flagged
+  # the login/register endpoints as the reachable surface.
   password_policy {
-    minimum_length                   = 8
+    minimum_length                   = 12
     require_lowercase                = true
     require_numbers                  = true
     require_symbols                  = false
-    require_uppercase                = false
+    require_uppercase                = true
     temporary_password_validity_days = 7
   }
 

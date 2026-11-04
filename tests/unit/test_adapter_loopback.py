@@ -869,3 +869,128 @@ def test_fetch_json_raises_transient_errors_for_failures() -> None:
             await timed_out.fetch_json("/api/status")
 
     asyncio.run(scenario())
+
+
+class SequencedSession(FakeSession):
+    """A fake session answering successive requests from a queue."""
+
+    def __init__(self, responses: list[FakeResponse]) -> None:
+        super().__init__(response=responses[0])
+        self.responses = list(responses)
+        self.calls: list[dict[str, object]] = []
+
+    async def request(self, method: str, url: str, **kwargs: object) -> FakeResponse:
+        self.calls.append({"method": method, "url": url, **kwargs})
+        return self.responses.pop(0)
+
+
+def _pin_payload(agent: str, body: object) -> dict[str, object]:
+    return {"method": "PUT", "path": f"/api/agents/{agent}", "body": json.dumps(body)}
+
+
+_NOT_FOUND = json.dumps({"error": "Agent 'kirocrew' not found", "code": "agent_not_found"})
+
+
+def test_template_session_model_pin_falls_back_to_the_global_default() -> None:
+    """Pinning a model on a template session writes `agent.model` instead of 404."""
+
+    async def scenario() -> None:
+        ok = json.dumps({"ok": True}).encode()
+        session = SequencedSession(
+            [
+                FakeResponse(404, chunks=[_NOT_FOUND.encode()]),
+                FakeResponse(200, chunks=[ok], headers={"content-type": "application/json"}),
+            ]
+        )
+        events = await collect(
+            backend(session).execute(
+                "kirocrew.http",
+                "request",
+                _pin_payload("kirocrew", {"model": "claude-opus-5.5"}),
+            )
+        )
+        assert [call["method"] for call in session.calls] == ["PUT", "PATCH"]
+        fallback = session.calls[1]
+        assert cast(str, fallback["url"]).endswith("/api/config/kirocrew")
+        assert json.loads(cast(bytes, fallback["data"])) == {
+            "path": "agent.model",
+            "value": "claude-opus-5.5",
+        }
+        headers = cast(dict[str, str], fallback["headers"])
+        assert headers["content-type"] == "application/json"
+        assert "loopback-only-secret" in headers["cookie"]
+        assert events[0][1]["status"] == 200
+        assert base64.b64decode(cast(str, events[1][1]["data"])) == ok
+        assert events[-1][1]["status"] == 200
+
+    asyncio.run(scenario())
+
+
+def test_other_404s_on_agent_update_are_passed_through() -> None:
+    async def scenario() -> None:
+        body = json.dumps({"error": "gone", "code": "something_else"}).encode()
+        session = SequencedSession([FakeResponse(404, chunks=[body])])
+        events = await collect(
+            backend(session).execute(
+                "kirocrew.http", "request", _pin_payload("kirocrew", {"model": "m"})
+            )
+        )
+        assert len(session.calls) == 1
+        assert events[0][1]["status"] == 404
+        assert base64.b64decode(cast(str, events[1][1]["data"])) == body
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        _pin_payload("kirocrew", {"model": "m", "description": "x"}),
+        _pin_payload("kirocrew", {"model": 3}),
+        _pin_payload("kirocrew/fork", {"model": "m"}),
+        {"method": "PATCH", "path": "/api/agents/kirocrew", "body": '{"model": "m"}'},
+        {"method": "PUT", "path": "/api/agents/kirocrew", "body": "not json"},
+    ],
+)
+def test_only_a_bare_model_pin_is_eligible_for_the_fallback(
+    payload: Mapping[str, object],
+) -> None:
+    async def scenario() -> None:
+        session = SequencedSession([FakeResponse(404, chunks=[_NOT_FOUND.encode()])])
+        events = await collect(backend(session).execute("kirocrew.http", "request", payload))
+        assert len(session.calls) == 1
+        assert events[0][1]["status"] == 404
+
+    asyncio.run(scenario())
+
+
+def test_bodyless_404_on_agent_update_is_passed_through_without_a_delta() -> None:
+    async def scenario() -> None:
+        session = SequencedSession([FakeResponse(404)])
+        events = await collect(
+            backend(session).execute(
+                "kirocrew.http", "request", _pin_payload("kirocrew", {"model": "m"})
+            )
+        )
+        assert [operation for operation, _ in events] == [
+            "request.accepted",
+            "request.completed",
+        ]
+        assert len(session.calls) == 1
+
+    asyncio.run(scenario())
+
+
+def test_transient_status_on_the_model_pin_fallback_is_retryable() -> None:
+    async def scenario() -> None:
+        fallback = FakeResponse(502)
+        session = SequencedSession([FakeResponse(404, chunks=[_NOT_FOUND.encode()]), fallback])
+        with pytest.raises(TransientBackendError):
+            await collect(
+                backend(session).execute(
+                    "kirocrew.http", "request", _pin_payload("kirocrew", {"model": "m"})
+                )
+            )
+        assert fallback.closed
+
+    asyncio.run(scenario())

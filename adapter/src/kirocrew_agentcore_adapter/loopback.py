@@ -372,6 +372,37 @@ class LoopbackKiroCrewBackend:
         if response.status in {502, 504}:
             response.close()
             raise TransientBackendError("Loopback KiroCrew returned a transient status.")
+        # A template session's "pin as default" 404s upstream (see
+        # `_template_model_pin`). The user asked for "new sessions use this
+        # model", which is exactly the global default `agent.model` -- the field
+        # Settings -> Chat -> Model writes. Write that instead of surfacing an
+        # error. A 404 for any other reason (a crewmate that was really deleted)
+        # is passed through unchanged.
+        pin_model = _template_model_pin(request)
+        if pin_model is not None and response.status == 404:
+            not_found_body = await self._read_bounded_body(response)
+            response.release()
+            if not _is_agent_not_found(not_found_body):
+                for event in _buffered_response(request.transport, 404, not_found_body):
+                    yield event
+                return
+            fallback_headers = {
+                key: value for key, value in headers.items() if key != "content-length"
+            }
+            fallback_headers["content-type"] = "application/json"
+            response = await self._session.request(
+                "PATCH",
+                f"{_LOOPBACK_ORIGIN}/api/config/kirocrew",
+                headers=fallback_headers,
+                data=json.dumps({"path": "agent.model", "value": pin_model}).encode(),
+                timeout=self._timeout,
+                allow_redirects=False,
+            )
+            # `cancel_response` closes over the `response` name, so it now
+            # cancels this fallback request.
+            if response.status in {502, 504}:
+                response.close()
+                raise TransientBackendError("Loopback KiroCrew returned a transient status.")
         # 503 is ambiguous: the upstream gateway returns it as a real, structured
         # answer ("Kiro CLI sign-in is required before starting a session.") on
         # every session-bearing route until the user signs in. That is the normal
@@ -566,6 +597,71 @@ def _synthetic_response(path: str) -> tuple[tuple[str, Mapping[str, object]], ..
         ),
         ("request.completed", {"status": 200}),
     )
+
+
+def _buffered_response(
+    transport: str, status: int, body: bytes
+) -> tuple[tuple[str, Mapping[str, object]], ...]:
+    """Replay a fully read upstream JSON response as tunnel events."""
+    events: list[tuple[str, Mapping[str, object]]] = [
+        (
+            "request.accepted",
+            {
+                "contentType": "application/json",
+                "headers": {"content-type": "application/json"},
+                "status": status,
+                "transport": transport,
+            },
+        )
+    ]
+    if body:
+        events.append(
+            (
+                "output.delta",
+                {
+                    "data": base64.b64encode(body).decode(),
+                    "encoding": "base64",
+                    "transport": transport,
+                },
+            )
+        )
+    events.append(("request.completed", {"status": status}))
+    return tuple(events)
+
+
+def _template_model_pin(request: LoopbackRequest) -> str | None:
+    """The model a chat's "pin as default" asks for, when that is all it asks.
+
+    Upstream's chat page pins a model by sending ``PUT /api/agents/<agent>``
+    with ``{"model": ...}``, where ``<agent>`` is the session's agent. A session
+    that runs on a plain template (``kirocrew``) rather than a crewmate names an
+    agent that is not a crewmate record, so the gateway answers 404
+    ``agent_not_found`` and the user sees an error on their first try. Only this
+    exact shape -- one path segment, a body that is nothing but a model string --
+    is eligible for the fallback in :meth:`LoopbackKiroCrewBackend._http`.
+    """
+    if request.method != "PUT" or request.transport != "http":
+        return None
+    path = urlsplit(request.path).path
+    prefix = "/api/agents/"
+    if not path.startswith(prefix) or "/" in path[len(prefix) :] or path == prefix:
+        return None
+    try:
+        body = json.loads(request.body)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(body, dict) or set(body) != {"model"}:
+        return None
+    model = body["model"]
+    return model if isinstance(model, str) else None
+
+
+def _is_agent_not_found(body: bytes) -> bool:
+    try:
+        parsed = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    return isinstance(parsed, dict) and parsed.get("code") == "agent_not_found"
 
 
 def _is_application_response(body: bytes) -> bool:

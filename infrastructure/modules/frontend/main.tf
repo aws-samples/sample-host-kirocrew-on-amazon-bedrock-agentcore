@@ -54,7 +54,9 @@ locals {
     "form-action 'self' ${var.cognito_domain}",
     "script-src 'self' 'unsafe-inline'",
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob:",
+    # apps.crew.kiro.dev hosts the icons and screenshots of registry apps in
+    # the app catalog; without it those cards render with an empty icon.
+    "img-src 'self' data: blob: https://apps.crew.kiro.dev",
     "font-src 'self' data:",
     "media-src 'self' blob:",
     "worker-src 'self' blob:",
@@ -421,6 +423,20 @@ resource "aws_s3_object" "bootstrap" {
   cache_control = "public,max-age=0,must-revalidate"
   content       = local.bootstrap_content
   etag          = md5(local.bootstrap_content)
+}
+
+# Upstream's page uses /logo.png as the sidebar logo and the browser tab icon.
+# On a local install the gateway serves that route; here the browser never
+# reaches the gateway for a plain image GET, so CloudFront's SPA fallback
+# answered with index.html and the sidebar showed an empty frame. The
+# upstream bundle already ships the same artwork as icon-512.png.
+resource "aws_s3_object" "logo" {
+  bucket        = aws_s3_bucket.frontend.id
+  key           = "logo.png"
+  source        = "${var.asset_directory}/icon-512.png"
+  source_hash   = filemd5("${var.asset_directory}/icon-512.png")
+  content_type  = "image/png"
+  cache_control = "public,max-age=86400"
 }
 
 output "bucket_name" { value = aws_s3_bucket.frontend.id }

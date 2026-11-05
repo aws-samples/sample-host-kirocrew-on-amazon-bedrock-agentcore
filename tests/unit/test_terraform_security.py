@@ -420,3 +420,18 @@ def test_broker_tool_token_grants_are_opt_in_and_narrow() -> None:
     tools = terraform("modules/tool-authorization/main.tf")
     assert 'resource "aws_secretsmanager_secret" "machine_client"' in tools
     assert 'tokenEndpoint = "https://${var.cognito_domain}.auth.' in tools
+
+
+def test_frontend_images_allow_only_self_and_the_app_catalog_host() -> None:
+    frontend = (INFRA / "modules/frontend/main.tf").read_text(encoding="utf-8")
+    directive = re.search(r'"img-src ([^"]*)"', frontend)
+    assert directive is not None
+    assert directive.group(1).split() == ["'self'", "data:", "blob:", "https://apps.crew.kiro.dev"]
+
+
+def test_frontend_serves_the_upstream_logo_route_from_the_bundled_icon() -> None:
+    frontend = (INFRA / "modules/frontend/main.tf").read_text(encoding="utf-8")
+    block = re.search(r'resource "aws_s3_object" "logo" \{(.*?)\n\}', frontend, re.S)
+    assert block is not None
+    assert 'key           = "logo.png"' in block.group(1)
+    assert "icon-512.png" in block.group(1)

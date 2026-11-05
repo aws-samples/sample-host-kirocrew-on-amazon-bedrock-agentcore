@@ -56,6 +56,9 @@ locals {
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
+    # Inline widgets render from a data: URL minted in the browser (see
+    # frontend-shell/src/local-routes.ts); a data: frame is an opaque origin.
+    "frame-src 'self' data:",
     "media-src 'self' blob:",
     "worker-src 'self' blob:",
     "connect-src 'self' ${var.cognito_domain} https://bedrock-agentcore.${var.region}.${var.dns_suffix} wss://bedrock-agentcore.${var.region}.${var.dns_suffix} https://s3.${var.region}.${var.dns_suffix}",

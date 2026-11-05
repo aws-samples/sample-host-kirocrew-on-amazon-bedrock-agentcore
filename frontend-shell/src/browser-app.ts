@@ -33,8 +33,9 @@ import { durableStorage } from "./storage.js";
 
 const CONTROL_PATH = "/control/v1";
 const POLL_INTERVAL_MS = 2_000;
-// The adapter closes the runtime WebSocket after 40 seconds without client
-// traffic (heartbeat timeout), so a keepalive ping must fire well inside that.
+// The adapter closes the runtime WebSocket after 180 seconds without client
+// traffic (heartbeat timeout). A visible tab pings every 20 seconds; a hidden
+// tab's timers can be throttled to once a minute, which the limit still covers.
 const PING_INTERVAL_MS = 20_000;
 
 export interface BrowserApplicationConfig {

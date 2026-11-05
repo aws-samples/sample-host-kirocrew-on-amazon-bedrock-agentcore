@@ -1137,3 +1137,8 @@ def test_a_wake_with_no_authorization_header_is_served_only_at_the_machine_door(
         assert browser.lease.calls == []
 
     asyncio.run(scenario())
+
+
+def test_default_heartbeat_timeout_survives_background_tab_throttling() -> None:
+    """A hidden tab may ping only once a minute; the default must allow that."""
+    assert AdapterConfig(AUDIENCE, ISSUER).heartbeat_timeout_seconds >= 120

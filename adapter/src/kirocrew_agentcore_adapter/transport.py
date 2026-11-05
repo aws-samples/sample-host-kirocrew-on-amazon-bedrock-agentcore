@@ -291,7 +291,14 @@ class EchoRuntimeBackend:
 class AdapterConfig:
     binding_audience: str
     cognito_issuer: str
-    heartbeat_timeout_seconds: float = 40.0
+    # Browsers throttle timers in a background tab: Chrome's intensive
+    # throttling wakes them at most once a minute after five hidden minutes,
+    # and Firefox applies a similar budget. The browser pings every 20 seconds
+    # while visible, but a hidden tab can go a full minute between pings, so a
+    # 40-second limit dropped the socket every few minutes and the next send
+    # failed with "Couldn't send". Three minutes covers a throttled minute plus
+    # slack; a truly dead peer is still detected by TCP close and the lease.
+    heartbeat_timeout_seconds: float = 180.0
     max_backend_attempts: int = 3
 
     def __post_init__(self) -> None:

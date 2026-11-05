@@ -994,3 +994,53 @@ def test_transient_status_on_the_model_pin_fallback_is_retryable() -> None:
         assert fallback.closed
 
     asyncio.run(scenario())
+
+
+def test_codeless_not_found_from_the_general_update_path_also_falls_back() -> None:
+    """KiroCrew 0.11.1's model-pin path answers 404 with only an `error` string."""
+
+    async def scenario() -> None:
+        codeless = json.dumps({"error": "Agent 'kirocrew' not found"}).encode()
+        ok = json.dumps({"ok": True}).encode()
+        session = SequencedSession(
+            [
+                FakeResponse(404, chunks=[codeless]),
+                FakeResponse(200, chunks=[ok], headers={"content-type": "application/json"}),
+            ]
+        )
+        events = await collect(
+            backend(session).execute(
+                "kirocrew.http", "request", _pin_payload("kirocrew", {"model": "auto"})
+            )
+        )
+        assert [call["method"] for call in session.calls] == ["PUT", "PATCH"]
+        assert json.loads(cast(bytes, session.calls[1]["data"])) == {
+            "path": "agent.model",
+            "value": "auto",
+        }
+        assert events[0][1]["status"] == 200
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"error": "Agent 'someone-else' not found"},
+        {"error": "Agent 'kirocrew' not found", "code": "something_else"},
+        ["not", "an", "object"],
+    ],
+)
+def test_codeless_not_found_for_another_name_is_passed_through(body: object) -> None:
+    async def scenario() -> None:
+        raw = json.dumps(body).encode()
+        session = SequencedSession([FakeResponse(404, chunks=[raw])])
+        events = await collect(
+            backend(session).execute(
+                "kirocrew.http", "request", _pin_payload("kirocrew", {"model": "m"})
+            )
+        )
+        assert len(session.calls) == 1
+        assert events[0][1]["status"] == 404
+
+    asyncio.run(scenario())

@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import Final, Protocol, cast
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from aiohttp import (
     ClientConnectionError,
@@ -382,7 +382,8 @@ class LoopbackKiroCrewBackend:
         if pin_model is not None and response.status == 404:
             not_found_body = await self._read_bounded_body(response)
             response.release()
-            if not _is_agent_not_found(not_found_body):
+            pinned_agent = unquote(urlsplit(request.path).path[len("/api/agents/") :])
+            if not _is_agent_not_found(not_found_body, pinned_agent):
                 for event in _buffered_response(request.transport, 404, not_found_body):
                     yield event
                 return
@@ -656,12 +657,22 @@ def _template_model_pin(request: LoopbackRequest) -> str | None:
     return model if isinstance(model, str) else None
 
 
-def _is_agent_not_found(body: bytes) -> bool:
+def _is_agent_not_found(body: bytes, agent: str) -> bool:
+    """Whether a 404 body is upstream's "no such crewmate" answer for ``agent``.
+
+    Upstream answers this in two shapes: the binding fast path sends
+    ``code: agent_not_found``, while the general update path (the one a model
+    pin takes) sends only ``{"error": "Agent '<name>' not found"}``.
+    """
     try:
         parsed = json.loads(body)
     except (ValueError, UnicodeDecodeError):
         return False
-    return isinstance(parsed, dict) and parsed.get("code") == "agent_not_found"
+    if not isinstance(parsed, dict):
+        return False
+    if parsed.get("code") == "agent_not_found":
+        return True
+    return "code" not in parsed and parsed.get("error") == f"Agent '{agent}' not found"
 
 
 def _is_application_response(body: bytes) -> bool:

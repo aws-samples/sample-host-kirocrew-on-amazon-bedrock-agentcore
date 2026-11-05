@@ -9,6 +9,11 @@ import {
   RemoteTransportError,
   syntheticRouteResponse,
 } from "./remote-transport.js";
+import {
+  installOutboxDownloads,
+  isSandboxDocStash,
+  stashSandboxDoc,
+} from "./local-routes.js";
 
 export interface CapabilityState {
   readonly available: boolean;
@@ -67,6 +72,9 @@ export interface BootstrapTarget {
   fetch: typeof fetch;
   EventSource: EventSourceConstructor;
   WebSocket: WebSocketConstructor;
+  readonly location?: { readonly origin: string };
+  readonly document?: Document;
+  alert?: (message: string) => void;
   __KIROCREW_AGENTCORE_CAPABILITIES__?: typeof KIROCREW_AGENTCORE_CAPABILITIES;
   __KIROCREW_REMOTE_TRANSPORT__?: true;
 }
@@ -195,14 +203,19 @@ export function installKiroCrewBootstrap(
   const nativeFetch = target.fetch;
   const NativeEventSource = target.EventSource;
   const NativeWebSocket = target.WebSocket;
+  const origin = target.location?.origin ?? "http://localhost";
 
   target.fetch = async (
     input: RequestInfo | URL,
     init?: RequestInit,
-  ): Promise<Response> =>
-    transport.handles(inputUrl(input))
+  ): Promise<Response> => {
+    if (isSandboxDocStash(input, init, origin)) {
+      return await stashSandboxDoc(input, init);
+    }
+    return transport.handles(inputUrl(input))
       ? await transport.fetch(input, init)
       : await nativeFetch.call(target, input, init);
+  };
 
   const EventSourceBridge = function (
     this: unknown,
@@ -239,9 +252,20 @@ export function installKiroCrewBootstrap(
 
   target.__KIROCREW_AGENTCORE_CAPABILITIES__ = KIROCREW_AGENTCORE_CAPABILITIES;
   target.__KIROCREW_REMOTE_TRANSPORT__ = true;
+  const uninstallDownloads =
+    target.document === undefined
+      ? (): void => undefined
+      : installOutboxDownloads(target.document, {
+          fetch: target.fetch,
+          origin,
+          notify: (message) => {
+            target.alert?.(message);
+          },
+        });
   releasePendingRequests(target);
 
   return (): void => {
+    uninstallDownloads();
     target.fetch = nativeFetch;
     target.EventSource = NativeEventSource;
     target.WebSocket = NativeWebSocket;

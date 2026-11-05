@@ -58,6 +58,9 @@ locals {
     # the app catalog; without it those cards render with an empty icon.
     "img-src 'self' data: blob: https://apps.crew.kiro.dev",
     "font-src 'self' data:",
+    # Inline widgets render from a data: URL minted in the browser (see
+    # frontend-shell/src/local-routes.ts); a data: frame is an opaque origin.
+    "frame-src 'self' data:",
     "media-src 'self' blob:",
     "worker-src 'self' blob:",
     "connect-src 'self' ${var.cognito_domain} https://bedrock-agentcore.${var.region}.${var.dns_suffix} wss://bedrock-agentcore.${var.region}.${var.dns_suffix} https://s3.${var.region}.${var.dns_suffix}",

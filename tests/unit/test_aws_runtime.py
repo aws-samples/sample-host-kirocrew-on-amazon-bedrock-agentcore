@@ -1507,9 +1507,44 @@ def test_background_busy_holds_the_sandbox_while_a_checkpoint_is_in_flight() -> 
     async def scenario() -> None:
         backend = probe_backend(ProbeLoopback())
         assert await backend.background_busy() is False
-        async with backend._checkpoint_lock:
-            assert await backend.background_busy() is True
+        backend._final_checkpoints_in_flight = 1
+        assert await backend.background_busy() is True
+        backend._final_checkpoints_in_flight = 0
         assert await backend.background_busy() is False
+
+    asyncio.run(scenario())
+
+
+def test_background_busy_ignores_a_periodic_checkpoint() -> None:
+    """A periodic checkpoint every few minutes kept an idle sandbox alive for 8 h."""
+
+    async def scenario() -> None:
+        backend = probe_backend(ProbeLoopback())
+        async with backend._checkpoint_lock:
+            assert await backend.background_busy() is False
+
+    asyncio.run(scenario())
+
+
+def test_final_checkpoint_counts_busy_while_waiting_and_resets() -> None:
+    async def scenario() -> None:
+        backend = probe_backend(ProbeLoopback())
+        seen: list[int] = []
+
+        async def fake_locked(*, final: bool) -> tuple[object, str]:
+            seen.append(backend._final_checkpoints_in_flight)
+            if final:
+                raise RuntimeError("upload failed")
+            return object(), "receipt"
+
+        backend._commit_checkpoint_locked = fake_locked  # type: ignore[method-assign,assignment]
+        await backend._commit_checkpoint(final=False)
+        try:
+            await backend._commit_checkpoint(final=True)
+        except RuntimeError:
+            pass
+        assert seen == [0, 1]
+        assert backend._final_checkpoints_in_flight == 0
 
     asyncio.run(scenario())
 

@@ -462,6 +462,11 @@ class ProductionRuntimeBackend:
         self._store: BrokeredCheckpointStore | None = None
         self._broker_client: LambdaBrokerClient | None = None
         self._checkpoint_lock = asyncio.Lock()
+        # Only a FINAL checkpoint holds the sandbox busy. A periodic one runs
+        # every few minutes on any workspace KiroCrew itself keeps touching, so
+        # treating it as busy reset the platform idle clock forever and an
+        # unused sandbox ran until MaxLifetime (8 h) instead of ~15 minutes.
+        self._final_checkpoints_in_flight = 0
         self._durability_tasks: set[asyncio.Task[bool]] = set()
         # Background-activity keepalive: /ping reports HealthyBusy while
         # unattended work (task runner, subagents, workflows) is running,
@@ -567,6 +572,17 @@ class ProductionRuntimeBackend:
         yield "request.completed", {"checkpointCommitted": True}
 
     async def _commit_checkpoint(self, *, final: bool) -> tuple[CheckpointReceipt, str]:
+        if not final:
+            return await self._commit_checkpoint_locked(final=False)
+        # Counted before taking the lock so the wait behind a periodic
+        # checkpoint is also held busy.
+        self._final_checkpoints_in_flight += 1
+        try:
+            return await self._commit_checkpoint_locked(final=True)
+        finally:
+            self._final_checkpoints_in_flight -= 1
+
+    async def _commit_checkpoint_locked(self, *, final: bool) -> tuple[CheckpointReceipt, str]:
         async with self._checkpoint_lock:
             engine, store, broker_client = self._checkpoint_context()
             await self._publish_next_due(broker_client)
@@ -719,8 +735,9 @@ class ProductionRuntimeBackend:
         # outlasts the machine endpoint's idle timeout was reclaimed mid-upload:
         # the commit never landed, the record was left READY, and everything the
         # wake's jobs produced was lost. Checked before the probe-TTL switch so
-        # it holds even when background probing is disabled.
-        if self._checkpoint_lock.locked():
+        # it holds even when background probing is disabled. Periodic
+        # checkpoints do not count: they would keep an idle sandbox alive.
+        if self._final_checkpoints_in_flight > 0:
             return True
         if self._busy_probe_ttl <= 0:
             return False

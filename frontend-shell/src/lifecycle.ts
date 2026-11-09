@@ -528,3 +528,31 @@ export class LifecycleStore {
     return false;
   }
 }
+
+/**
+ * How long self-heal keeps reconnecting before handing the page to the
+ * Retry button. A cold start restores the workspace from its archive before
+ * the runtime can answer: about four minutes for a 20,000-file workspace. A
+ * fixed five attempts (about 90 s of backoff) gave up long before that, so
+ * the panel stuck on "The runtime connection failed" while the sandbox was
+ * already READY. Ten minutes covers a large restore with room to spare.
+ */
+export const RECONNECT_BUDGET_MS = 600_000;
+const RECONNECT_BASE_DELAY_MS = 3_000;
+const RECONNECT_MAX_DELAY_MS = 45_000;
+
+/**
+ * Delay before reconnect `attempt` (0-based) when the first attempt of this
+ * streak was scheduled `elapsedMs` ago, or `undefined` once the budget is
+ * spent.
+ */
+export function nextReconnectDelay(
+  attempt: number,
+  elapsedMs: number,
+): number | undefined {
+  if (elapsedMs >= RECONNECT_BUDGET_MS) {
+    return undefined;
+  }
+  const exponential = RECONNECT_BASE_DELAY_MS * 2 ** Math.min(attempt, 10);
+  return Math.min(exponential, RECONNECT_MAX_DELAY_MS);
+}

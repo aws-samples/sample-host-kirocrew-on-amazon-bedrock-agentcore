@@ -7,6 +7,7 @@ import {
   LifecycleStore,
   classifyRuntimeError,
   needsStopResume,
+  nextReconnectDelay,
   type SandboxDetails,
   type SandboxHistoryEvent,
   type RestoreProgress,
@@ -360,6 +361,7 @@ export class BrowserApplication {
   #kiroChannel?: AgentCoreBrowserChannel;
   #kiroDescriptor?: RuntimeConnectionDescriptor;
   #reconnectAttempts = 0;
+  #reconnectStreakStartedAt = 0;
   #startInFlight = false;
   #lastDescriptor: RuntimeConnectionDescriptor | undefined;
   #activeBindingToken: string | undefined;
@@ -595,13 +597,22 @@ export class BrowserApplication {
   }
 
   #scheduleReconnect(): void {
-    if (this.#destroyed || this.#reconnectAttempts >= 5) {
+    if (this.#destroyed) {
+      return;
+    }
+    if (this.#reconnectAttempts === 0) {
+      this.#reconnectStreakStartedAt = this.#now();
+    }
+    const delay = nextReconnectDelay(
+      this.#reconnectAttempts,
+      this.#now() - this.#reconnectStreakStartedAt,
+    );
+    if (delay === undefined) {
       return;
     }
     if (this.#reconnectTimer !== undefined) {
       this.#clearTimeout(this.#reconnectTimer);
     }
-    const delay = Math.min(3000 * 2 ** this.#reconnectAttempts, 45000);
     this.#reconnectAttempts += 1;
     this.#reconnectTimer = this.#setTimeout(() => {
       this.#reconnectTimer = undefined;

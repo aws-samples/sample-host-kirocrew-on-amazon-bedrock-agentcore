@@ -4,7 +4,9 @@ import {
   LifecycleStore,
   START_RESTORE_TOLERANCE_MS,
   classifyRuntimeError,
+  RECONNECT_BUDGET_MS,
   needsStopResume,
+  nextReconnectDelay,
   reduceLifecycle,
   restoreDetail,
   startupStep,
@@ -383,5 +385,36 @@ describe("startup card does not outlive startup", () => {
       sandbox: sandbox("RESTORING"),
     });
     expect(restoring.startedAt).toBe(1);
+  });
+});
+
+describe("reconnect backoff", () => {
+  it("keeps retrying through a four-minute cold restore", () => {
+    // Replay the schedule the shell follows: each attempt waits its delay.
+    let elapsed = 0;
+    let attempt = 0;
+    for (;;) {
+      const delay = nextReconnectDelay(attempt, elapsed);
+      if (delay === undefined) {
+        break;
+      }
+      elapsed += delay;
+      attempt += 1;
+    }
+    // The old fixed five attempts stopped after 93 s; a 20,000-file restore
+    // takes about 240 s before the runtime can answer.
+    expect(elapsed).toBeGreaterThan(240_000);
+    expect(elapsed).toBeLessThan(RECONNECT_BUDGET_MS + 45_000);
+  });
+
+  it("backs off exponentially and caps the delay", () => {
+    expect(nextReconnectDelay(0, 0)).toBe(3_000);
+    expect(nextReconnectDelay(1, 0)).toBe(6_000);
+    expect(nextReconnectDelay(4, 0)).toBe(45_000);
+    expect(nextReconnectDelay(50, 0)).toBe(45_000);
+  });
+
+  it("hands over to the Retry button once the budget is spent", () => {
+    expect(nextReconnectDelay(3, RECONNECT_BUDGET_MS)).toBeUndefined();
   });
 });

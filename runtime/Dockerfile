@@ -25,7 +25,7 @@ RUN echo "${DEPENDENCY_LOCK_SHA256}  uv.lock" | sha256sum --check \
       --package kirocrew-agentcore-adapter \
       --package kirocrew-agentcore-persistence \
       --format requirements-txt --output-file /requirements.lock \
-    && python -m pip wheel --require-hashes --wheel-dir /wheels \
+    && python -m pip wheel --require-hashes --no-deps --wheel-dir /wheels \
       --requirement /requirements.lock
 COPY adapter/src adapter/src
 COPY runtime/src runtime/src

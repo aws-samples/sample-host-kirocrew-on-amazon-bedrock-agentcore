@@ -5,7 +5,7 @@ FROM node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5
 
 FROM python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7 AS python-builder
 
-ARG DEPENDENCY_LOCK_SHA256=699fe907c7a473e6bdf5514e2af11353140c6cc05111431939707a75e8a6ec26
+ARG DEPENDENCY_LOCK_SHA256=da2f2818f28dfd7aaf25dbea5eb6a7ef298982c93717c09a3735cc1ff797d45e
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
 WORKDIR /build
@@ -25,7 +25,7 @@ RUN echo "${DEPENDENCY_LOCK_SHA256}  uv.lock" | sha256sum --check \
       --package kirocrew-agentcore-adapter \
       --package kirocrew-agentcore-persistence \
       --format requirements-txt --output-file /requirements.lock \
-    && python -m pip wheel --require-hashes --wheel-dir /wheels \
+    && python -m pip wheel --require-hashes --no-deps --wheel-dir /wheels \
       --requirement /requirements.lock
 COPY adapter/src adapter/src
 COPY runtime/src runtime/src
@@ -64,7 +64,7 @@ ARG NPM_VERSION=10.9.8
 ARG UV_VERSION=0.13.4
 ARG PROTOCOL_VERSION=kirocrew-agentcore.v1
 ARG BASE_IMAGE_DIGEST=sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7
-ARG DEPENDENCY_LOCK_SHA256=699fe907c7a473e6bdf5514e2af11353140c6cc05111431939707a75e8a6ec26
+ARG DEPENDENCY_LOCK_SHA256=da2f2818f28dfd7aaf25dbea5eb6a7ef298982c93717c09a3735cc1ff797d45e
 LABEL org.opencontainers.image.title="kirocrew-agentcore-runtime" \
       org.opencontainers.image.description="Unmodified KiroCrew on Amazon Bedrock AgentCore Runtime" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \

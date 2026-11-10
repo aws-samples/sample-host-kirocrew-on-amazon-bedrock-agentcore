@@ -21,6 +21,12 @@ dev = [
 
 [tool.uv]
 package = false
+# kirocrew 0.11.x/0.12.0 still declare cryptography<48, which keeps the
+# lock on 47.0.0 (GHSA alerts fixed only in 48.0.1/49.0.0/50.0.0). Neither
+# kirocrew nor this repo uses the APIs changed in 48-50 (ChaCha20 counter,
+# removed *_TYPES aliases, x86_64 macOS wheels), so override the pin.
+# Drop this once kirocrew relaxes its upper bound.
+override-dependencies = ["cryptography>=50.0.2,<51"]
 
 [tool.uv.workspace]
 members = [

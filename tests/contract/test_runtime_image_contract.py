@@ -104,7 +104,7 @@ def test_image_workflow_exposes_build_smoke_sbom_and_multiarch_commands() -> Non
     assert "linux/amd64,linux/arm64" in script_text
     assert "IMAGE_MAX_BYTES=${IMAGE_MAX_BYTES:-2000000000}" in script_text
     assert 'test "$(node --version)" = "v22.23.1"' in script_text
-    assert 'test "$(npm --version)" = "10.9.8"' in script_text
+    assert 'test "$(npm --version)" = "11.21.2"' in script_text
     assert 'uv --version | grep -Eq "^uv 0\\\\.12\\\\.5( |$)"' in script_text
     assert "git-lfs npx corepack gcc g++ make pkg-config" in script_text
     assert "aquasec/trivy:0.63.0@sha256:" in script_text

@@ -69,7 +69,7 @@ case "${1:-}" in
     test "$(docker image inspect "$IMAGE_TAG" --format '{{.Config.User}}')" = "10001:10001"
     test "$(docker image inspect "$IMAGE_TAG" --format '{{index .Config.Labels "dev.kirocrew.agentcore.protocol"}}')" = "kirocrew-agentcore.v1"
     test "$(docker image inspect "$IMAGE_TAG" --format '{{index .Config.Labels "dev.kirocrew.agentcore.toolchain.node"}}')" = "22.23.1"
-    test "$(docker image inspect "$IMAGE_TAG" --format '{{index .Config.Labels "dev.kirocrew.agentcore.toolchain.npm"}}')" = "10.9.8"
+    test "$(docker image inspect "$IMAGE_TAG" --format '{{index .Config.Labels "dev.kirocrew.agentcore.toolchain.npm"}}')" = "11.21.2"
     test "$(docker image inspect "$IMAGE_TAG" --format '{{index .Config.Labels "dev.kirocrew.agentcore.toolchain.uv"}}')" = "0.13.4"
     image_size=$(docker image inspect "$IMAGE_TAG" --format '{{.Size}}')
     test "$image_size" -lt "$IMAGE_MAX_BYTES"
@@ -77,7 +77,7 @@ case "${1:-}" in
       test "$(id -u):$(id -g)" = "10001:10001"
       test "$(python --version)" = "Python 3.12.11"
       test "$(node --version)" = "v22.23.1"
-      test "$(npm --version)" = "10.9.8"
+      test "$(npm --version)" = "11.21.2"
       uv --version | grep -Eq "^uv 0\\.12\\.5( |$)"
       for executable in pip uvx git gh git-lfs npx corepack gcc g++ make pkg-config curl jq rg fd tree file rsync nc zip unzip; do
         command -v "$executable" >/dev/null

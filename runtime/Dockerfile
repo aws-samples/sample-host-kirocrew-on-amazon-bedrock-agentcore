@@ -2,6 +2,15 @@
 FROM ghcr.io/astral-sh/uv:0.13.4@sha256:9f130421e930bfbdc563c00740466603f8723158e90297d07957c2294640262b AS uv
 
 FROM node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS node
+# The npm bundled with Node 22 (10.9.8) ships tar, pacote, brace-expansion,
+# picomatch, sigstore and ip-address versions with known HIGH/CRITICAL CVEs,
+# and npm 10.x has no release that clears them all. npm 11 supports Node
+# >=22.9 and bundles fixed versions. It is a user-facing tool in the sandbox,
+# so the image upgrades it here instead of carrying the vulnerable copy.
+ARG NPM_VERSION=11.21.2
+RUN npm install --global --no-fund --no-audit "npm@${NPM_VERSION}" \
+    && test "$(npm --version)" = "${NPM_VERSION}" \
+    && npm cache clean --force
 
 FROM python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7 AS python-builder
 
@@ -60,7 +69,7 @@ ARG KIROCREW_VERSION=0.11.1
 ARG KIROCREW_ARTIFACT_SHA256=560f82c4150eca00a9108f469c2265ff23b9e3c8173628a4204e89955e458b54
 ARG KIRO_CLI_VERSION=2.18.1
 ARG NODE_VERSION=22.23.1
-ARG NPM_VERSION=10.9.8
+ARG NPM_VERSION=11.21.2
 ARG UV_VERSION=0.13.4
 ARG PROTOCOL_VERSION=kirocrew-agentcore.v1
 ARG BASE_IMAGE_DIGEST=sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7

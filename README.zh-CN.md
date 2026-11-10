@@ -139,7 +139,7 @@ KiroCrew 原本面向本地运行：浏览器中的 SPA 通过 HTTP、服务器�
 - Terraform 1.9 或更高版本。
 - 支持 buildx 的 Docker，且 builder 能构建 `linux/amd64` 与 `linux/arm64` 镜像（远端 arm64
   节点或 QEMU 模拟均可）。
-- Python 3.12 与 [`uv`](https://docs.astral.sh/uv/)，Node.js 22 与 npm 10。
+- Python 3.12 与 [`uv`](https://docs.astral.sh/uv/)，Node.js 22 与 npm 11。
 - 每位最终用户需要自己的 Kiro 账号（Builder ID 或组织 SSO）。
 
 ### 1. 安装依赖并构建前端
@@ -171,7 +171,7 @@ terraform -chdir=infrastructure apply -state="$TF_STATE" \
 非 root 沙箱终端内包含：
 
 - Python 3.12，以及 `pip`、`uv` 和 `uvx`。
-- Node.js 22.23.1，以及 npm 10.9.8、`npx` 和 Corepack。
+- Node.js 22.23.1，以及 npm 11.21.2、`npx` 和 Corepack。
 - `git`、Git LFS、GitHub CLI（`gh`）和 OpenSSH 客户端。
 - GCC/G++、`make` 和 `pkg-config`，可构建 Python 与 Node 原生扩展。
 - `curl`、`jq`、`rg`、`fd`、`tree`、`file`、`rsync`、netcat、压缩工具和轻量编辑器等常用终端工具。

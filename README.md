@@ -182,7 +182,7 @@ See [docs/persistence.md](docs/persistence.md) for the full persistence contract
 - Terraform 1.9 or later.
 - Docker with buildx and a builder that can produce `linux/amd64` and `linux/arm64`
   images (a remote arm64 node or QEMU emulation both work).
-- Python 3.12 with [`uv`](https://docs.astral.sh/uv/), Node.js 22 with npm 10.
+- Python 3.12 with [`uv`](https://docs.astral.sh/uv/), Node.js 22 with npm 11.
 - Each end user needs their own Kiro account (Builder ID or organization SSO).
 
 ### 1. Install dependencies and build the frontend
@@ -215,7 +215,7 @@ that limit and verifies the preinstalled development toolchain. The non-root san
 terminal includes:
 
 - Python 3.12 with `pip`, `uv`, and `uvx`.
-- Node.js 22.23.1 with npm 10.9.8, `npx`, and Corepack.
+- Node.js 22.23.1 with npm 11.21.2, `npx`, and Corepack.
 - `git`, Git LFS, GitHub CLI (`gh`), and the OpenSSH client.
 - GCC/G++, `make`, and `pkg-config` for native Python and Node extensions.
 - Common terminal utilities including `curl`, `jq`, `rg`, `fd`, `tree`, `file`,

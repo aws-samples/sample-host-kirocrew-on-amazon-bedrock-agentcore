@@ -54,6 +54,51 @@ export interface AgentCoreBrowserChannelOptions {
   readonly now?: () => Date;
   readonly onEnvelope?: (envelope: ProtocolEnvelope) => void;
   readonly onClose?: () => void;
+  /**
+   * Waits before re-sending an invocation the runtime never answered (network
+   * failure) or turned away as temporarily unavailable. Defaults to
+   * DEFAULT_RETRY_DELAYS_MS; pass [] to disable.
+   */
+  readonly retryDelaysMs?: readonly number[];
+  readonly sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+}
+
+/**
+ * A tab that was hidden drops its runtime socket every few minutes and
+ * reconnects in about four seconds; a message sent inside that window used
+ * to fail at once with "Couldn't send". The upstream composer gives a send
+ * ten seconds before it gives up, so the retries (9.5 s in total) fit inside
+ * it and outlast a reconnect.
+ */
+export const DEFAULT_RETRY_DELAYS_MS: readonly number[] = [
+  500, 1_000, 2_000, 3_000, 3_000,
+];
+
+/**
+ * Statuses where the request did not reach KiroCrew: lease contention (409),
+ * throttling (429), and the AgentCore front end's gateway errors. A plain
+ * 500 can come from our own adapter after it acted, so it is not retried.
+ */
+const RETRYABLE_STATUSES: ReadonlySet<number> = new Set([
+  409, 429, 502, 503, 504,
+]);
+
+function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted === true) {
+      reject(signal.reason as Error);
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(signal?.reason as Error);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 export class AgentCoreConnectionError extends Error {
@@ -392,6 +437,8 @@ export class AgentCoreBrowserChannel implements AgentCoreChannel {
   readonly #now: () => Date;
   readonly #onEnvelope: (envelope: ProtocolEnvelope) => void;
   readonly #onClose: () => void;
+  readonly #retryDelaysMs: readonly number[];
+  readonly #sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
 
   public constructor(
     descriptor: RuntimeConnectionDescriptor,
@@ -425,6 +472,8 @@ export class AgentCoreBrowserChannel implements AgentCoreChannel {
     this.#now = options.now ?? ((): Date => new Date());
     this.#onEnvelope = options.onEnvelope ?? ((): void => undefined);
     this.#onClose = options.onClose ?? ((): void => undefined);
+    this.#retryDelaysMs = options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
+    this.#sleep = options.sleep ?? defaultSleep;
   }
 
   public async *invoke(
@@ -453,15 +502,27 @@ export class AgentCoreBrowserChannel implements AgentCoreChannel {
     if (signal !== undefined) {
       requestInit.signal = signal;
     }
-    let response: Response;
-    try {
-      response = await this.#fetch(endpoint, requestInit);
-    } catch {
-      throw new AgentCoreConnectionError(
-        "TRANSPORT_FAILED",
-        "The runtime could not be reached.",
-        true,
-      );
+    let response: Response | undefined;
+    for (let attempt = 0; ; attempt += 1) {
+      const delay = this.#retryDelaysMs[attempt];
+      try {
+        response = await this.#fetch(endpoint, requestInit);
+      } catch {
+        if (signal?.aborted === true || delay === undefined) {
+          throw new AgentCoreConnectionError(
+            "TRANSPORT_FAILED",
+            "The runtime could not be reached.",
+            true,
+          );
+        }
+        await this.#sleep(delay, signal);
+        continue;
+      }
+      if (!RETRYABLE_STATUSES.has(response.status) || delay === undefined) {
+        break;
+      }
+      await response.body?.cancel().catch(() => undefined);
+      await this.#sleep(delay, signal);
     }
     if (response.status === 401 || response.status === 403) {
       throw new AgentCoreConnectionError(

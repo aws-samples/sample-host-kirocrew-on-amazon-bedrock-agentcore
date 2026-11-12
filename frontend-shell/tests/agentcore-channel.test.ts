@@ -514,3 +514,145 @@ describe("AgentCore browser channel", () => {
     ).rejects.toThrow(AgentCoreConnectionError);
   });
 });
+
+describe("invoke retries across a reconnect window", () => {
+  const ACCEPTED_AND_DONE = [
+    {
+      version: PROTOCOL_VERSION,
+      messageId: "01J00000000000000000000010",
+      requestId: INVOCATION.requestId,
+      operation: "request.accepted",
+      sequence: 0,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      correlationId: "01J00000000000000000000011",
+      payload: { status: 200 },
+    },
+    {
+      version: PROTOCOL_VERSION,
+      messageId: "01J00000000000000000000012",
+      requestId: INVOCATION.requestId,
+      operation: "request.completed",
+      sequence: 1,
+      timestamp: "2026-01-01T00:00:01.000Z",
+      correlationId: "01J00000000000000000000011",
+      payload: { status: 200 },
+    },
+  ];
+
+  function channelWith(
+    responses: Array<() => Promise<Response>>,
+    delays: readonly number[] = [5, 5, 5],
+  ): {
+    channel: AgentCoreBrowserChannel;
+    calls: () => number;
+    slept: number[];
+  } {
+    let calls = 0;
+    const slept: number[] = [];
+    const channel = new AgentCoreBrowserChannel(DESCRIPTOR, {
+      region: REGION,
+      accessToken: (): Promise<string> => Promise.resolve(TOKEN),
+      fetch: ((): Promise<Response> => {
+        const next = responses[Math.min(calls, responses.length - 1)];
+        calls += 1;
+        return (next as () => Promise<Response>)();
+      }) as typeof fetch,
+      retryDelaysMs: delays,
+      sleep: (ms: number): Promise<void> => {
+        slept.push(ms);
+        return Promise.resolve();
+      },
+    });
+    return { channel, calls: (): number => calls, slept };
+  }
+
+  async function drain(channel: AgentCoreBrowserChannel): Promise<string[]> {
+    const seen: string[] = [];
+    for await (const event of channel.invoke(INVOCATION)) {
+      seen.push(event.operation);
+    }
+    return seen;
+  }
+
+  it("re-sends after a network failure and succeeds once reconnected", async () => {
+    const { channel, calls, slept } = channelWith([
+      (): Promise<Response> => Promise.reject(new TypeError("Failed to fetch")),
+      (): Promise<Response> => Promise.reject(new TypeError("Failed to fetch")),
+      (): Promise<Response> =>
+        Promise.resolve(streamResponse(ACCEPTED_AND_DONE)),
+    ]);
+
+    await expect(drain(channel)).resolves.toEqual([
+      "request.accepted",
+      "request.completed",
+    ]);
+    expect(calls()).toBe(3);
+    expect(slept).toEqual([5, 5]);
+  });
+
+  it("re-sends a 503 from the front end and gives up when the delays run out", async () => {
+    const { channel, calls } = channelWith(
+      [
+        (): Promise<Response> =>
+          Promise.resolve(new Response("busy", { status: 503 })),
+      ],
+      [5, 5],
+    );
+
+    await expect(drain(channel)).rejects.toMatchObject({
+      code: "TRANSPORT_FAILED",
+      retryable: true,
+    });
+    expect(calls()).toBe(3);
+  });
+
+  it("does not re-send a plain 500 or an auth failure", async () => {
+    for (const status of [500, 401]) {
+      const { channel, calls } = channelWith([
+        (): Promise<Response> =>
+          Promise.resolve(new Response("no", { status })),
+      ]);
+      await expect(drain(channel)).rejects.toBeInstanceOf(
+        AgentCoreConnectionError,
+      );
+      expect(calls()).toBe(1);
+    }
+  });
+
+  it("stops retrying when the caller aborts", async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    const channel = new AgentCoreBrowserChannel(DESCRIPTOR, {
+      region: REGION,
+      accessToken: (): Promise<string> => Promise.resolve(TOKEN),
+      fetch: ((): Promise<Response> => {
+        calls += 1;
+        controller.abort();
+        return Promise.reject(new TypeError("Failed to fetch"));
+      }) as typeof fetch,
+      retryDelaysMs: [5, 5],
+      sleep: (): Promise<void> => Promise.resolve(),
+    });
+
+    await expect(
+      (async (): Promise<void> => {
+        for await (const event of channel.invoke(
+          INVOCATION,
+          controller.signal,
+        )) {
+          void event;
+        }
+      })(),
+    ).rejects.toBeInstanceOf(AgentCoreConnectionError);
+    expect(calls).toBe(1);
+  });
+
+  it("keeps the default retries inside the composer's ten-second send budget", async () => {
+    const { DEFAULT_RETRY_DELAYS_MS } = await import(
+      "../src/agentcore-channel.js"
+    );
+    const total = DEFAULT_RETRY_DELAYS_MS.reduce((sum, ms) => sum + ms, 0);
+    expect(total).toBeGreaterThan(4_000);
+    expect(total).toBeLessThan(10_000);
+  });
+});

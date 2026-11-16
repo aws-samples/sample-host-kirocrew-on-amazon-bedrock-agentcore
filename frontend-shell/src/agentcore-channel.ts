@@ -66,12 +66,15 @@ export interface AgentCoreBrowserChannelOptions {
 /**
  * A tab that was hidden drops its runtime socket every few minutes and
  * reconnects in about four seconds; a message sent inside that window used
- * to fail at once with "Couldn't send". The upstream composer gives a send
- * ten seconds before it gives up, so the retries (9.5 s in total) fit inside
- * it and outlast a reconnect.
+ * to fail at once with "Couldn't send". The upstream composer aborts a send
+ * after ten seconds. Retries are spaced one second apart (8.5 s in total) so
+ * the first attempt after the network returns starts within a second and has
+ * time to finish before that deadline. A growing backoff (0.5/1/2/3/3 s) put
+ * the last attempt at 9.5 s, which the deadline cut off: an 8 s outage still
+ * failed in a real-browser test.
  */
 export const DEFAULT_RETRY_DELAYS_MS: readonly number[] = [
-  500, 1_000, 2_000, 3_000, 3_000,
+  500, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
 ];
 
 /**

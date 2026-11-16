@@ -62,6 +62,7 @@ from kirocrew_agentcore_persistence.restore import (
 
 from kirocrew_agentcore_runtime.cloudwatch_logs import CloudWatchLogHandler
 from kirocrew_agentcore_runtime.image_runtime import ImageMetadata
+from kirocrew_agentcore_runtime.loop_health import LoopStallWatchdog, offload_stream_handlers
 from kirocrew_agentcore_runtime.supervisor import (
     GatewayError,
     GatewayExitedError,
@@ -1472,6 +1473,21 @@ def _attach_cloudwatch_logging(environment: Mapping[str, str]) -> None:
         _LOGGER.warning("CloudWatch log shipping unavailable.", exc_info=True)
 
 
+async def _with_loop_watchdog(
+    application: Awaitable[web.Application],
+) -> web.Application:
+    """Watch the serving loop for stalls from the moment it starts."""
+    watchdog = LoopStallWatchdog(asyncio.get_running_loop())
+    watchdog.start()
+    built = await application
+
+    async def stop_watchdog(_application: web.Application) -> None:
+        watchdog.stop()
+
+    built.on_cleanup.append(stop_watchdog)
+    return built
+
+
 def serve_runtime(environment: Mapping[str, str] = os.environ) -> None:
     # Python logging drops INFO records without a configured handler; the
     # runtime's own log lines must reach stdout to appear in the AgentCore
@@ -1481,10 +1497,12 @@ def serve_runtime(environment: Mapping[str, str] = os.environ) -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         force=True,
     )
+    # A stalled stdout pipe must block a background thread, never the loop.
+    offload_stream_handlers()
     _attach_cloudwatch_logging(environment)
     _report_workspace_disk(Path(environment.get("WORKSPACE_ROOT", "/mnt/workspace")))
     web.run_app(
-        build_runtime_application(environment),
+        _with_loop_watchdog(build_runtime_application(environment)),
         host="0.0.0.0",  # noqa: S104  # nosec B104 - AgentCore ingress port.
         port=8080,
     )

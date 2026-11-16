@@ -17,6 +17,8 @@ from typing import Any
 
 _BATCH_LIMIT = 100
 _FLUSH_SECONDS = 5.0
+# Records held while shipping is failing or slow; older ones are dropped.
+_BUFFER_LIMIT = 10_000
 # PutLogEvents caps a single event at 256 KiB; stay far below it.
 _MESSAGE_LIMIT = 8_000
 
@@ -38,6 +40,7 @@ class CloudWatchLogHandler(logging.Handler):
         self._lock = threading.Lock()
         self._stream_ready = False
         self._stop = threading.Event()
+        self._wake = threading.Event()
         self._thread = threading.Thread(target=self._pump, name="cw-log-shipper", daemon=True)
         self._thread.start()
         atexit.register(self.flush)
@@ -54,9 +57,15 @@ class CloudWatchLogHandler(logging.Handler):
         event = {"timestamp": int(record.created * 1000), "message": message}
         with self._lock:
             self._buffer.append(event)
+            if len(self._buffer) > _BUFFER_LIMIT:
+                # Shipping is stuck: keep the newest records, bounded.
+                del self._buffer[: len(self._buffer) - _BUFFER_LIMIT]
             full = len(self._buffer) >= _BATCH_LIMIT
         if full:
-            self.flush()
+            # Never ship from the caller's thread: emit runs on the event
+            # loop, and a PutLogEvents call that hangs on a dead connection
+            # would freeze every request until the SDK times out.
+            self._wake.set()
 
     def flush(self) -> None:
         with self._lock:
@@ -86,9 +95,18 @@ class CloudWatchLogHandler(logging.Handler):
 
     def close(self) -> None:
         self._stop.set()
+        self._wake.set()
         self.flush()
         super().close()
 
     def _pump(self) -> None:
-        while not self._stop.wait(_FLUSH_SECONDS):
+        while True:
+            self._wake.wait(_FLUSH_SECONDS)
+            self._wake.clear()
+            if self._stop.is_set():
+                return
             self.flush()
+            with self._lock:
+                backlog = len(self._buffer) >= _BATCH_LIMIT
+            if backlog:
+                self._wake.set()

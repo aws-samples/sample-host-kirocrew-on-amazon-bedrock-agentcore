@@ -1325,9 +1325,46 @@ def test_build_runtime_application_cleanup_and_serve(monkeypatch: pytest.MonkeyP
         if asyncio.iscoroutine(application):
             application.close()
 
+    offloaded: list[bool] = []
     monkeypatch.setattr(vars(module)["web"], "run_app", run_app)
+    monkeypatch.setattr(module, "offload_stream_handlers", lambda: offloaded.append(True))
+    monkeypatch.setattr(module, "_with_loop_watchdog", lambda application: application)
     module.serve_runtime(environment)
     assert calls[0][1:] == ("0.0.0.0", 8080)  # noqa: S104 - required ingress
+    assert offloaded == [True]
+
+
+def test_the_serving_loop_is_watched_from_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The watchdog starts before the app is built and stops on cleanup."""
+    import kirocrew_agentcore_runtime.aws_runtime as module
+    from aiohttp import web
+
+    events: list[str] = []
+
+    class FakeWatchdog:
+        def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+            assert loop is asyncio.get_running_loop()
+
+        def start(self) -> None:
+            events.append("start")
+
+        def stop(self) -> None:
+            events.append("stop")
+
+    async def build() -> web.Application:
+        events.append("build")
+        return web.Application()
+
+    monkeypatch.setattr(module, "LoopStallWatchdog", FakeWatchdog)
+
+    async def scenario() -> None:
+        application = await module._with_loop_watchdog(build())
+        assert events == ["start", "build"]
+        for cleanup in application.on_cleanup:
+            await cleanup(application)
+
+    asyncio.run(scenario())
+    assert events == ["start", "build", "stop"]
 
 
 def test_initializer_rejects_successful_restore_without_ready_gateway() -> None:

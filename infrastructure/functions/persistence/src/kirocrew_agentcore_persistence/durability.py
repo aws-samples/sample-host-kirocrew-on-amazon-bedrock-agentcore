@@ -424,12 +424,17 @@ class BrokeredCheckpointStore:
         then answered 412 on every later attempt and the sandbox could never
         checkpoint again. Skipping the orphan leaves a gap, which restore never
         sees: it walks commits, not manifests.
+
+        Only key names are read. Fetching and validating every commit record
+        cost two broker round trips per generation, which reached ~48 s at a
+        few hundred generations and ran on every checkpoint.
         """
-        highest = self.latest_committed() or 0
-        for key in self._broker.internal_keys(self._sandbox_id, "manifests"):
-            name = key.rsplit("/", 1)[-1].removesuffix(".json.enc")
-            if name.isdigit():
-                highest = max(highest, int(name))
+        highest = 0
+        for prefix, suffix in (("commits", ".json"), ("manifests", ".json.enc")):
+            for key in self._broker.internal_keys(self._sandbox_id, prefix):
+                name = key.rsplit("/", 1)[-1].removesuffix(suffix)
+                if name.isdigit():
+                    highest = max(highest, int(name))
         return highest + 1
 
     def committed_generations(self) -> tuple[CommittedGeneration, ...]:

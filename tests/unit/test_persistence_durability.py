@@ -211,6 +211,22 @@ def test_next_generation_skips_a_manifest_orphaned_by_an_interrupted_checkpoint(
     assert store.next_generation() == 4
 
 
+def test_next_generation_reads_key_names_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fetching every commit record took ~48 s at a few hundred generations."""
+    _, objects, broker, store = components()
+    commit(store, broker, 1, manifest(1), {})
+    commit(store, broker, 2, manifest(2), {})
+    # A commit whose manifest is gone still holds its number.
+    del objects.objects[f"snapshots/{SANDBOX_ID}/manifests/2.json.enc"]
+    objects.objects[f"snapshots/{SANDBOX_ID}/commits/stray.json"] = b"x"
+
+    def no_fetch(*args: object, **kwargs: object) -> object:
+        raise AssertionError("next_generation must not fetch commit bodies")
+
+    monkeypatch.setattr(broker, "presign_commit", no_fetch)
+    assert store.next_generation() == 3
+
+
 def test_brokered_store_rejects_malformed_commit_and_manifest_objects() -> None:
     _, objects, broker, store = components()
     commit_key = f"snapshots/{SANDBOX_ID}/commits/1.json"

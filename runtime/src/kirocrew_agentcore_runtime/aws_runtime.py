@@ -587,7 +587,9 @@ class ProductionRuntimeBackend:
         async with self._checkpoint_lock:
             engine, store, broker_client = self._checkpoint_context()
             await self._publish_next_due(broker_client)
-            generation = store.next_generation()
+            # Broker round trips: never on the event loop, which must keep
+            # answering /ping and the browser while a checkpoint runs.
+            generation = await asyncio.to_thread(store.next_generation)
             receipt = await asyncio.to_thread(engine.checkpoint, generation, final=final)
             checkpoint_receipt = await asyncio.to_thread(
                 broker_client.checkpoint_receipt,

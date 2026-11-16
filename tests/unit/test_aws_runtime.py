@@ -225,10 +225,12 @@ class FakeSupervisor:
     def __init__(self) -> None:
         self.ready = True
         self.terminated = 0
+        self.terminate_threads: list[int] = []
 
     def terminate(self, *, grace_seconds: float = 10.0) -> None:
         del grace_seconds
         self.terminated += 1
+        self.terminate_threads.append(threading.get_ident())
         self.ready = False
 
 
@@ -1800,6 +1802,8 @@ def test_lifetime_lease_heartbeat_stops_when_superseded(
         owner = initializer._init_owner
         assert beats == [("session-1", owner, 1_700_000_000)] * 3
         assert initializer.supervisor.terminated
+        # The gateway's 10 s grace period must not freeze the event loop.
+        assert threading.get_ident() not in initializer.supervisor.terminate_threads
 
     asyncio.run(scenario())
     assert kills == [(module_os.getpid(), signal.SIGTERM)]

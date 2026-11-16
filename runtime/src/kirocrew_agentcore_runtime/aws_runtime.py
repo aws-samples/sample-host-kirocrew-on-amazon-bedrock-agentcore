@@ -1033,7 +1033,7 @@ class AwsSessionInitializer:
                     error.add_note(
                         f"Sandbox ERROR lifecycle update failed: {type(state_error).__name__}"
                     )
-                self._supervisor.terminate()
+                await asyncio.to_thread(self._supervisor.terminate)
                 if isinstance(error, SessionInitializationError):
                     raise
                 raise SessionInitializationError(
@@ -1076,7 +1076,7 @@ class AwsSessionInitializer:
             metadata.runtime_session_id,
         )
         await self._backend.checkpoint_on_shutdown()
-        self._supervisor.terminate()
+        await asyncio.to_thread(self._supervisor.terminate)
         os.kill(os.getpid(), signal.SIGTERM)
 
     async def _lease_heartbeat(self, sandbox_id: str, runtime_session_id: str) -> None:
@@ -1106,7 +1106,7 @@ class AwsSessionInitializer:
                     "Lease superseded by another start or instance; exiting so the "
                     "platform routes this session to the current holder."
                 )
-                self._supervisor.terminate()
+                await asyncio.to_thread(self._supervisor.terminate)
                 os.kill(os.getpid(), signal.SIGTERM)
                 return
             except Exception:
@@ -1394,7 +1394,8 @@ async def build_runtime_application(
 
     async def cleanup(_application: web.Application) -> None:
         await loopback_session.close()
-        supervisor.terminate()
+        # Up to a 10 s grace period: never on the event loop.
+        await asyncio.to_thread(supervisor.terminate)
 
     # Interval-bounded durability (0 disables): a session reclaimed without a
     # graceful stop loses at most this many seconds of workspace mutations.

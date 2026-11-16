@@ -459,6 +459,9 @@ class ProductionRuntimeBackend:
         self._gateway_retry_at: float | None = None
         self._gateway_restarts = 0
         self._gateway_task: asyncio.Task[bool] | None = None
+        # Set once this process has lost the sandbox and is exiting; the
+        # gateway it just stopped must stay stopped.
+        self._retiring = False
         self._checkpoint_engine: CheckpointEngine | None = None
         self._store: BrokeredCheckpointStore | None = None
         self._broker_client: LambdaBrokerClient | None = None
@@ -677,6 +680,16 @@ class ProductionRuntimeBackend:
         """How many times this process has restarted the upstream gateway."""
         return self._gateway_restarts
 
+    def retire(self) -> None:
+        """Never restart the gateway again: this process is exiting.
+
+        Without this the /ping probe saw the gateway it had just stopped as
+        dead and started it again, so a container that had lost its lease
+        kept a live KiroCrew running and attempted (refused) checkpoints
+        every few minutes until the platform reclaimed it.
+        """
+        self._retiring = True
+
     async def ensure_gateway(self) -> bool:
         """Restart a dead upstream gateway; ``True`` when it is serving.
 
@@ -685,6 +698,8 @@ class ProductionRuntimeBackend:
         elapses, and it flips ``loopback_ready`` off so the transport
         answers a typed 503 instead of tunnelling into a corpse.
         """
+        if self._retiring:
+            return False
         gateway = self._gateway
         if gateway is None or self._checkpoint_engine is None or _gateway_ready(gateway):
             # Until the session is initialized the initializer owns the gateway:
@@ -716,6 +731,8 @@ class ProductionRuntimeBackend:
 
     def _schedule_gateway_restart(self) -> None:
         """Kick off a restart without blocking the caller (the /ping path)."""
+        if self._retiring:
+            return
         gateway = self._gateway
         if gateway is None or self._checkpoint_engine is None or _gateway_ready(gateway):
             return
@@ -1076,6 +1093,7 @@ class AwsSessionInitializer:
             metadata.runtime_session_id,
         )
         await self._backend.checkpoint_on_shutdown()
+        self._backend.retire()
         await asyncio.to_thread(self._supervisor.terminate)
         os.kill(os.getpid(), signal.SIGTERM)
 
@@ -1106,6 +1124,7 @@ class AwsSessionInitializer:
                     "Lease superseded by another start or instance; exiting so the "
                     "platform routes this session to the current holder."
                 )
+                self._backend.retire()
                 await asyncio.to_thread(self._supervisor.terminate)
                 os.kill(os.getpid(), signal.SIGTERM)
                 return

@@ -237,6 +237,7 @@ class FakeSupervisor:
 class FakeProductionBackend:
     def __init__(self) -> None:
         self.configurations: list[tuple[object, object, object]] = []
+        self.retired = False
 
     def configure(
         self,
@@ -245,6 +246,9 @@ class FakeProductionBackend:
         broker_client: object,
     ) -> None:
         self.configurations.append((engine, store, broker_client))
+
+    def retire(self) -> None:
+        self.retired = True
 
 
 class StubAwsSessionInitializer(AwsSessionInitializer):
@@ -1804,6 +1808,8 @@ def test_lifetime_lease_heartbeat_stops_when_superseded(
         assert initializer.supervisor.terminated
         # The gateway's 10 s grace period must not freeze the event loop.
         assert threading.get_ident() not in initializer.supervisor.terminate_threads
+        # The /ping probe must not bring back the gateway it just stopped.
+        assert initializer.backend.retired
 
     asyncio.run(scenario())
     assert kills == [(module_os.getpid(), signal.SIGTERM)]
@@ -1943,6 +1949,22 @@ async def drain(backend: ProductionRuntimeBackend, operation: str = "kirocrew.ht
         event_operation
         async for event_operation, _payload in backend.execute(operation, "req", {"path": "/x"})
     ]
+
+
+def test_a_retired_backend_never_restarts_the_gateway() -> None:
+    """A container that lost its lease keeps answering /ping until it exits."""
+
+    async def scenario() -> None:
+        gateway = FakeGateway(ready=False)
+        backend, _ = gateway_backend(gateway)
+        backend.retire()
+        backend._schedule_gateway_restart()
+        assert backend._gateway_task is None
+        assert await backend.ensure_gateway() is False
+        assert gateway.starts == []
+        assert backend.gateway_restarts == 0
+
+    asyncio.run(scenario())
 
 
 def test_backend_restarts_a_dead_gateway_before_tunnelling(
@@ -2110,6 +2132,7 @@ def test_superseded_container_exits_so_the_platform_reschedules(
         await initializer._exit_if_superseded(("subject", "sandbox", "new-session"))
         assert shutdowns == [1]
         assert initializer.supervisor.terminated == 1
+        assert initializer.backend.retired
         assert kills == [(module_os.getpid(), signal.SIGTERM)]
 
     asyncio.run(scenario())

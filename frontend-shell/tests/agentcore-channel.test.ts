@@ -653,6 +653,9 @@ describe("invoke retries across a reconnect window", () => {
     );
     const total = DEFAULT_RETRY_DELAYS_MS.reduce((sum, ms) => sum + ms, 0);
     expect(total).toBeGreaterThan(4_000);
-    expect(total).toBeLessThan(10_000);
+    // The last attempt needs time to complete before the 10 s abort.
+    expect(total).toBeLessThanOrEqual(8_500);
+    // No gap longer than a second: a returning network is used at once.
+    expect(Math.max(...DEFAULT_RETRY_DELAYS_MS)).toBeLessThanOrEqual(1_000);
   });
 });

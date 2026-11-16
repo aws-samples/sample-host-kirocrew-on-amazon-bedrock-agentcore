@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
+from collections.abc import Callable
 from typing import Any
 
 import kirocrew_agentcore_runtime.cloudwatch_logs as module
@@ -112,17 +114,63 @@ def test_formatting_failures_never_reach_the_buffer() -> None:
     handler.close()
 
 
-def test_a_full_buffer_triggers_an_immediate_flush(
+def wait_for(condition: Callable[[], bool]) -> None:
+    deadline = time.time() + 2
+    while not condition() and time.time() < deadline:
+        time.sleep(0.01)
+    assert condition()
+
+
+def test_a_full_buffer_wakes_the_pump_without_shipping_inline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """emit runs on the event loop, so it must never call the AWS API."""
+    monkeypatch.setattr(module, "_BATCH_LIMIT", 2)
+    client = FakeLogsClient()
+    shipping_threads: list[str] = []
+    original = client.put_log_events
+
+    def recording_put(**kwargs: Any) -> None:
+        shipping_threads.append(threading.current_thread().name)
+        original(**kwargs)
+
+    client.put_log_events = recording_put  # type: ignore[assignment]
+    handler = CloudWatchLogHandler(client, "group", stream="s")
+    handler.emit(make_record("one"))
+    handler.emit(make_record("two"))
+    wait_for(lambda: bool(client.batches))
+    assert [e["message"] for e in client.batches[0]] == ["one", "two"]
+    assert shipping_threads == ["cw-log-shipper"]
+    handler.close()
+
+
+def test_a_backlog_is_drained_in_back_to_back_batches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(module, "_BATCH_LIMIT", 2)
     client = FakeLogsClient()
     handler = CloudWatchLogHandler(client, "group", stream="s")
-    handler.emit(make_record("one"))
-    assert client.batches == []
-    handler.emit(make_record("two"))
-    assert [e["message"] for e in client.batches[0]] == ["one", "two"]
+    with handler._lock:
+        handler._buffer.extend({"timestamp": index, "message": str(index)} for index in range(5))
+    handler._wake.set()
+    wait_for(lambda: sum(len(batch) for batch in client.batches) >= 4)
     handler.close()
+    assert sum(len(batch) for batch in client.batches) == 5
+
+
+def test_a_stuck_shipper_keeps_only_the_newest_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(module, "_BUFFER_LIMIT", 3)
+    monkeypatch.setattr(module, "_FLUSH_SECONDS", 60.0)
+    client = FakeLogsClient()
+    handler = CloudWatchLogHandler(client, "group", stream="s")
+    for index in range(5):
+        handler.emit(make_record(str(index)))
+    assert [e["message"] for e in handler._buffer] == ["2", "3", "4"]
+    handler.close()
+    assert [e["message"] for e in client.batches[0]] == ["2", "3", "4"]
+    assert not handler._thread.is_alive() or handler._stop.is_set()
 
 
 def test_long_messages_are_truncated() -> None:

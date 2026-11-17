@@ -12,6 +12,7 @@ from urllib.parse import unquote, urlsplit
 
 from aiohttp import (
     ClientConnectionError,
+    ClientPayloadError,
     ClientResponse,
     ClientSession,
     ClientTimeout,
@@ -312,7 +313,15 @@ class LoopbackKiroCrewBackend:
             else:
                 async for event in self._http(request_id, request, headers):
                     yield event
-        except (TimeoutError, ClientConnectionError, WSServerHandshakeError) as error:
+        # ClientPayloadError: the gateway died mid-body (a container retiring
+        # after its lease was superseded kills it under an in-flight stream).
+        # It is the same transient outage, not an unhandled 500.
+        except (
+            TimeoutError,
+            ClientConnectionError,
+            ClientPayloadError,
+            WSServerHandshakeError,
+        ) as error:
             raise TransientBackendError("Loopback KiroCrew is temporarily unavailable.") from error
         finally:
             self._cancellations.pop(request_id, None)

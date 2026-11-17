@@ -866,6 +866,35 @@ class ProductionRuntimeBackend:
             if await self._durability_checkpoint("periodic-interval"):
                 last_committed = current
 
+    async def run_lifetime_checkpoint(
+        self,
+        max_lifetime_seconds: float,
+        margin_seconds: float,
+        *,
+        elapsed: Callable[[], float],
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> bool:
+        """Commit one checkpoint shortly before the platform's max lifetime.
+
+        AgentCore ends a microVM at its max lifetime (8 h by default) and
+        provisions a new one for the session. The SIGTERM it sends leaves only
+        a ~15 s window, too short for a large workspace, so whatever changed
+        since the last periodic checkpoint could be lost. This commits a
+        checkpoint *margin_seconds* before the deadline, busy or not: the new
+        microVM then restores everything up to that moment.
+        """
+        if max_lifetime_seconds <= 0 or not 0 < margin_seconds < max_lifetime_seconds:
+            return False
+        await sleep(max(0.0, max_lifetime_seconds - margin_seconds - elapsed()))
+        if self._checkpoint_engine is None or self._readiness.read_only or self._retiring:
+            return False
+        _LOGGER.warning(
+            "Max lifetime reached in about %d s; committing a checkpoint so the "
+            "next microVM restores this state.",
+            max(0, int(max_lifetime_seconds - elapsed())),
+        )
+        return await self._durability_checkpoint("before-max-lifetime")
+
     async def checkpoint_on_shutdown(self, *, timeout_seconds: float = 15.0) -> None:
         """Best-effort final checkpoint when the runtime is being reclaimed.
 
@@ -1422,9 +1451,23 @@ async def build_runtime_application(
     # Interval-bounded durability (0 disables): a session reclaimed without a
     # graceful stop loses at most this many seconds of workspace mutations.
     checkpoint_interval = float(environment.get("KIROCREW_CHECKPOINT_INTERVAL_SECONDS", "300"))
-    periodic_checkpoints: list[asyncio.Task[None]] = []
+    # The runtime's MaxLifetime (Terraform passes it through); 0 disables the
+    # checkpoint taken shortly before it.
+    max_lifetime = float(environment.get("RUNTIME_MAX_LIFETIME_SECONDS", "0"))
+    lifetime_margin = float(environment.get("KIROCREW_LIFETIME_CHECKPOINT_MARGIN_SECONDS", "600"))
+    periodic_checkpoints: list[asyncio.Task[Any]] = []
 
     async def start_periodic_checkpoints(_application: web.Application) -> None:
+        if max_lifetime > 0:
+            periodic_checkpoints.append(
+                asyncio.get_running_loop().create_task(
+                    backend.run_lifetime_checkpoint(
+                        max_lifetime,
+                        lifetime_margin,
+                        elapsed=lambda: time.monotonic() - _PROCESS_STARTED,
+                    )
+                )
+            )
         if checkpoint_interval > 0:
             periodic_checkpoints.append(
                 asyncio.get_running_loop().create_task(

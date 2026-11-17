@@ -95,10 +95,12 @@ module "runtime_microvm" {
     TEAM_CONTEXT_REF            = var.team_context_ref
     TEAM_CONTEXT_SUBDIR         = var.team_context_subdir
     AWS_REGION                  = local.region
-    BINDING_AUDIENCE            = local.binding_audience
-    BINDING_KEY_ARN             = module.persistence.binding_key_arn
-    COGNITO_ISSUER              = module.identity.issuer
-    DEPLOYMENT_MODE             = "microvm"
+    # The runtime checkpoints shortly before this deadline (aws_runtime.py).
+    RUNTIME_MAX_LIFETIME_SECONDS = tostring(var.runtime_max_lifetime_seconds)
+    BINDING_AUDIENCE             = local.binding_audience
+    BINDING_KEY_ARN              = module.persistence.binding_key_arn
+    COGNITO_ISSUER               = module.identity.issuer
+    DEPLOYMENT_MODE              = "microvm"
     # The platform's stdout pipeline has proven unreliable; the runtime
     # ships its own log records directly to this dedicated group.
     KIROCREW_LOG_GROUP     = module.runtime_common.runtime_log_group
@@ -145,10 +147,12 @@ module "runtime_microvm_machine" {
     TEAM_CONTEXT_REF            = var.team_context_ref
     TEAM_CONTEXT_SUBDIR         = var.team_context_subdir
     AWS_REGION                  = local.region
-    BINDING_AUDIENCE            = local.binding_audience
-    BINDING_KEY_ARN             = module.persistence.binding_key_arn
-    COGNITO_ISSUER              = module.identity.issuer
-    DEPLOYMENT_MODE             = "microvm"
+    # The runtime checkpoints shortly before this deadline (aws_runtime.py).
+    RUNTIME_MAX_LIFETIME_SECONDS = tostring(var.runtime_max_lifetime_seconds)
+    BINDING_AUDIENCE             = local.binding_audience
+    BINDING_KEY_ARN              = module.persistence.binding_key_arn
+    COGNITO_ISSUER               = module.identity.issuer
+    DEPLOYMENT_MODE              = "microvm"
     # The image is identical on both runtimes, so this variable is the ONLY
     # thing that tells the adapter which front door it is serving. It is what
     # makes a scheduler token acceptable here and refused on the browser

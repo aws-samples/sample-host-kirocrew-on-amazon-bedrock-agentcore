@@ -746,6 +746,60 @@ def test_kiro_identity_mutations_commit_background_durability_checkpoints() -> N
     asyncio.run(scenario())
 
 
+def test_a_checkpoint_lands_before_the_max_lifetime(caplog: pytest.LogCaptureFixture) -> None:
+    """The platform's SIGTERM leaves ~15 s: checkpoint well before it."""
+
+    async def scenario() -> None:
+        readiness = RuntimeReadiness(True, True, False)
+        backend = ProductionRuntimeBackend(cast(Any, FakeLoopbackBackend()), readiness)
+        slept: list[float] = []
+
+        async def sleep(seconds: float) -> None:
+            slept.append(seconds)
+
+        # Disabled, or a margin that does not fit the lifetime: no wait at all.
+        assert await backend.run_lifetime_checkpoint(0, 600, elapsed=lambda: 0.0) is False
+        assert await backend.run_lifetime_checkpoint(500, 600, elapsed=lambda: 0.0) is False
+        assert await backend.run_lifetime_checkpoint(500, 0, elapsed=lambda: 0.0) is False
+        assert slept == []
+        # Not configured yet when the deadline comes: nothing to commit.
+        assert (
+            await backend.run_lifetime_checkpoint(28800, 600, elapsed=lambda: 100.0, sleep=sleep)
+            is False
+        )
+        assert slept == [28100.0]
+        engine = FakeCheckpointEngine()
+        backend.configure(
+            cast(CheckpointEngine, engine),
+            cast(BrokeredCheckpointStore, FakeCheckpointStore()),
+            cast(LambdaBrokerClient, FakeBrokerClient()),
+        )
+        # Started late (already past the point): checkpoint immediately.
+        with caplog.at_level(logging.WARNING):
+            assert (
+                await backend.run_lifetime_checkpoint(
+                    28800, 600, elapsed=lambda: 28500.0, sleep=sleep
+                )
+                is True
+            )
+        assert slept[-1] == 0.0
+        assert "Max lifetime reached in about 300 s" in caplog.text
+        # A read-only or retiring sandbox has nothing it may commit.
+        readiness.read_only = True
+        assert (
+            await backend.run_lifetime_checkpoint(28800, 600, elapsed=lambda: 0.0, sleep=sleep)
+            is False
+        )
+        readiness.read_only = False
+        backend.retire()
+        assert (
+            await backend.run_lifetime_checkpoint(28800, 600, elapsed=lambda: 0.0, sleep=sleep)
+            is False
+        )
+
+    asyncio.run(scenario())
+
+
 def test_periodic_checkpoints_commit_only_when_the_workspace_changed() -> None:
     async def scenario() -> None:
         readiness = RuntimeReadiness(True, True, False)
@@ -1269,6 +1323,8 @@ def test_build_runtime_application_cleanup_and_serve(monkeypatch: pytest.MonkeyP
         "PERSISTENCE_BROKER_ARN": "arn:broker",
         "WORKSPACE_ROOT": str(Path.cwd() / "workspace"),
         "KIROCREW_START_TIMEOUT": "5",
+        # Exercises the before-max-lifetime checkpoint task wiring.
+        "RUNTIME_MAX_LIFETIME_SECONDS": "28800",
     }
 
     async def scenario() -> None:
@@ -1293,9 +1349,14 @@ def test_build_runtime_application_cleanup_and_serve(monkeypatch: pytest.MonkeyP
         assert loopback_sessions[0].closed
         assert supervisor_instances[0].terminated == 1
 
-        # Interval 0 disables the periodic checkpoint loop entirely.
+        # Interval 0 disables the periodic checkpoint loop entirely, and a
+        # lifetime of 0 disables the before-max-lifetime checkpoint.
         disabled = await module.build_runtime_application(
-            {**environment, "KIROCREW_CHECKPOINT_INTERVAL_SECONDS": "0"}
+            {
+                **environment,
+                "KIROCREW_CHECKPOINT_INTERVAL_SECONDS": "0",
+                "RUNTIME_MAX_LIFETIME_SECONDS": "0",
+            }
         )
         for startup in disabled.on_startup:
             await startup(disabled)

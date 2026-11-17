@@ -55,6 +55,7 @@ variable "persisted_paths" {
     "/mnt/workspace/home/.kiro",
     "/mnt/workspace/home/.config",
     "/mnt/workspace/home/.local/share/kiro-cli",
+    "/mnt/workspace/home/workplace",
     "/mnt/workspace/artifacts",
     "/mnt/workspace/knowledge",
     "/mnt/workspace/memory",

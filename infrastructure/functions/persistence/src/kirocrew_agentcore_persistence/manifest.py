@@ -140,6 +140,10 @@ class PersistencePolicy:
         # Kiro CLI keeps its sign-in (the auth_kv table of data.sqlite3) here, not
         # under ~/.kiro; without it every restore comes back signed out.
         PurePosixPath("home/.local/share/kiro-cli"),
+        # KiroCrew's Task Runner writes every run's output under
+        # ~/workplace/kirocrew-workspace; without this root a finished task's
+        # files were gone after Stop safely.
+        PurePosixPath("home/workplace"),
         # The runtime creates these top-level directories next to the projects
         # root; anything a user or feature drops there must survive a restore.
         PurePosixPath("artifacts"),

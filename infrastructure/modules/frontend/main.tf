@@ -52,7 +52,9 @@ locals {
     "object-src 'none'",
     "frame-ancestors 'none'",
     "form-action 'self' ${var.cognito_domain}",
-    "script-src 'self' 'unsafe-inline'",
+    # 'wasm-unsafe-eval' lets the KiroCrew UI compile its syntax-highlighting
+    # WebAssembly; it does not allow eval() or new Function().
+    "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
     "style-src 'self' 'unsafe-inline'",
     # apps.crew.kiro.dev hosts the icons and screenshots of registry apps in
     # the app catalog; without it those cards render with an empty icon.

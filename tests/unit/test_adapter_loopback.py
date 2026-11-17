@@ -8,7 +8,13 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from aiohttp import ClientConnectionError, ClientSession, ClientTimeout, WSMsgType
+from aiohttp import (
+    ClientConnectionError,
+    ClientPayloadError,
+    ClientSession,
+    ClientTimeout,
+    WSMsgType,
+)
 from kirocrew_agentcore_adapter.loopback import (
     KiroCrewRoutePolicy,
     LoopbackKiroCrewBackend,
@@ -520,7 +526,13 @@ def test_503_with_application_code_is_tunnelled_not_escalated() -> None:
 
 
 @pytest.mark.parametrize(
-    "error", [ClientConnectionError("down"), TimeoutError("late"), TimeoutError()]
+    "error",
+    [
+        ClientConnectionError("down"),
+        ClientPayloadError("Response payload is not completed"),
+        TimeoutError("late"),
+        TimeoutError(),
+    ],
 )
 def test_loopback_connection_failures_are_transient(error: BaseException) -> None:
     async def scenario() -> None:

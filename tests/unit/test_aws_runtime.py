@@ -864,7 +864,7 @@ def test_shutdown_checkpoint_is_final_best_effort_and_bounded(
     asyncio.run(scenario())
 
 
-def test_remaining_state_store_and_backend_branches() -> None:
+def test_remaining_state_store_and_backend_branches(caplog: pytest.LogCaptureFixture) -> None:
     lambda_client = FakeBrokerLambda({"applied": True})
     store = BrokeredSandboxStateStore(lambda_client, "arn:broker")
     store.binding_token = "binding"  # noqa: S105 - opaque binding fixture
@@ -1010,9 +1010,15 @@ def test_remaining_state_store_and_backend_branches() -> None:
             cast(BrokeredCheckpointStore, FakeCheckpointStore()),
             cast(LambdaBrokerClient, FakeBrokerClient()),
         )
-        with pytest.raises(Exception, match="final checkpoint"):
+        with (
+            caplog.at_level(logging.ERROR),
+            pytest.raises(Exception, match="final checkpoint"),
+        ):
             _ = [event async for event in failed.execute("sandbox.prepare_stop", "request", {})]
         assert readiness.read_only
+        # The cause must reach the logs: the client only sees CHECKPOINT_FAILED.
+        assert "Final checkpoint for Stop safely failed" in caplog.text
+        assert "checkpoint failed" in caplog.text
 
     asyncio.run(scenario())
 

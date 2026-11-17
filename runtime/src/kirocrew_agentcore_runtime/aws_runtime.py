@@ -557,6 +557,9 @@ class ProductionRuntimeBackend:
         try:
             receipt, checkpoint_receipt = await self._commit_checkpoint(final=True)
         except Exception as error:
+            # The only record of why Stop safely failed: the browser gets a
+            # generic CHECKPOINT_FAILED and the sandbox turns read-only.
+            _LOGGER.error("Final checkpoint for Stop safely failed.", exc_info=True)
             self._readiness.read_only = True
             raise AdapterRequestError(
                 503,

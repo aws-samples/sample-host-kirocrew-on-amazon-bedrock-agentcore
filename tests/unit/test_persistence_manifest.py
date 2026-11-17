@@ -31,6 +31,7 @@ def test_policy_accepts_only_documented_durable_roots() -> None:
         "home/.kiro/crew/config.json",
         "home/.config/tool/settings.json",
         "home/.local/share/kiro-cli/data.sqlite3",
+        "home/workplace/kirocrew-workspace/taskrunner_main/plan_1/task-check.txt",
         "artifacts/report/summary.md",
         "knowledge/base/entry.json",
         "memory/agent/notes.md",

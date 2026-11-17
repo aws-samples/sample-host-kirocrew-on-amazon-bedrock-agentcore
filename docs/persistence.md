@@ -7,6 +7,7 @@
 - `home/.kiro`: Kiro CLI and KiroCrew configuration, agents, memory, knowledge, artifacts, skills, conversations, and scheduled jobs.
 - `home/.config`: user-scoped tool configuration except explicitly excluded credential directories.
 - `home/.local/share/kiro-cli`: the Kiro CLI state database, including the Builder ID / SSO sign-in it stores in `data.sqlite3`. Without this root every restore comes back signed out.
+- `home/workplace`: KiroCrew's Task Runner output (`~/workplace/kirocrew-workspace/...`); without this root a finished task's files were lost on Stop safely.
 - `artifacts`, `knowledge`, `memory`: the top-level directories the runtime creates next to the projects root; anything a user or feature drops there survives a restore.
 - `projects`: complete user project workspaces and repository metadata.
 - `user`: other user-created durable files.

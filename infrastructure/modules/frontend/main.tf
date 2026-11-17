@@ -52,7 +52,10 @@ locals {
     "object-src 'none'",
     "frame-ancestors 'none'",
     "form-action 'self' ${var.cognito_domain}",
-    "script-src 'self' 'unsafe-inline'",
+    # The upstream SPA highlights code with a WebAssembly module. Compiling
+    # WebAssembly needs 'wasm-unsafe-eval'; it does not allow eval() or
+    # new Function() for JavaScript.
+    "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
     "style-src 'self' 'unsafe-inline'",
     # apps.crew.kiro.dev hosts the icons and screenshots of registry apps in
     # the app catalog; without it those cards render with an empty icon.

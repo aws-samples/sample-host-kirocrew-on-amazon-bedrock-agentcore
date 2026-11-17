@@ -429,6 +429,15 @@ def test_frontend_images_allow_only_self_and_the_app_catalog_host() -> None:
     assert directive.group(1).split() == ["'self'", "data:", "blob:", "https://apps.crew.kiro.dev"]
 
 
+def test_frontend_scripts_allow_wasm_compilation_but_not_js_eval() -> None:
+    frontend = (INFRA / "modules/frontend/main.tf").read_text(encoding="utf-8")
+    directive = re.search(r'"script-src ([^"]*)"', frontend)
+    assert directive is not None
+    sources = directive.group(1).split()
+    assert sources == ["'self'", "'unsafe-inline'", "'wasm-unsafe-eval'"]
+    assert "'unsafe-eval'" not in sources
+
+
 def test_frontend_serves_the_upstream_logo_route_from_the_bundled_icon() -> None:
     frontend = (INFRA / "modules/frontend/main.tf").read_text(encoding="utf-8")
     block = re.search(r'resource "aws_s3_object" "logo" \{(.*?)\n\}', frontend, re.S)

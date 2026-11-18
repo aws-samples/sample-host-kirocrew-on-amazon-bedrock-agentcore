@@ -348,8 +348,8 @@ class RestoreEngine:
         decoder: ManifestDecoder | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         replace: Callable[[Path, Path], None] = _replace_path,
-        fetch_workers: int = 16,
-        prefetch_window: int = 256,
+        fetch_workers: int = 32,
+        prefetch_window: int = 512,
         progress: RestoreProgress | None = None,
     ) -> None:
         if not runtime_version:

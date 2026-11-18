@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 import base64
-import io
 import json
-import urllib.error
 from datetime import UTC, datetime
-from email.message import Message
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import pytest
 from kirocrew_agentcore_persistence.durability import (
@@ -218,42 +215,133 @@ def test_presign_variants_and_validation() -> None:
             )
 
 
-def test_https_request_success_head_and_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+class FakeResponse:
+    def __init__(self, status: int, body: bytes, *, will_close: bool = False) -> None:
+        self.status = status
+        self.body = body
+        self.will_close = will_close
+
+    def read(self) -> bytes:
+        return self.body
+
+
+class FakeConnection:
+    """Stands in for http.client.HTTPSConnection, answering from a shared script."""
+
+    made: ClassVar[list[FakeConnection]] = []
+    script: ClassVar[list[object]] = []
+
+    def __init__(self, host: str, port: int | None, *, timeout: int, context: object) -> None:
+        del context
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+        self.sent: list[tuple[str, str, bytes | None, dict[str, str]]] = []
+        self.closed = False
+        FakeConnection.made.append(self)
+
+    def request(
+        self, method: str, target: str, *, body: bytes | None, headers: dict[str, str]
+    ) -> None:
+        self.sent.append((method, target, body, headers))
+        step = FakeConnection.script[0]
+        if isinstance(step, BaseException):
+            FakeConnection.script.pop(0)
+            raise step
+
+    def getresponse(self) -> FakeResponse:
+        return cast(FakeResponse, FakeConnection.script.pop(0))
+
+    def close(self) -> None:
+        self.closed = True
+
+
+@pytest.fixture
+def fake_https(monkeypatch: pytest.MonkeyPatch) -> type[FakeConnection]:
+    import http.client
+    import threading
+
+    import kirocrew_agentcore_persistence.remote as remote
+
+    FakeConnection.made = []
+    FakeConnection.script = []
+    monkeypatch.setattr(http.client, "HTTPSConnection", FakeConnection)
+    monkeypatch.setattr(remote, "_CONNECTIONS", threading.local())
+    return FakeConnection
+
+
+def test_https_request_reuses_one_connection_per_host(fake_https: type[FakeConnection]) -> None:
     broker_client, _ = client()
     broker = LambdaPersistenceBroker(broker_client, SANDBOX)
     expires = datetime(2026, 8, 18, tzinfo=UTC)
-
-    class Response:
-        def __init__(self, body: bytes, status: int = 200) -> None:
-            self.body = body
-            self.status = status
-
-        def __enter__(self) -> Response:
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return self.body
-
-    captured: list[Any] = []
-
-    def open_ok(request: Any, timeout: int) -> Response:
-        captured.append((request, timeout))
-        return Response(b"body")
-
-    monkeypatch.setattr("urllib.request.urlopen", open_ok)
     get = PresignedOperation(
-        "https://bucket.s3.us-east-2.amazonaws.com/object",
+        "https://bucket.s3.us-east-2.amazonaws.com/object?X-Amz-Signature=s",
         StorageOperation.GET,
         expires,
         {"x-header": "value"},
     )
+    head = PresignedOperation(
+        "https://bucket.s3.us-east-2.amazonaws.com", StorageOperation.HEAD, expires, {}
+    )
+    put = PresignedOperation(get.url, StorageOperation.PUT, expires, {})
+    fake_https.script = [
+        FakeResponse(200, b"body"),
+        FakeResponse(200, b""),
+        FakeResponse(404, b""),
+        FakeResponse(204, b""),
+    ]
+
     assert broker.request(get, StorageOperation.GET) == b"body"
-    assert captured[0][0].get_method() == "GET"
-    head = PresignedOperation(get.url, StorageOperation.HEAD, expires, {})
     assert broker.request(head, StorageOperation.HEAD) is True
+    assert broker.request(head, StorageOperation.HEAD) is False
+    assert broker.request(put, StorageOperation.PUT, body=b"data") == b""
+
+    [connection] = fake_https.made
+    assert (connection.host, connection.port, connection.timeout) == (
+        "bucket.s3.us-east-2.amazonaws.com",
+        None,
+        30,
+    )
+    assert connection.sent[0] == (
+        "GET",
+        "/object?X-Amz-Signature=s",
+        None,
+        {"x-header": "value"},
+    )
+    assert connection.sent[1][:2] == ("HEAD", "/")
+    assert connection.sent[3][:3] == ("PUT", "/object?X-Amz-Signature=s", b"data")
+
+
+def test_https_request_retries_once_on_a_dropped_connection(
+    fake_https: type[FakeConnection],
+) -> None:
+    broker_client, _ = client()
+    broker = LambdaPersistenceBroker(broker_client, SANDBOX)
+    expires = datetime(2026, 8, 18, tzinfo=UTC)
+    get = PresignedOperation(
+        "https://bucket.s3.cn-north-1.amazonaws.com.cn:443/key", StorageOperation.GET, expires, {}
+    )
+
+    # An idle connection the server closed fails once; a fresh one succeeds.
+    fake_https.script = [ConnectionResetError(), FakeResponse(200, b"ok", will_close=True)]
+    assert broker.request(get, StorageOperation.GET) == b"ok"
+    assert len(fake_https.made) == 2
+    assert fake_https.made[0].closed and fake_https.made[1].closed
+
+    # Two failures in a row surface as a broker error.
+    fake_https.script = [OSError("down"), OSError("still down")]
+    with pytest.raises(BrokerAuthorizationError, match="operation failed"):
+        broker.request(get, StorageOperation.GET)
+
+
+def test_https_request_rejects_bad_grants_and_statuses(fake_https: type[FakeConnection]) -> None:
+    broker_client, _ = client()
+    broker = LambdaPersistenceBroker(broker_client, SANDBOX)
+    expires = datetime(2026, 8, 18, tzinfo=UTC)
+    get = PresignedOperation(
+        "https://bucket.s3.us-east-2.amazonaws.com/object", StorageOperation.GET, expires, {}
+    )
+    head = PresignedOperation(get.url, StorageOperation.HEAD, expires, {})
 
     with pytest.raises(BrokerAuthorizationError, match="does not match"):
         broker.request(get, StorageOperation.PUT)
@@ -261,30 +349,13 @@ def test_https_request_success_head_and_failures(monkeypatch: pytest.MonkeyPatch
         grant = PresignedOperation(url, StorageOperation.GET, expires, {})
         with pytest.raises(BrokerAuthorizationError, match="not trusted"):
             broker.request(grant, StorageOperation.GET)
-    china = PresignedOperation(
-        "https://bucket.s3.cn-north-1.amazonaws.com.cn/key",
-        StorageOperation.GET,
-        expires,
-        {},
-    )
-    assert broker.request(china, StorageOperation.GET) == b"body"
+    assert fake_https.made == []
 
-    def http_404(_request: Any, timeout: int) -> Response:
-        del timeout
-        raise urllib.error.HTTPError("url", 404, "missing", Message(), io.BytesIO())
-
-    monkeypatch.setattr("urllib.request.urlopen", http_404)
-    assert broker.request(head, StorageOperation.HEAD) is False
+    fake_https.script = [FakeResponse(404, b""), FakeResponse(403, b"")]
     with pytest.raises(BrokerAuthorizationError, match="operation failed"):
         broker.request(get, StorageOperation.GET)
-
-    def url_error(_request: Any, timeout: int) -> Response:
-        del timeout
-        raise urllib.error.URLError("network")
-
-    monkeypatch.setattr("urllib.request.urlopen", url_error)
     with pytest.raises(BrokerAuthorizationError, match="operation failed"):
-        broker.request(get, StorageOperation.GET)
+        broker.request(head, StorageOperation.HEAD)
 
 
 class ScriptedLambda:

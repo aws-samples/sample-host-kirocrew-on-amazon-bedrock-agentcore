@@ -443,6 +443,49 @@ def test_restore_reuses_prefetched_chunks_shared_between_files(tmp_path: Path) -
     assert (target / "user/second.bin").read_text() == "shared-chunk-content"
 
 
+def test_restore_with_a_one_chunk_prefetch_window(tmp_path: Path) -> None:
+    """A window smaller than the workspace still fetches every chunk, shared ones once."""
+    _, _, broker, store = storage()
+    source = tmp_path / "source"
+    (source / "user").mkdir(parents=True)
+    for index in range(5):
+        (source / f"user/file-{index}.bin").write_text(f"content-{index}")
+    (source / "user/copy.bin").write_text("content-2")
+    create_generation(source, 1, broker, store)
+    fetched: list[str] = []
+    original = store.get_chunk
+
+    def recording(digest: str) -> bytes:
+        fetched.append(digest)
+        return original(digest)
+
+    store.get_chunk = recording  # type: ignore[method-assign]
+    target = tmp_path / "target"
+    report = RestoreEngine(
+        target,
+        SANDBOX_ID,
+        "runtime-v2",
+        store,
+        broker.cipher(SANDBOX_ID),
+        fetch_workers=1,
+        prefetch_window=1,
+    ).restore(existing_sandbox=True)
+    assert report.outcome == "restored"
+    for index in range(5):
+        assert (target / f"user/file-{index}.bin").read_text() == f"content-{index}"
+    assert (target / "user/copy.bin").read_text() == "content-2"
+    assert len(fetched) == len(set(fetched))
+    with pytest.raises(ValueError, match="prefetch window"):
+        RestoreEngine(
+            target,
+            SANDBOX_ID,
+            "runtime-v2",
+            store,
+            broker.cipher(SANDBOX_ID),
+            prefetch_window=0,
+        )
+
+
 def test_failed_install_restores_backed_up_state_file(tmp_path: Path) -> None:
     """A workspace with a previous persistence.json gets it back on rollback."""
     _, _, broker, store = storage()

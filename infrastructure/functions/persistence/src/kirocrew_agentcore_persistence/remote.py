@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import base64
+import http.client
 import json
+import ssl
 import threading
-import urllib.error
-import urllib.request
 from collections import deque
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime, timedelta
@@ -24,6 +24,69 @@ _BATCH_GRANTS = 128
 # A cached grant this close to expiry is not handed out: a large PUT or a slow
 # GET could still be in flight when the URL stops being valid.
 _GRANT_MARGIN = timedelta(seconds=60)
+# Object requests time out after this many seconds.
+_OBJECT_TIMEOUT_SECONDS = 30
+_TLS_CONTEXT = ssl.create_default_context()
+# One keep-alive HTTPS connection per thread and host. A restore fetches tens of
+# thousands of small chunks; a fresh TLS handshake for each one dominated the
+# download time.
+_CONNECTIONS = threading.local()
+
+
+def _connection(host: str, port: int | None) -> http.client.HTTPSConnection:
+    pool = cast(
+        "dict[tuple[str, int | None], http.client.HTTPSConnection] | None",
+        getattr(_CONNECTIONS, "pool", None),
+    )
+    if pool is None:
+        pool = {}
+        _CONNECTIONS.pool = pool
+    connection = pool.get((host, port))
+    if connection is None:
+        connection = http.client.HTTPSConnection(
+            host, port, timeout=_OBJECT_TIMEOUT_SECONDS, context=_TLS_CONTEXT
+        )
+        pool[(host, port)] = connection
+    return connection
+
+
+def _discard_connection(host: str, port: int | None) -> None:
+    pool = cast(
+        "dict[tuple[str, int | None], http.client.HTTPSConnection]",
+        _CONNECTIONS.pool,
+    )
+    pool.pop((host, port)).close()
+
+
+def _object_request(
+    host: str,
+    port: int | None,
+    target: str,
+    method: str,
+    body: bytes | None,
+    headers: Mapping[str, str],
+) -> tuple[int, bytes]:
+    """Send one object request over this thread's kept-alive connection.
+
+    A connection the server closed while idle fails on reuse; the request is
+    then sent once more on a fresh connection. Object requests are idempotent
+    (content-addressed chunks and fixed-name manifests), so a retry is safe.
+    """
+    for attempt in range(2):
+        connection = _connection(host, port)
+        try:
+            connection.request(method, target, body=body, headers=dict(headers))
+            response = connection.getresponse()
+            payload = response.read()
+        except (http.client.HTTPException, OSError):
+            _discard_connection(host, port)
+            if attempt == 1:
+                raise
+            continue
+        if response.will_close:
+            _discard_connection(host, port)
+        return response.status, payload
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 def invoke_broker(
@@ -283,25 +346,23 @@ class LambdaPersistenceBroker:
             hostname.endswith(".amazonaws.com") or hostname.endswith(".amazonaws.com.cn")
         ):
             raise BrokerAuthorizationError("Persistence grant URL is not trusted.")
-        request = urllib.request.Request(  # noqa: S310
-            grant.url,
-            data=body,
-            headers=dict(grant.headers),
-            method=operation.value,
-        )
+        target = parsed.path or "/"
+        if parsed.query:
+            target = f"{target}?{parsed.query}"
         try:
-            with urllib.request.urlopen(  # noqa: S310  # nosec B310 - validated HTTPS AWS host.
-                request, timeout=30
-            ) as response:
-                if operation is StorageOperation.HEAD:
-                    return cast(int, response.status) == 200
-                return cast(bytes, response.read())
-        except urllib.error.HTTPError as error:
-            if operation is StorageOperation.HEAD and error.code == 404:
+            status, payload = _object_request(
+                hostname, parsed.port, target, operation.value, body, grant.headers
+            )
+        except (http.client.HTTPException, OSError) as error:
+            raise BrokerAuthorizationError("Persistence object operation failed.") from error
+        if operation is StorageOperation.HEAD:
+            if status == 404:
                 return False
-            raise BrokerAuthorizationError("Persistence object operation failed.") from error
-        except urllib.error.URLError as error:
-            raise BrokerAuthorizationError("Persistence object operation failed.") from error
+            if status == 200:
+                return True
+        elif 200 <= status < 300:
+            return payload
+        raise BrokerAuthorizationError("Persistence object operation failed.")
 
     def chunk_exists(self, sandbox_id: str, digest: str) -> bool:
         self._validate_sandbox(sandbox_id)

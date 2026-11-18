@@ -10,7 +10,7 @@ import threading
 import time
 from collections import Counter
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -349,12 +349,15 @@ class RestoreEngine:
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         replace: Callable[[Path, Path], None] = _replace_path,
         fetch_workers: int = 16,
+        prefetch_window: int = 256,
         progress: RestoreProgress | None = None,
     ) -> None:
         if not runtime_version:
             raise ValueError("Runtime version is required.")
         if fetch_workers < 1:
             raise ValueError("At least one fetch worker is required.")
+        if prefetch_window < 1:
+            raise ValueError("The prefetch window must hold at least one chunk.")
         self._progress = progress or RestoreProgress()
         self._workspace = workspace
         self._sandbox_id = sandbox_id
@@ -365,6 +368,7 @@ class RestoreEngine:
         self._clock = clock
         self._replace = replace
         self._fetch_workers = fetch_workers
+        self._prefetch_window = prefetch_window
 
     def restore(
         self,
@@ -514,7 +518,23 @@ class RestoreEngine:
         if prefetch is not None:
             prefetch(list(remaining), StorageOperation.GET)
         with ThreadPoolExecutor(max_workers=self._fetch_workers) as executor:
-            futures = {digest: executor.submit(self._fetch_chunk, digest) for digest in remaining}
+            # Fetch ahead by a bounded window in the order chunks are written,
+            # so downloads that outrun the writer never hold the whole
+            # workspace in memory.
+            order = list(remaining)
+            submitted = 0
+            futures: dict[str, Future[bytes]] = {}
+
+            def fetch(digest: str) -> bytes:
+                nonlocal submitted
+                while submitted < len(order) and (
+                    len(futures) < self._prefetch_window or digest not in futures
+                ):
+                    upcoming = order[submitted]
+                    submitted += 1
+                    futures[upcoming] = executor.submit(self._fetch_chunk, upcoming)
+                return futures[digest].result()
+
             directories: list[tuple[Path, ManifestEntry]] = []
             try:
                 for entry in manifest.entries:
@@ -537,7 +557,7 @@ class RestoreEngine:
                         size = 0
                         with destination.open("wb") as output:
                             for digest in entry.chunks:
-                                chunk = futures[digest].result()
+                                chunk = fetch(digest)
                                 remaining[digest] -= 1
                                 if remaining[digest] == 0:
                                     # Drop delivered chunks so a large

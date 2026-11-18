@@ -998,6 +998,51 @@ def test_unreadable_or_non_object_overlay_is_left_alone(
     assert "leaving it as is" in caplog.text
 
 
+def test_kiro_cli_mcp_timeouts_are_raised_but_never_lowered(tmp_path: Path) -> None:
+    settings = tmp_path / ".kiro" / "settings" / "cli.json"
+
+    # A fresh home gets both timeouts.
+    KiroCrewSupervisor._pin_kiro_cli_mcp_timeouts(tmp_path)
+    assert json.loads(settings.read_text(encoding="utf-8")) == {
+        "mcp.initTimeout": 60_000,
+        "mcp.noInteractiveTimeout": 60_000,
+    }
+    assert settings.stat().st_mode & 0o777 == 0o600
+
+    # Already pinned: left untouched byte for byte.
+    before = settings.read_bytes()
+    KiroCrewSupervisor._pin_kiro_cli_mcp_timeouts(tmp_path)
+    assert settings.read_bytes() == before
+
+    # A low or non-integer value is raised, a higher one kept, other keys stay.
+    settings.write_text(
+        json.dumps({"mcp.initTimeout": 5000, "mcp.noInteractiveTimeout": 90_000, "chat.x": True}),
+        encoding="utf-8",
+    )
+    KiroCrewSupervisor._pin_kiro_cli_mcp_timeouts(tmp_path)
+    assert json.loads(settings.read_text(encoding="utf-8")) == {
+        "chat.x": True,
+        "mcp.initTimeout": 60_000,
+        "mcp.noInteractiveTimeout": 90_000,
+    }
+    settings.write_text(json.dumps({"mcp.initTimeout": True}), encoding="utf-8")
+    KiroCrewSupervisor._pin_kiro_cli_mcp_timeouts(tmp_path)
+    assert json.loads(settings.read_text(encoding="utf-8"))["mcp.initTimeout"] == 60_000
+
+
+@pytest.mark.parametrize("content", ["{not json", "[1, 2]"])
+def test_unreadable_kiro_cli_settings_are_left_alone(
+    tmp_path: Path, content: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    settings = tmp_path / ".kiro" / "settings" / "cli.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(content, encoding="utf-8")
+    with caplog.at_level(logging.WARNING):
+        KiroCrewSupervisor._pin_kiro_cli_mcp_timeouts(tmp_path)
+    assert settings.read_text(encoding="utf-8") == content
+    assert "leaving them as is" in caplog.text
+
+
 def test_gateway_exit_is_reported_once_with_output_tail_and_restart_is_possible(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

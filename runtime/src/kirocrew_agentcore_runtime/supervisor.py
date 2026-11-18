@@ -53,6 +53,8 @@ _LOCAL_CONFIG_PINS: Final[tuple[tuple[str, str, object], ...]] = (
 )
 _LOCAL_CONFIG_FILENAME: Final = "config.local.json"
 _MCP_STORE_FILENAME: Final = "mcp.json"
+#: Startup budget for MCP servers before a session's first turn (milliseconds).
+_KIRO_CLI_MCP_TIMEOUT_MS: Final = 60_000
 _OUTPUT_TAIL_LINES: Final = 20
 
 
@@ -336,6 +338,7 @@ class KiroCrewSupervisor:
         self._pin_local_config(self._state_home)
         self._pin_agent_registry_mcp(self._state_home)
         self._pin_tool_gateway_mcp(self._state_home)
+        self._pin_kiro_cli_mcp_timeouts(self._layout.home)
         self.sync_team_context()
         self._output_tail.clear()
         self._exit_reported = False
@@ -434,6 +437,45 @@ class KiroCrewSupervisor:
                 tool_token_file(os.environ),
             ],
         )
+
+    @staticmethod
+    def _pin_kiro_cli_mcp_timeouts(home: Path) -> None:
+        """Give MCP servers enough time to start before a session's first turn.
+
+        kiro-cli waits ``mcp.initTimeout`` for every server before the first
+        turn and leaves out any server that is not ready by then. On a 2-vCPU
+        microVM KiroCrew's own Python servers (kirocrew-core, -cron, ...) can
+        miss a short budget, so a fresh chat sometimes has none of their tools.
+        Values already set higher are kept; other settings are left untouched.
+        """
+        path = home / ".kiro" / "settings" / "cli.json"
+        document: dict[str, object] = {}
+        if path.is_file():
+            try:
+                loaded = cast(object, json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                _LOGGER.warning("kiro-cli settings are unreadable; leaving them as is.")
+                return
+            if not isinstance(loaded, dict):
+                _LOGGER.warning("kiro-cli settings are not an object; leaving them as is.")
+                return
+            document = cast(dict[str, object], loaded)
+        changed = False
+        for key in ("mcp.initTimeout", "mcp.noInteractiveTimeout"):
+            current = document.get(key)
+            if (
+                isinstance(current, int)
+                and not isinstance(current, bool)
+                and current >= _KIRO_CLI_MCP_TIMEOUT_MS
+            ):
+                continue
+            document[key] = _KIRO_CLI_MCP_TIMEOUT_MS
+            changed = True
+        if not changed:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        path.chmod(0o600)
 
     @staticmethod
     def _pin_mcp_server(state_home: Path, name: str, args: list[str]) -> None:

@@ -218,6 +218,11 @@ Cognito 注册或登录。登录后点击 **Start**。新沙箱首次启动约�
   断开也会越过该超时继续存活；工作结束时提交一次检查点并恢复正常的空闲回收。卡在忙碌状态的
   任务会在 `KIROCREW_BUSY_MAX_SECONDS`（默认 4 小时）后被切断，避免把 microVM 一直占到
   8 小时的会话上限。
+- **会话寿命。** AgentCore 在 `runtime_max_lifetime_seconds`（默认 8 小时）到期时结束
+  microVM，之后的请求会落到新的 microVM 上。SIGTERM 之后只有约 15 秒，所以 Runtime 会在
+  到期前 `KIROCREW_LIFETIME_CHECKPOINT_MARGIN_SECONDS`（默认 10 分钟）提交一次检查点，
+  无论是否忙碌，新 microVM 从这一版恢复。被这次刷新打断的那一轮对话不会自动重跑：用户查看
+  已有的部分输出后自行继续，避免工具的副作用执行两次。
 - **观测。** Runtime 自己的日志（Adapter、Supervisor、检查点引擎）直接写入 Terraform 创建的
   `/aws/bedrock-agentcore/<prefix>` CloudWatch 日志组；平台托管的 vended 日志组只有访问日志。
   控制面、持久化和认证日志在三个 Lambda 的日志组。CloudWatch 告警可通过 `alarm_actions` 变量

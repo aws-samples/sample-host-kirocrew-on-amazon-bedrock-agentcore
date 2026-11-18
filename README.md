@@ -274,6 +274,13 @@ checkpoint in seconds.
   returns to normal idle reclaim. A task stuck busy is cut off after
   `KIROCREW_BUSY_MAX_SECONDS` (default 4 hours) so it cannot pin the microVM
   until the 8-hour session lifetime.
+- **Session lifetime.** AgentCore ends a microVM at `runtime_max_lifetime_seconds`
+  (default 8 hours) and the next request lands on a new one. The SIGTERM leaves
+  about 15 seconds, so the runtime commits a checkpoint
+  `KIROCREW_LIFETIME_CHECKPOINT_MARGIN_SECONDS` (default 10 minutes) before the
+  deadline, busy or not, and the new microVM restores from it. A chat turn cut
+  off by the refresh is not re-run automatically: the user reviews the partial
+  output and resumes it, so tool side effects are not repeated.
 - **Observe.** The runtime ships its own logs (adapter, supervisor, checkpoint
   engine) to the `/aws/bedrock-agentcore/<prefix>` CloudWatch log group that
   Terraform creates; the platform's vended log group carries only its access log.

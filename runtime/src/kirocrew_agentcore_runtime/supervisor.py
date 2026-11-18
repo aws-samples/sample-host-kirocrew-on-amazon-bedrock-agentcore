@@ -47,9 +47,16 @@ _LOOP_STALL_EXIT_AFTER_SECONDS: Final = 300
 # From KiroCrew 0.11 an install with no engine choice defaults to KAS. This image
 # ships only kiro-cli (spelled "kiro" in config.json), so the choice is pinned.
 _KIRO_CLI_ACP_BACKEND: Final = "kiro"
+# Every open chat keeps its own kiro-cli process plus KiroCrew's MCP servers
+# alive, about 0.7 GB each on this image, until the idle sweep ends it (upstream
+# default 60 min). Ten chats opened within an hour fill the 8 GB microVM, which
+# the platform then kills without a shutdown checkpoint, so idle chats are ended
+# after 15 minutes. Reopening one resumes it from its saved history.
+_IDLE_SESSION_TIMEOUT_SECONDS: Final = 900
 _LOCAL_CONFIG_PINS: Final[tuple[tuple[str, str, object], ...]] = (
     ("dashboard", "loop_stall_exit_after_secs", _LOOP_STALL_EXIT_AFTER_SECONDS),
     ("agent", "acp_backend", _KIRO_CLI_ACP_BACKEND),
+    ("session", "timeout_secs", _IDLE_SESSION_TIMEOUT_SECONDS),
 )
 _LOCAL_CONFIG_FILENAME: Final = "config.local.json"
 _MCP_STORE_FILENAME: Final = "mcp.json"
@@ -527,6 +534,8 @@ class KiroCrewSupervisor:
         * ``agent.acp_backend = "kiro"`` -- the image ships only kiro-cli, the
           panel's Kiro sign-in drives kiro-cli, and engine installs are denied by
           the route policy, so the agent never relies on the KAS default.
+        * ``session.timeout_secs`` -- idle chats end after 15 minutes so their
+          processes do not exhaust the microVM's memory.
 
         Other keys the user placed there are preserved; an unreadable overlay is
         left alone rather than clobbered.

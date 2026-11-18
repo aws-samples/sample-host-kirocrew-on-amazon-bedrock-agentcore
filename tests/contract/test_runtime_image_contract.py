@@ -16,7 +16,7 @@ def test_runtime_image_contract_is_pinned_multiarch_nonroot_and_secret_free() ->
     artifact = json.loads((ROOT / "runtime" / "kiro-cli-artifact.json").read_text())
     ignore = (ROOT / ".dockerignore").read_text().splitlines()
 
-    assert artifact["version"] == "2.18.1"
+    assert artifact["version"] == "2.27.1"
     assert set(artifact["artifacts"]) == {"amd64", "arm64"}
     assert all(len(value["sha256"]) == 64 for value in artifact["artifacts"].values())
     assert (

@@ -19,7 +19,7 @@ def environment() -> dict[str, str]:
     return {
         "KIROCREW_VERSION": "0.2.0",
         "KIROCREW_ARTIFACT_SHA256": DIGEST,
-        "KIRO_CLI_VERSION": "2.18.1",
+        "KIRO_CLI_VERSION": "2.27.1",
         "KIROCREW_AGENTCORE_PROTOCOL": "kirocrew-agentcore.v1",
         "KIROCREW_SOURCE_REVISION": "abc123",
         "KIROCREW_BASE_IMAGE_DIGEST": BASE_DIGEST,
@@ -56,7 +56,7 @@ def test_image_metadata_validation_and_diagnostics(monkeypatch: pytest.MonkeyPat
         "architecture": "test-architecture",
         "baseImageDigest": BASE_DIGEST,
         "dependencyLockSha256": DIGEST,
-        "kiroCliVersion": "2.18.1",
+        "kiroCliVersion": "2.27.1",
         "kiroCrewArtifactSha256": DIGEST,
         "kiroCrewVersion": "0.2.0",
         "protocolVersion": "kirocrew-agentcore.v1",

@@ -15,6 +15,8 @@ import threading
 import uuid
 from typing import Any
 
+from kirocrew_agentcore_runtime.snapshot import RestoreDetector
+
 _BATCH_LIMIT = 100
 _FLUSH_SECONDS = 5.0
 # Records held while shipping is failing or slow; older ones are dropped.
@@ -31,11 +33,22 @@ class CloudWatchLogHandler(logging.Handler):
     dropping records rather than raising into application code.
     """
 
-    def __init__(self, client: Any, group: str, stream: str | None = None) -> None:
+    def __init__(
+        self,
+        client: Any,
+        group: str,
+        stream: str | None = None,
+        restore_detector: RestoreDetector | None = None,
+    ) -> None:
         super().__init__()
         self._client = client
         self._group = group
-        self._stream = stream or f"runtime-{uuid.uuid4()}"
+        # A generated name is chosen before a Runtime V2 snapshot, so every
+        # restored microVM would write to the same stream; it is re-drawn on
+        # restore. An explicit name is the caller's to keep.
+        self._generated = stream is None
+        self._restores = restore_detector or RestoreDetector()
+        self._stream = stream or _new_stream_name()
         self._buffer: list[dict[str, Any]] = []
         self._lock = threading.Lock()
         self._stream_ready = False
@@ -73,6 +86,9 @@ class CloudWatchLogHandler(logging.Handler):
                 return
             batch, self._buffer = self._buffer[:_BATCH_LIMIT], self._buffer[_BATCH_LIMIT:]
         try:
+            if self._generated and self._restores.restored():
+                self._stream = _new_stream_name()
+                self._stream_ready = False
             if not self._stream_ready:
                 try:
                     self._client.create_log_stream(
@@ -110,3 +126,8 @@ class CloudWatchLogHandler(logging.Handler):
                 backlog = len(self._buffer) >= _BATCH_LIMIT
             if backlog:
                 self._wake.set()
+
+
+def _new_stream_name() -> str:
+    # uuid4 reads os.urandom on each call, so a draw after a restore is fresh.
+    return f"runtime-{uuid.uuid4()}"

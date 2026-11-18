@@ -2250,3 +2250,14 @@ def test_accepts_scheduler_tokens_only_on_iam_front_door(value: str, expected: b
 
     assert module.accepts_scheduler_tokens({"INBOUND_AUTH": value}) is expected
     assert module.accepts_scheduler_tokens({}) is False
+
+
+def test_init_owner_is_drawn_on_first_use_not_at_construction() -> None:
+    # A Runtime V2 snapshot captures the constructed initializer; an owner
+    # drawn there would be shared by every restored microVM.
+    initializer = StubAwsSessionInitializer()
+    assert initializer._init_owner_value is None
+    owner = initializer._init_owner
+    assert owner
+    assert initializer._init_owner == owner
+    assert StubAwsSessionInitializer()._init_owner != owner

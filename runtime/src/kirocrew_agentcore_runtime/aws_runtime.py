@@ -963,11 +963,21 @@ class AwsSessionInitializer:
         self._lease_heartbeat_task: asyncio.Task[None] | None = None
         self._tool_token_task: asyncio.Task[None] | None = None
         self._team_context_task: asyncio.Task[None] | None = None
-        self._init_owner = str(uuid.uuid4())
+        # Drawn on first use, which is always inside a request: a value drawn
+        # at construction would be captured by a Runtime V2 snapshot and
+        # shared by every restored microVM, so two instances would hold the
+        # init lease and the broker's holder fencing as the same owner.
+        self._init_owner_value: str | None = None
         # The running restore's progress, published on each init heartbeat.
         self._restore_progress = RestoreProgress()
         self._last_served = 0
         self._broker_client: LambdaBrokerClient | None = None
+
+    @property
+    def _init_owner(self) -> str:
+        if self._init_owner_value is None:
+            self._init_owner_value = str(uuid.uuid4())
+        return self._init_owner_value
 
     async def initialize(
         self,

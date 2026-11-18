@@ -154,7 +154,7 @@ describe("outbox downloads", () => {
       `${ORIGIN}/api/outbox/report_ab.md`,
       "report_ab.md",
       {
-        fetch: fetchFn as unknown as typeof fetch,
+        fetch: fetchFn,
         origin: ORIGIN,
         notify,
       },
@@ -174,13 +174,12 @@ describe("outbox downloads", () => {
     const { doc, links } = fakeDocument();
     const notify = vi.fn();
     await downloadOutboxFile(doc, "/api/outbox/a", "a", {
-      fetch: (() =>
-        Promise.resolve(new Response("", { status: 404 }))) as typeof fetch,
+      fetch: () => Promise.resolve(new Response("", { status: 404 })),
       origin: ORIGIN,
       notify,
     });
     await downloadOutboxFile(doc, "/api/outbox/a", "a", {
-      fetch: (() => Promise.reject(new Error("down"))) as typeof fetch,
+      fetch: () => Promise.reject(new Error("down")),
       origin: ORIGIN,
       notify,
     });
@@ -194,7 +193,7 @@ describe("outbox downloads", () => {
     const fetchFn = vi.fn(() => Promise.resolve(new Response("x")));
     vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:x");
     const uninstall = installOutboxDownloads(doc, {
-      fetch: fetchFn as unknown as typeof fetch,
+      fetch: fetchFn,
       origin: ORIGIN,
       notify: vi.fn(),
     });

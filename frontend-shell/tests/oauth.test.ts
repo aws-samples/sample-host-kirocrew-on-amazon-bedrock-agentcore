@@ -110,7 +110,7 @@ describe("CognitoPkceClient", () => {
     );
     const client = new CognitoPkceClient(CONFIG, {
       storage,
-      fetch: fetchMock as typeof fetch,
+      fetch: fetchMock,
       now: (): number => 1_000,
     });
     await client.createAuthorizationUrl("/chat");
@@ -185,7 +185,7 @@ describe("CognitoPkceClient", () => {
     );
     const client = new CognitoPkceClient(CONFIG, {
       storage,
-      fetch: fetchMock as typeof fetch,
+      fetch: fetchMock,
       now: (): number => 10_000,
     });
 

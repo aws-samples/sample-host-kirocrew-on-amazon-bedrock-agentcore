@@ -151,6 +151,7 @@ describe("KiroCrew route policy", () => {
       "/api/shutdown",
       "/api/debug/processes",
       "/api/kas-bundle/install",
+      "/api/shared-crew/tailscale/credential",
     ]) {
       expect(classifyKiroCrewRoute("GET", path, ORIGIN)).toBe("denied");
     }

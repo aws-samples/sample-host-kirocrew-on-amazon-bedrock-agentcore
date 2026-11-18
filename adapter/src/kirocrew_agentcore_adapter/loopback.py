@@ -73,7 +73,7 @@ class KiroCrewRoutePolicy:
     Cognito subject hash on every invocation, so tenancy is enforced there — not
     by route filtering. `/api/chat` and `/api/terminal` already grant arbitrary
     in-sandbox execution, so filtering feature routes buys no isolation while
-    breaking most of the product. Upstream 0.11.1 registers hundreds of `/api/*` routes
+    breaking most of the product. Upstream 0.12.2 registers hundreds of `/api/*` routes
     and its browser bundle references 308 route families; an enumerated
     allowlist cannot track that surface, and every gap shows up as a 403 on a
     working feature.
@@ -84,7 +84,7 @@ class KiroCrewRoutePolicy:
     bundle, so denying them removes no functionality.
     """
 
-    VERSION: Final = "0.11.1"
+    VERSION: Final = "0.12.2"
     _SYNTHETIC: Final = (
         RouteRule(frozenset({"GET"}), "/api/auth/status", False),
         RouteRule(frozenset({"GET"}), "/api/auth/local-token", False),
@@ -137,6 +137,12 @@ class KiroCrewRoutePolicy:
         # the image digest only -- the same reason /api/update is denied. The
         # read-only `GET /api/kas-bundle` status stays reachable.
         "/api/kas-bundle/install",
+        # 0.12.0 adds Shared Crew: invites, people, presence and a Tailscale
+        # credential that let other people into this crew. A sandbox belongs to
+        # exactly one Cognito subject; letting a second person in, or opening a
+        # Tailscale path into the microVM, would bypass that tenancy. Upstream
+        # gates it behind a preview flag; denied so it never rests on that.
+        "/api/shared-crew",
     )
 
     def classify(self, method: str, path_with_query: str) -> RouteDisposition:

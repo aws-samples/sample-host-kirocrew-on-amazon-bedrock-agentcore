@@ -369,6 +369,8 @@ class RestoreEngine:
         self._replace = replace
         self._fetch_workers = fetch_workers
         self._prefetch_window = prefetch_window
+        # Time the writer spent blocked on chunk downloads during the last restore.
+        self._download_wait = 0.0
 
     def restore(
         self,
@@ -491,13 +493,14 @@ class RestoreEngine:
         files = [entry for entry in manifest.entries if entry.type == "file"]
         _LOGGER.info(
             "Restore timing generation=%d files=%d chunks=%d bytes=%d "
-            "manifest=%.1fs fetch_and_write=%.1fs install=%.1fs",
+            "manifest=%.1fs fetch_and_write=%.1fs (waiting_on_downloads=%.1fs) install=%.1fs",
             committed.generation,
             len(files),
             len({digest for entry in files for digest in entry.chunks}),
             sum(entry.size for entry in files),
             manifest_done - started,
             materialized - manifest_done,
+            self._download_wait,
             time.monotonic() - materialized,
         )
 
@@ -522,6 +525,7 @@ class RestoreEngine:
             # so downloads that outrun the writer never hold the whole
             # workspace in memory.
             order = list(remaining)
+            self._download_wait = 0.0
             submitted = 0
             futures: dict[str, Future[bytes]] = {}
 
@@ -533,7 +537,10 @@ class RestoreEngine:
                     upcoming = order[submitted]
                     submitted += 1
                     futures[upcoming] = executor.submit(self._fetch_chunk, upcoming)
-                return futures[digest].result()
+                waited = time.monotonic()
+                chunk = futures[digest].result()
+                self._download_wait += time.monotonic() - waited
+                return chunk
 
             directories: list[tuple[Path, ManifestEntry]] = []
             try:

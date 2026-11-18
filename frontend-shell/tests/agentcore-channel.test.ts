@@ -288,7 +288,7 @@ describe("AgentCore browser channel", () => {
     const channel = new AgentCoreBrowserChannel(DESCRIPTOR, {
       region: REGION,
       accessToken: (): Promise<string> => Promise.resolve(TOKEN),
-      fetch: fetchMock as typeof fetch,
+      fetch: fetchMock,
     });
 
     const received = [];
@@ -320,7 +320,7 @@ describe("AgentCore browser channel", () => {
     const channel = new AgentCoreBrowserChannel(DESCRIPTOR, {
       region: REGION,
       accessToken: (): Promise<string> => Promise.resolve(TOKEN),
-      fetch: fetchMock as typeof fetch,
+      fetch: fetchMock,
     });
 
     for await (const event of channel.invoke(INVOCATION)) {
@@ -451,8 +451,7 @@ describe("AgentCore browser channel", () => {
     const channel = new AgentCoreBrowserChannel(DESCRIPTOR, {
       region: REGION,
       accessToken: (): Promise<string> => Promise.resolve(TOKEN),
-      fetch: ((): Promise<Response> =>
-        Promise.resolve(streamResponse(events))) as typeof fetch,
+      fetch: (): Promise<Response> => Promise.resolve(streamResponse(events)),
       onEnvelope: (envelope): void => void seen.push(envelope.operation),
     });
 
@@ -501,8 +500,7 @@ describe("AgentCore browser channel", () => {
     const channel = new AgentCoreBrowserChannel(DESCRIPTOR, {
       region: REGION,
       accessToken: (): Promise<string> => Promise.resolve(TOKEN),
-      fetch: ((): Promise<Response> =>
-        Promise.resolve(streamResponse(events))) as typeof fetch,
+      fetch: (): Promise<Response> => Promise.resolve(streamResponse(events)),
     });
 
     await expect(
@@ -552,11 +550,11 @@ describe("invoke retries across a reconnect window", () => {
     const channel = new AgentCoreBrowserChannel(DESCRIPTOR, {
       region: REGION,
       accessToken: (): Promise<string> => Promise.resolve(TOKEN),
-      fetch: ((): Promise<Response> => {
+      fetch: (): Promise<Response> => {
         const next = responses[Math.min(calls, responses.length - 1)];
         calls += 1;
         return (next as () => Promise<Response>)();
-      }) as typeof fetch,
+      },
       retryDelaysMs: delays,
       sleep: (ms: number): Promise<void> => {
         slept.push(ms);
@@ -625,11 +623,11 @@ describe("invoke retries across a reconnect window", () => {
     const channel = new AgentCoreBrowserChannel(DESCRIPTOR, {
       region: REGION,
       accessToken: (): Promise<string> => Promise.resolve(TOKEN),
-      fetch: ((): Promise<Response> => {
+      fetch: (): Promise<Response> => {
         calls += 1;
         controller.abort();
         return Promise.reject(new TypeError("Failed to fetch"));
-      }) as typeof fetch,
+      },
       retryDelaysMs: [5, 5],
       sleep: (): Promise<void> => Promise.resolve(),
     });

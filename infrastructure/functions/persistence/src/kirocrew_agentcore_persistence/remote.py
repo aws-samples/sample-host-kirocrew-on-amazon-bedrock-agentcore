@@ -268,13 +268,27 @@ class LambdaPersistenceBroker:
         self, sandbox_id: str, digest: str, operation: StorageOperation
     ) -> PresignedOperation:
         self._validate_sandbox(sandbox_id)
+        names: list[str] | None = None
         with self._grant_lock:
             grant = self._take_grant(digest, operation)
             if grant is None and self._batch_supported and self._wanted.get(operation):
-                self._fetch_batch(digest, operation)
-                grant = self._take_grant(digest, operation)
+                names = self._claim_batch(digest, operation)
         if grant is not None:
             return grant
+        if names is not None:
+            # The broker call runs outside the lock so workers that miss at the
+            # same time fetch their own batches in parallel; one lock-held call
+            # at a time serialized a whole restore behind the broker.
+            fetched = self._fetch_batch(names, operation)
+            with self._grant_lock:
+                if fetched is None:
+                    self._batch_supported = False
+                    self._wanted.clear()
+                else:
+                    self._grants.update(fetched)
+                grant = self._take_grant(digest, operation)
+            if grant is not None:
+                return grant
         return self._presign(sandbox_id, "chunks", f"{digest}.bin", operation)
 
     def _take_grant(self, digest: str, operation: StorageOperation) -> PresignedOperation | None:
@@ -283,12 +297,10 @@ class LambdaPersistenceBroker:
             return None
         return grant
 
-    def _fetch_batch(self, digest: str, operation: StorageOperation) -> None:
-        """Fetch ``digest`` plus the next announced chunks in one broker call.
+    def _claim_batch(self, digest: str, operation: StorageOperation) -> list[str]:
+        """Take ``digest`` plus the next announced chunks off the wanted queue.
 
-        A broker without the batch operation (an older deployment) answers with
-        an ordinary operation error; remember that and fall back to one grant
-        per chunk. A refused binding is not a missing feature and propagates.
+        Called with the grant lock held, so concurrent claims never overlap.
         """
         wanted = self._wanted[operation]
         names = [digest]
@@ -296,6 +308,18 @@ class LambdaPersistenceBroker:
             candidate = wanted.popleft()
             if candidate != digest and (candidate, operation) not in self._grants:
                 names.append(candidate)
+        return names
+
+    def _fetch_batch(
+        self, names: list[str], operation: StorageOperation
+    ) -> dict[tuple[str, StorageOperation], PresignedOperation] | None:
+        """Fetch grants for ``names`` in one broker call.
+
+        A broker without the batch operation (an older deployment) answers with
+        an ordinary operation error; ``None`` tells the caller to fall back to
+        one grant per chunk. A refused binding is not a missing feature and
+        propagates.
+        """
         try:
             value = self._client.call(
                 "presignBatch",
@@ -305,12 +329,11 @@ class LambdaPersistenceBroker:
         except BrokerRefusalError:
             raise
         except BrokerAuthorizationError:
-            self._batch_supported = False
-            self._wanted.clear()
-            return
+            return None
         grants = value.get("grants")
         if not isinstance(grants, list):
             raise BrokerAuthorizationError("Persistence batch grant is invalid.")
+        fetched: dict[tuple[str, StorageOperation], PresignedOperation] = {}
         for item in cast(list[object], grants):
             if not isinstance(item, dict):
                 raise BrokerAuthorizationError("Persistence batch grant is invalid.")
@@ -318,8 +341,8 @@ class LambdaPersistenceBroker:
             name = entry.get("name")
             if not isinstance(name, str) or not name.endswith(".bin"):
                 raise BrokerAuthorizationError("Persistence batch grant is invalid.")
-            grant = self._grant_from(entry, operation)
-            self._grants[(name.removesuffix(".bin"), operation)] = grant
+            fetched[(name.removesuffix(".bin"), operation)] = self._grant_from(entry, operation)
+        return fetched
 
     def presign_manifest(
         self, sandbox_id: str, generation: int, operation: StorageOperation

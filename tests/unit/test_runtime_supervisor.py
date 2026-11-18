@@ -953,6 +953,7 @@ def test_start_pins_the_gateway_loop_stall_budget_and_preserves_user_overrides(
         "agent": {"acp_backend": "kiro"},
         "agents": {"max": 3},
         "dashboard": {"loop_stall_exit_after_secs": 300, "theme": "dark"},
+        "session": {"timeout_secs": 900},
     }
     assert overlay.stat().st_mode & 0o777 == 0o600
 
@@ -969,6 +970,7 @@ def test_start_pins_the_gateway_loop_stall_budget_and_preserves_user_overrides(
     assert json.loads(overlay.read_text(encoding="utf-8")) == {
         "agent": {"acp_backend": "kiro", "model": "m"},
         "dashboard": {"loop_stall_exit_after_secs": 300},
+        "session": {"timeout_secs": 900},
     }
 
     # A non-object section is replaced; a fresh home gets a new overlay.
@@ -977,6 +979,7 @@ def test_start_pins_the_gateway_loop_stall_budget_and_preserves_user_overrides(
     pinned = {
         "agent": {"acp_backend": "kiro"},
         "dashboard": {"loop_stall_exit_after_secs": 300},
+        "session": {"timeout_secs": 900},
     }
     assert json.loads(overlay.read_text(encoding="utf-8")) == pinned
     fresh = tmp_path / "fresh-home"

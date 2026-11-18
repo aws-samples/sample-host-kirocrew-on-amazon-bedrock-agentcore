@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import base64
+import http.client
 import json
+import ssl
 import threading
-import urllib.error
-import urllib.request
 from collections import deque
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime, timedelta
@@ -24,6 +24,69 @@ _BATCH_GRANTS = 128
 # A cached grant this close to expiry is not handed out: a large PUT or a slow
 # GET could still be in flight when the URL stops being valid.
 _GRANT_MARGIN = timedelta(seconds=60)
+# Object requests time out after this many seconds.
+_OBJECT_TIMEOUT_SECONDS = 30
+_TLS_CONTEXT = ssl.create_default_context()
+# One keep-alive HTTPS connection per thread and host. A restore fetches tens of
+# thousands of small chunks; a fresh TLS handshake for each one dominated the
+# download time.
+_CONNECTIONS = threading.local()
+
+
+def _connection(host: str, port: int | None) -> http.client.HTTPSConnection:
+    pool = cast(
+        "dict[tuple[str, int | None], http.client.HTTPSConnection] | None",
+        getattr(_CONNECTIONS, "pool", None),
+    )
+    if pool is None:
+        pool = {}
+        _CONNECTIONS.pool = pool
+    connection = pool.get((host, port))
+    if connection is None:
+        connection = http.client.HTTPSConnection(
+            host, port, timeout=_OBJECT_TIMEOUT_SECONDS, context=_TLS_CONTEXT
+        )
+        pool[(host, port)] = connection
+    return connection
+
+
+def _discard_connection(host: str, port: int | None) -> None:
+    pool = cast(
+        "dict[tuple[str, int | None], http.client.HTTPSConnection]",
+        _CONNECTIONS.pool,
+    )
+    pool.pop((host, port)).close()
+
+
+def _object_request(
+    host: str,
+    port: int | None,
+    target: str,
+    method: str,
+    body: bytes | None,
+    headers: Mapping[str, str],
+) -> tuple[int, bytes]:
+    """Send one object request over this thread's kept-alive connection.
+
+    A connection the server closed while idle fails on reuse; the request is
+    then sent once more on a fresh connection. Object requests are idempotent
+    (content-addressed chunks and fixed-name manifests), so a retry is safe.
+    """
+    for attempt in range(2):
+        connection = _connection(host, port)
+        try:
+            connection.request(method, target, body=body, headers=dict(headers))
+            response = connection.getresponse()
+            payload = response.read()
+        except (http.client.HTTPException, OSError):
+            _discard_connection(host, port)
+            if attempt == 1:
+                raise
+            continue
+        if response.will_close:
+            _discard_connection(host, port)
+        return response.status, payload
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 def invoke_broker(
@@ -205,13 +268,27 @@ class LambdaPersistenceBroker:
         self, sandbox_id: str, digest: str, operation: StorageOperation
     ) -> PresignedOperation:
         self._validate_sandbox(sandbox_id)
+        names: list[str] | None = None
         with self._grant_lock:
             grant = self._take_grant(digest, operation)
             if grant is None and self._batch_supported and self._wanted.get(operation):
-                self._fetch_batch(digest, operation)
-                grant = self._take_grant(digest, operation)
+                names = self._claim_batch(digest, operation)
         if grant is not None:
             return grant
+        if names is not None:
+            # The broker call runs outside the lock so workers that miss at the
+            # same time fetch their own batches in parallel; one lock-held call
+            # at a time serialized a whole restore behind the broker.
+            fetched = self._fetch_batch(names, operation)
+            with self._grant_lock:
+                if fetched is None:
+                    self._batch_supported = False
+                    self._wanted.clear()
+                else:
+                    self._grants.update(fetched)
+                grant = self._take_grant(digest, operation)
+            if grant is not None:
+                return grant
         return self._presign(sandbox_id, "chunks", f"{digest}.bin", operation)
 
     def _take_grant(self, digest: str, operation: StorageOperation) -> PresignedOperation | None:
@@ -220,12 +297,10 @@ class LambdaPersistenceBroker:
             return None
         return grant
 
-    def _fetch_batch(self, digest: str, operation: StorageOperation) -> None:
-        """Fetch ``digest`` plus the next announced chunks in one broker call.
+    def _claim_batch(self, digest: str, operation: StorageOperation) -> list[str]:
+        """Take ``digest`` plus the next announced chunks off the wanted queue.
 
-        A broker without the batch operation (an older deployment) answers with
-        an ordinary operation error; remember that and fall back to one grant
-        per chunk. A refused binding is not a missing feature and propagates.
+        Called with the grant lock held, so concurrent claims never overlap.
         """
         wanted = self._wanted[operation]
         names = [digest]
@@ -233,6 +308,18 @@ class LambdaPersistenceBroker:
             candidate = wanted.popleft()
             if candidate != digest and (candidate, operation) not in self._grants:
                 names.append(candidate)
+        return names
+
+    def _fetch_batch(
+        self, names: list[str], operation: StorageOperation
+    ) -> dict[tuple[str, StorageOperation], PresignedOperation] | None:
+        """Fetch grants for ``names`` in one broker call.
+
+        A broker without the batch operation (an older deployment) answers with
+        an ordinary operation error; ``None`` tells the caller to fall back to
+        one grant per chunk. A refused binding is not a missing feature and
+        propagates.
+        """
         try:
             value = self._client.call(
                 "presignBatch",
@@ -242,12 +329,11 @@ class LambdaPersistenceBroker:
         except BrokerRefusalError:
             raise
         except BrokerAuthorizationError:
-            self._batch_supported = False
-            self._wanted.clear()
-            return
+            return None
         grants = value.get("grants")
         if not isinstance(grants, list):
             raise BrokerAuthorizationError("Persistence batch grant is invalid.")
+        fetched: dict[tuple[str, StorageOperation], PresignedOperation] = {}
         for item in cast(list[object], grants):
             if not isinstance(item, dict):
                 raise BrokerAuthorizationError("Persistence batch grant is invalid.")
@@ -255,8 +341,8 @@ class LambdaPersistenceBroker:
             name = entry.get("name")
             if not isinstance(name, str) or not name.endswith(".bin"):
                 raise BrokerAuthorizationError("Persistence batch grant is invalid.")
-            grant = self._grant_from(entry, operation)
-            self._grants[(name.removesuffix(".bin"), operation)] = grant
+            fetched[(name.removesuffix(".bin"), operation)] = self._grant_from(entry, operation)
+        return fetched
 
     def presign_manifest(
         self, sandbox_id: str, generation: int, operation: StorageOperation
@@ -283,25 +369,23 @@ class LambdaPersistenceBroker:
             hostname.endswith(".amazonaws.com") or hostname.endswith(".amazonaws.com.cn")
         ):
             raise BrokerAuthorizationError("Persistence grant URL is not trusted.")
-        request = urllib.request.Request(  # noqa: S310
-            grant.url,
-            data=body,
-            headers=dict(grant.headers),
-            method=operation.value,
-        )
+        target = parsed.path or "/"
+        if parsed.query:
+            target = f"{target}?{parsed.query}"
         try:
-            with urllib.request.urlopen(  # noqa: S310  # nosec B310 - validated HTTPS AWS host.
-                request, timeout=30
-            ) as response:
-                if operation is StorageOperation.HEAD:
-                    return cast(int, response.status) == 200
-                return cast(bytes, response.read())
-        except urllib.error.HTTPError as error:
-            if operation is StorageOperation.HEAD and error.code == 404:
+            status, payload = _object_request(
+                hostname, parsed.port, target, operation.value, body, grant.headers
+            )
+        except (http.client.HTTPException, OSError) as error:
+            raise BrokerAuthorizationError("Persistence object operation failed.") from error
+        if operation is StorageOperation.HEAD:
+            if status == 404:
                 return False
-            raise BrokerAuthorizationError("Persistence object operation failed.") from error
-        except urllib.error.URLError as error:
-            raise BrokerAuthorizationError("Persistence object operation failed.") from error
+            if status == 200:
+                return True
+        elif 200 <= status < 300:
+            return payload
+        raise BrokerAuthorizationError("Persistence object operation failed.")
 
     def chunk_exists(self, sandbox_id: str, digest: str) -> bool:
         self._validate_sandbox(sandbox_id)

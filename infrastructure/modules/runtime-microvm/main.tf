@@ -7,6 +7,10 @@ variable "allowed_scopes" { type = list(string) }
 variable "request_header_allowlist" { type = list(string) }
 variable "idle_session_timeout_seconds" { type = number }
 variable "max_lifetime_seconds" { type = number }
+variable "platform_version" {
+  type    = string
+  default = null
+}
 variable "environment_variables" { type = map(string) }
 variable "tags" { type = map(string) }
 
@@ -67,7 +71,10 @@ locals {
       }
     }
   } : {}
-  runtime_properties = merge(local.authorizer_properties, {
+  # Omitted unless set: an existing runtime then keeps its platform version, and
+  # the template body (and so the runtime VERSION) does not change.
+  platform_properties = var.platform_version == null ? {} : { PlatformVersion = var.platform_version }
+  runtime_properties = merge(local.authorizer_properties, local.platform_properties, {
     AgentRuntimeName = local.runtime_name
     AgentRuntimeArtifact = {
       ContainerConfiguration = {

@@ -87,6 +87,7 @@ module "runtime_microvm" {
   request_header_allowlist     = var.runtime_request_header_allowlist
   idle_session_timeout_seconds = var.runtime_idle_session_timeout_seconds
   max_lifetime_seconds         = var.runtime_max_lifetime_seconds
+  platform_version             = var.runtime_platform_version
   environment_variables = {
     AGENT_REGISTRY_MCP_ENDPOINT = local.agent_registry_mcp_endpoint
     AGENT_REGISTRY_REGION       = var.agent_registry_region
@@ -139,6 +140,7 @@ module "runtime_microvm_machine" {
   request_header_allowlist     = var.runtime_request_header_allowlist
   idle_session_timeout_seconds = var.machine_runtime_idle_session_timeout_seconds
   max_lifetime_seconds         = var.runtime_max_lifetime_seconds
+  platform_version             = var.runtime_platform_version
   environment_variables = {
     AGENT_REGISTRY_MCP_ENDPOINT = local.agent_registry_mcp_endpoint
     AGENT_REGISTRY_REGION       = var.agent_registry_region

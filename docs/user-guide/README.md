@@ -173,7 +173,7 @@ Panel titles and what they mean:
 
 **Sandbox needs attention**: click **Reload** first; if that does not help, **Start sandbox**. Your data is in the checkpoint and is not lost by restarting.
 
-**The page keeps showing "The runtime request failed"**: an older copy of your sandbox may still be holding on after a takeover. Wait a few minutes and open the page again; the platform reclaims the old copy and the next sign-in claims your sandbox normally. Your data is safe in the last checkpoint.
+**The page keeps showing "The runtime request failed"**: a Stop safely whose final save failed can leave the sandbox unable to serve until the platform reclaims it (up to about an hour). Wait and open the page again; the next sign-in restores your sandbox from the last checkpoint, so no saved work is lost.
 
 **A chat says "Not signed in to Kiro"**: click **Sign in to Kiro** in that message, or follow [step 5](#5-sign-in-to-kiro).
 

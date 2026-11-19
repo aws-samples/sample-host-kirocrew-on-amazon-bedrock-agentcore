@@ -173,7 +173,7 @@ KiroCrew 用你自己的 Kiro 账号调用模型。登录在 KiroCrew 自己的�
 
 **Sandbox needs attention**：先点 **Reload**；仍不行就点 **Start sandbox**。数据保存在检查点里，不会因为重新启动丢失。
 
-**页面一直提示 "The runtime request failed"**：可能是沙箱被接管后，旧的那一份还没释放。等几分钟再打开页面，平台回收旧的那份后，下次登录会正常接回你的沙箱。数据在最近一次检查点里，不会丢。
+**页面一直提示 "The runtime request failed"**：可能是 Stop safely 最后一次保存失败，沙箱暂时无法响应，要等平台回收（最长约一小时）。稍后再打开页面，下次登录会从最近一次检查点恢复，已保存的内容不会丢。
 
 **对话里提示 "Not signed in to Kiro"**：点消息里的 **Sign in to Kiro**，或按[第 5 步](#5-登录-kiro-账号)登录。
 

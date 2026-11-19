@@ -126,6 +126,18 @@ COPY --from=python-builder /wheels /wheels
 RUN python -m pip install --no-index --no-deps /wheels/*.whl \
     && find /usr/local/lib/python3.12/site-packages -type f -name '*.pyc' -delete \
     && rm -rf /wheels
+# Kiro Crew's own agent engine (KAS) and its Node runtime, staged read-only so
+# a user who picks the KAS engine in Settings never downloads it into the
+# persisted home. `kirocrew kas install` checks the manifest against the sha256
+# this KiroCrew release pins. KIROCREW_BUNDLED_KAS_DIR is upstream's lookup
+# for a staged engine root.
+RUN set -eux; \
+    export HOME=/tmp/kas-home KIROCREW_HOME=/tmp/kas-home/.kiro/crew; \
+    mkdir -p "$KIROCREW_HOME"; \
+    kirocrew kas install; \
+    mv "$KIROCREW_HOME/engines/kas" /opt/kirocrew-kas; \
+    rm -rf /tmp/kas-home; \
+    chmod -R a-w /opt/kirocrew-kas
 COPY --from=kiro-cli-builder /opt/kiro-cli-home/.local/bin/kiro-cli /usr/local/bin/kiro-cli
 COPY --from=kiro-cli-builder /opt/kiro-cli-home/.local/bin/kiro-cli-chat /usr/local/bin/kiro-cli-chat
 # The KiroCrew embedding model (Qwen3-Embedding-0.6B, ~640MB) lives in the
@@ -159,6 +171,7 @@ ENV HOME=/mnt/workspace/home \
     KIROCREW_PORT=5476 \
     KIROCREW_HOST=127.0.0.1 \
     KIROCREW_EMBED_MODEL_PATH=/opt/kirocrew/models/qwen3-embedding-0.6b.gguf \
+    KIROCREW_BUNDLED_KAS_DIR=/opt/kirocrew-kas \
     PROJECT_ROOT=/mnt/workspace/projects/default \
     KIROCREW_VERSION=${KIROCREW_VERSION} \
     KIROCREW_ARTIFACT_SHA256=${KIROCREW_ARTIFACT_SHA256} \

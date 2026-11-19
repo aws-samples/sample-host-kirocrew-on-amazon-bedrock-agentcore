@@ -1117,11 +1117,12 @@ export class BrowserApplication {
       const sandbox = await this.#control.status();
       this.#store.dispatch({ type: "sandbox", sandbox });
       this.#refreshDetails(sandbox.stateVersion);
-      if (
-        connectActive &&
-        sandbox.state !== "STOPPED" &&
-        sandbox.state !== "ERROR"
-      ) {
+      // Opening the page (or signing in) means the user wants their sandbox:
+      // a stopped one starts on its own instead of waiting for a click. Only
+      // a parked ERROR sandbox still waits for the panel's Start button, and
+      // a Stop safely in this tab never restarts (it does not pass through
+      // here with connectActive).
+      if (connectActive && sandbox.state !== "ERROR") {
         await this.start();
       }
     } catch (error: unknown) {

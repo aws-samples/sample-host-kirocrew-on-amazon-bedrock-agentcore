@@ -293,6 +293,20 @@ describe("KiroCrewRemoteTransport fetch", () => {
     expect(channel.invocations).toEqual([]);
   });
 
+  it("answers Shared Crew as switched off, the way upstream does, without tunneling", async (): Promise<void> => {
+    const channel = new FakeChannel();
+    const remote = transport(channel);
+    for (const path of [
+      "/api/shared-crew/capabilities",
+      "/api/shared-crew/preview",
+      "/api/shared-crew/tailscale/invites",
+    ]) {
+      const response = await remote.fetch(`${ORIGIN}${path}`);
+      expect(response.status).toBe(404);
+    }
+    expect(channel.invocations).toEqual([]);
+  });
+
   it("rejects oversized, incomplete, errored, and out-of-order responses", async (): Promise<void> => {
     const oversizedRequest = transport(new FakeChannel(), { request: 1 });
     await expectRemoteError(

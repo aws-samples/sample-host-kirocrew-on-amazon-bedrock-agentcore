@@ -391,6 +391,13 @@ export function syntheticRouteResponse(
     : undefined;
 }
 
+// Shared Crew stays off in a single-owner sandbox. Upstream answers its routes
+// with 404 while its preview is off, and the bundle reads a 404 as "feature
+// off" and stays quiet; a 403 would surface as an error banner on every view.
+function absentFeatureResponse(): Response {
+  return Response.json({ error: "Not Found" }, { status: 404 });
+}
+
 function featureResponse(disposition: "unavailable" | "denied"): Response {
   const unavailable = disposition === "unavailable";
   return Response.json(
@@ -486,6 +493,12 @@ export class KiroCrewRemoteTransport {
       return syntheticRoute(url.pathname);
     }
     if (disposition !== "allowed") {
+      if (
+        disposition === "denied" &&
+        hasPrefix(url.pathname, "/api/shared-crew")
+      ) {
+        return absentFeatureResponse();
+      }
       return featureResponse(disposition);
     }
     const body = new Uint8Array(await request.arrayBuffer());

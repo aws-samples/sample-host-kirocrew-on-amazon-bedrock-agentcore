@@ -29,6 +29,17 @@ from kirocrew_agentcore_runtime.supervisor import (
 DIGEST = "ba966c8b2263a211d01c2630f6e0ec22efac746d0c9d2e16eea0fa90dc2ecc3a"
 
 
+@pytest.fixture(autouse=True)
+def no_real_session_exchange(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The default exchange dials 127.0.0.1:5476; a developer machine may run a
+    # real KiroCrew there. Tests that cover the exchange inject their own.
+    monkeypatch.setattr(module, "_exchange_link_for_session", lambda _p, _t, _s: None)
+
+
+# Captured before any fixture patches the module attribute.
+_original_exchange = module._exchange_link_for_session
+
+
 class FakeProcess:
     def __init__(
         self,
@@ -1178,3 +1189,120 @@ def test_agent_registry_mcp_pin_is_skipped_without_endpoint(
     KiroCrewSupervisor._pin_agent_registry_mcp(tmp_path)
 
     assert not (tmp_path / "mcp.json").exists()
+
+
+def test_minted_link_tokens_are_traded_for_session_tokens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Upstream 0.12 refuses a link token in the mc_token cookie ("link token is
+    # not a session"); the adapter authenticates every request with that cookie.
+    layout = WorkspaceLayout(tmp_path / "workspace")
+    process = FakeProcess(ready_line(layout))
+    clock = MutableClock()
+    exchanged: list[tuple[int, str, float]] = []
+
+    def exchange(port: int, link: str, timeout: float) -> str | None:
+        exchanged.append((port, link, timeout))
+        return f"session-for-{link}"
+
+    monkeypatch.setattr(os, "killpg", lambda _pid, _sig: setattr(process, "returncode", 0))
+    supervisor = KiroCrewSupervisor(
+        layout,
+        metadata(),
+        process_factory=factory_for(process),
+        token_command=lambda _e, _env, _t: "http://127.0.0.1:5476/?token=renewed-token",
+        session_exchange=exchange,
+        monotonic=clock,
+        effective_uid=lambda: 10001,
+        sleep=lambda _delay: None,
+    )
+    supervisor.start(timeout_seconds=2)
+    assert supervisor.token() == "session-for-internal-ready-token"
+    clock.value += 19 * 60 * 60
+    assert supervisor.token() == "session-for-renewed-token"
+    assert [entry[:2] for entry in exchanged] == [
+        (5476, "internal-ready-token"),
+        (5476, "renewed-token"),
+    ]
+    supervisor.terminate(grace_seconds=1)
+
+
+@pytest.mark.parametrize("outcome", [None, OSError("refused")])
+def test_a_failed_or_empty_exchange_keeps_the_minted_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: object
+) -> None:
+    layout = WorkspaceLayout(tmp_path / "workspace")
+    process = FakeProcess(ready_line(layout))
+
+    def exchange(_port: int, _link: str, _timeout: float) -> str | None:
+        if isinstance(outcome, Exception):
+            raise outcome
+        return None
+
+    monkeypatch.setattr(os, "killpg", lambda _pid, _sig: setattr(process, "returncode", 0))
+    supervisor = KiroCrewSupervisor(
+        layout,
+        metadata(),
+        process_factory=factory_for(process),
+        session_exchange=exchange,
+        effective_uid=lambda: 10001,
+        sleep=lambda _delay: None,
+    )
+    supervisor.start(timeout_seconds=2)
+    assert supervisor.token() == "internal-ready-token"
+    supervisor.terminate(grace_seconds=1)
+
+
+def test_exchange_reads_the_session_cookie_from_a_real_http_response() -> None:
+    import http.server
+    import threading as _threading
+
+    seen: list[str] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            seen.append(self.path)
+            self.send_response(200)
+            self.send_header("Set-Cookie", "mc_refresh_0=ignored; Path=/")
+            port = cast(tuple[str, int], self.server.server_address)[1]
+            self.send_header("Set-Cookie", f"mc_token_{port}=session-abc; HttpOnly; Path=/")
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *_args: object) -> None:
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = _threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        assert _original_exchange(port, "link a+b", 5.0) == "session-abc"
+        assert seen == ["/api/status?token=link+a%2Bb"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_exchange_without_a_session_cookie_returns_none() -> None:
+    import http.server
+    import threading as _threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(401)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *_args: object) -> None:
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = _threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        assert _original_exchange(server.server_address[1], "link", 5.0) is None
+    finally:
+        server.shutdown()
+        server.server_close()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import http.client
+import http.cookies
 import json
 import logging
 import os
@@ -14,6 +15,7 @@ import subprocess  # nosec B404
 import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
 from collections import deque
 from collections.abc import Callable, Mapping
@@ -102,6 +104,10 @@ class TokenCommand(Protocol):
 
 class HealthProbe(Protocol):
     def __call__(self, port: int, timeout: float) -> bool: ...
+
+
+class SessionExchange(Protocol):
+    def __call__(self, port: int, link_token: str, timeout: float, /) -> str | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,6 +277,7 @@ class KiroCrewSupervisor:
         process_factory: ProcessFactory | None = None,
         token_command: TokenCommand | None = None,
         health_probe: HealthProbe | None = None,
+        session_exchange: SessionExchange | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         effective_uid: Callable[[], int] = os.geteuid,
         sleep: Callable[[float], None] = time.sleep,
@@ -284,6 +291,7 @@ class KiroCrewSupervisor:
         self._process_factory = process_factory or _start_process
         self._token_command = token_command or _run_token_command
         self._health_probe = health_probe or _probe_dashboard_health
+        self._session_exchange = session_exchange or _exchange_link_for_session
         self._monotonic = monotonic
         self._chdir = chdir
         self._effective_uid = effective_uid
@@ -379,6 +387,7 @@ class KiroCrewSupervisor:
             self._process = None
             self._environment = None
             raise GatewayError("KiroCrew readiness metadata does not match the sandbox contract.")
+        token = self._as_session_token(token)
         self._token = DashboardToken(token, self._monotonic() + _DEFAULT_TOKEN_TTL_SECONDS)
         self._ready = True
         return ready
@@ -598,9 +607,28 @@ class KiroCrewSupervisor:
             if self._environment is None:
                 raise GatewayError("The gateway environment is unavailable.")
             output = self._token_command(self._executable, self._environment, 10.0)
-            value = _parse_token_output(output)
+            value = self._as_session_token(_parse_token_output(output))
             self._token = DashboardToken(value, self._monotonic() + _DEFAULT_TOKEN_TTL_SECONDS)
         return cast(DashboardToken, self._token).value
+
+    def _as_session_token(self, link_token: str) -> str:
+        """Trade the minted link token for the session token the cookie path accepts.
+
+        Upstream 0.12 mints dashboard URLs as one-time LINK tokens (a 5-minute
+        click window) and accepts only ``kind=session`` tokens in the
+        ``mc_token_<port>`` cookie, which is how the adapter authenticates every
+        forwarded request. A browser makes this trade by opening ``/?token=``
+        once and keeping the cookie it is handed; the supervisor does the same
+        over loopback, so the session is pinned to the same loopback peer the
+        adapter uses. Gateways that hand back no session cookie keep the token
+        they minted.
+        """
+        try:
+            session = self._session_exchange(_DASHBOARD_PORT, link_token, 10.0)
+        except (OSError, http.client.HTTPException, ValueError) as error:
+            _LOGGER.warning("Dashboard session exchange failed: %s", type(error).__name__)
+            return link_token
+        return session or link_token
 
     def pause(self) -> None:
         process = self.assert_running()
@@ -933,6 +961,23 @@ def _probe_dashboard_health(port: int, timeout: float) -> bool:
             return bool(200 <= response.status < 300)
     except (OSError, http.client.HTTPException, ValueError):
         return False
+
+
+def _exchange_link_for_session(port: int, link_token: str, timeout: float) -> str | None:
+    """Open one authenticated route with ``?token=`` and return the session cookie it sets."""
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    try:
+        query = urllib.parse.urlencode({"token": link_token})
+        connection.request("GET", f"/api/status?{query}", headers={"Host": f"127.0.0.1:{port}"})
+        response = connection.getresponse()
+        response.read()
+        cookie = http.cookies.SimpleCookie()
+        for header in response.headers.get_all("Set-Cookie") or ():
+            cookie.load(header)
+        morsel = cookie.get(f"mc_token_{port}")
+        return morsel.value if morsel is not None and morsel.value else None
+    finally:
+        connection.close()
 
 
 def _parse_token_output(output: str) -> str:

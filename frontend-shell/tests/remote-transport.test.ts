@@ -151,6 +151,7 @@ describe("KiroCrew route policy", () => {
       "/api/shutdown",
       "/api/debug/processes",
       "/api/kas-bundle/install",
+      "/api/shared-crew/tailscale/credential",
     ]) {
       expect(classifyKiroCrewRoute("GET", path, ORIGIN)).toBe("denied");
     }
@@ -289,6 +290,20 @@ describe("KiroCrewRemoteTransport fetch", () => {
     });
     expect(denied.status).toBe(403);
     expect(await denied.json()).toMatchObject({ code: "AUTHORIZATION_FAILED" });
+    expect(channel.invocations).toEqual([]);
+  });
+
+  it("answers Shared Crew as switched off, the way upstream does, without tunneling", async (): Promise<void> => {
+    const channel = new FakeChannel();
+    const remote = transport(channel);
+    for (const path of [
+      "/api/shared-crew/capabilities",
+      "/api/shared-crew/preview",
+      "/api/shared-crew/tailscale/invites",
+    ]) {
+      const response = await remote.fetch(`${ORIGIN}${path}`);
+      expect(response.status).toBe(404);
+    }
     expect(channel.invocations).toEqual([]);
   });
 

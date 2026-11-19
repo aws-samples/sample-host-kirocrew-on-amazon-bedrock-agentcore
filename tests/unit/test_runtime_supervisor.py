@@ -1018,6 +1018,21 @@ def test_kiro_cli_is_seeded_only_when_no_engine_was_chosen(tmp_path: Path) -> No
     KiroCrewSupervisor._seed_default_engine(home)
     assert config.read_bytes() == before
 
+    # But while an earlier image's kiro-cli pin is still in the overlay, the
+    # stored engine was never in effect: it is reset to kiro-cli once.
+    (home / "config.local.json").write_text(
+        json.dumps({"agent": {"acp_backend": "kiro"}}), encoding="utf-8"
+    )
+    KiroCrewSupervisor._seed_default_engine(home)
+    assert json.loads(config.read_text(encoding="utf-8")) == {"agent": {"acp_backend": "kiro"}}
+
+    # An unreadable or non-object overlay does not count as that pin.
+    for overlay in ("{bad", "[1]"):
+        (home / "config.local.json").write_text(overlay, encoding="utf-8")
+        config.write_text(json.dumps({"agent": {"acp_backend": "kas"}}), encoding="utf-8")
+        KiroCrewSupervisor._seed_default_engine(home)
+        assert json.loads(config.read_text(encoding="utf-8"))["agent"]["acp_backend"] == "kas"
+
 
 @pytest.mark.parametrize("content", ["{not json", "[1, 2]"])
 def test_unreadable_or_non_object_config_is_not_seeded(

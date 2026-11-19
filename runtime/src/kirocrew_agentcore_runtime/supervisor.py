@@ -600,7 +600,11 @@ class KiroCrewSupervisor:
 
         Without a choice upstream defaults to KAS. Written to ``config.json``, not
         the overlay, so a later choice made in Settings is the one that sticks.
-        An unreadable or non-object file is left alone.
+        While the overlay still carries the kiro-cli pin earlier images wrote, any
+        engine in ``config.json`` was never in effect (upstream itself may have
+        stored KAS there), so it is reset to kiro-cli once; the overlay pin is then
+        retired and later choices are kept. An unreadable or non-object file is
+        left alone.
         """
         path = state_home / _CONFIG_FILENAME
         document: dict[str, object] = {}
@@ -615,7 +619,11 @@ class KiroCrewSupervisor:
                 return
             document = cast(dict[str, object], loaded)
         agent = document.get("agent")
-        if isinstance(agent, dict) and "acp_backend" in agent:
+        if (
+            isinstance(agent, dict)
+            and "acp_backend" in agent
+            and not _overlay_pins_kiro_cli(state_home)
+        ):
             return
         section = cast(dict[str, object], agent) if isinstance(agent, dict) else {}
         section["acp_backend"] = _KIRO_CLI_ACP_BACKEND
@@ -1006,6 +1014,21 @@ def _probe_dashboard_health(port: int, timeout: float) -> bool:
             return bool(200 <= response.status < 300)
     except (OSError, http.client.HTTPException, ValueError):
         return False
+
+
+def _overlay_pins_kiro_cli(state_home: Path) -> bool:
+    """Whether ``config.local.json`` still carries the kiro-cli pin earlier images wrote."""
+    try:
+        loaded = cast(
+            object,
+            json.loads((state_home / _LOCAL_CONFIG_FILENAME).read_text(encoding="utf-8")),
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(loaded, dict):
+        return False
+    agent = cast(dict[str, object], loaded).get("agent")
+    return isinstance(agent, dict) and agent.get("acp_backend") == _KIRO_CLI_ACP_BACKEND
 
 
 def _exchange_link_for_session(port: int, link_token: str, timeout: float) -> str | None:

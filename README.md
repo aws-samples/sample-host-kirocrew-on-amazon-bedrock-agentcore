@@ -11,7 +11,7 @@ SSO). Chat, sessions, and the interactive terminal stream to the browser, while 
 workspace and the Kiro sign-in survive sandbox restarts through encrypted S3
 checkpoints.
 
-![KiroCrew running inside an AgentCore sandbox. The floating panel shows the sandbox restored and ready, and the chat answers through the user's own Kiro sign-in.](docs/dashboard.png)
+![KiroCrew running inside an AgentCore sandbox. In everyday use the sandbox panel is a small Sandbox pill in the upper right; clicking it opens the panel shown in the callout (sandbox restored and ready, Stop safely, Reload, Sign out).](docs/dashboard.png)
 
 *The unmodified KiroCrew dashboard, served from an AgentCore microVM. The floating
 panel in the corner is the only UI this project adds: sandbox lifecycle, Kiro

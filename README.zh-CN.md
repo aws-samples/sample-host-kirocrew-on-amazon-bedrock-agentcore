@@ -9,7 +9,7 @@ KiroCrew 体验。
 自己的 Kiro 账号（Builder ID 或组织 SSO）完成授权。聊天、会话和交互式终端实时传输到浏览器；
 工作区和 Kiro 登录态通过加密的 S3 检查点在沙箱重启后继续保留。
 
-![运行在 AgentCore 沙箱中的 KiroCrew。悬浮面板显示沙箱已恢复就绪，对话使用用户自己的 Kiro 登录。](docs/dashboard.png)
+![运行在 AgentCore 沙箱中的 KiroCrew。平时沙箱面板只是右上角的 Sandbox 小圆片，点开后就是标注里的面板（沙箱已恢复就绪，可 Stop safely、Reload、Sign out）。](docs/dashboard.png)
 
 *由 AgentCore microVM 提供服务的原版 KiroCrew 控制台。右下角的悬浮面板是本项目唯一新增的
 界面：沙箱生命周期、Kiro 登录，以及会先创建检查点的安全停止。*

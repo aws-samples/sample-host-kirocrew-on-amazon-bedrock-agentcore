@@ -999,39 +999,39 @@ def test_start_pins_the_gateway_loop_stall_budget_and_preserves_user_overrides(
     assert json.loads((fresh / "config.local.json").read_text(encoding="utf-8")) == pinned
 
 
-def test_kiro_cli_is_seeded_only_when_no_engine_was_chosen(tmp_path: Path) -> None:
+def test_kas_is_seeded_only_when_no_engine_was_chosen(tmp_path: Path) -> None:
     home = tmp_path / "home"
     KiroCrewSupervisor._seed_default_engine(home)
     config = home / "config.json"
-    assert json.loads(config.read_text(encoding="utf-8")) == {"agent": {"acp_backend": "kiro"}}
+    assert json.loads(config.read_text(encoding="utf-8")) == {"agent": {"acp_backend": "kas"}}
 
     config.write_text(json.dumps({"agent": {"model": "m"}, "x": 1}), encoding="utf-8")
     KiroCrewSupervisor._seed_default_engine(home)
     assert json.loads(config.read_text(encoding="utf-8")) == {
-        "agent": {"model": "m", "acp_backend": "kiro"},
+        "agent": {"model": "m", "acp_backend": "kas"},
         "x": 1,
     }
 
     # A choice made in Settings is never overwritten.
-    config.write_text(json.dumps({"agent": {"acp_backend": "kas"}}), encoding="utf-8")
+    config.write_text(json.dumps({"agent": {"acp_backend": "kiro"}}), encoding="utf-8")
     before = config.read_bytes()
     KiroCrewSupervisor._seed_default_engine(home)
     assert config.read_bytes() == before
 
     # But while an earlier image's kiro-cli pin is still in the overlay, the
-    # stored engine was never in effect: it is reset to kiro-cli once.
+    # stored engine was never in effect: it is reset to the default once.
     (home / "config.local.json").write_text(
         json.dumps({"agent": {"acp_backend": "kiro"}}), encoding="utf-8"
     )
     KiroCrewSupervisor._seed_default_engine(home)
-    assert json.loads(config.read_text(encoding="utf-8")) == {"agent": {"acp_backend": "kiro"}}
+    assert json.loads(config.read_text(encoding="utf-8")) == {"agent": {"acp_backend": "kas"}}
 
     # An unreadable or non-object overlay does not count as that pin.
     for overlay in ("{bad", "[1]"):
         (home / "config.local.json").write_text(overlay, encoding="utf-8")
-        config.write_text(json.dumps({"agent": {"acp_backend": "kas"}}), encoding="utf-8")
+        config.write_text(json.dumps({"agent": {"acp_backend": "kiro"}}), encoding="utf-8")
         KiroCrewSupervisor._seed_default_engine(home)
-        assert json.loads(config.read_text(encoding="utf-8"))["agent"]["acp_backend"] == "kas"
+        assert json.loads(config.read_text(encoding="utf-8"))["agent"]["acp_backend"] == "kiro"
 
 
 @pytest.mark.parametrize("content", ["{not json", "[1, 2]"])

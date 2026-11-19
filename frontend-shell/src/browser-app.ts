@@ -970,7 +970,9 @@ export class BrowserApplication {
         this.#clearTimeout(this.#reconnectTimer);
         this.#reconnectTimer = undefined;
       }
-      this.kiroCheck();
+      // No kiroCheck() here: the sandbox's default engine (KAS) signs in
+      // through Kiro Crew's own Settings, so the shell no longer probes or
+      // shows a Kiro account of its own.
       void this.#resumeStrandedStop();
     } else if (envelope.operation === "sandbox.state") {
       void this.#refreshStatus(false);

@@ -46,11 +46,14 @@ _READY_LINE_GRACE_SECONDS: Final = 3.0
 # snapshot phase is short now, but a large workspace can still exceed 25s of
 # hashing, so the sandbox pins the budget at the upstream maximum.
 _LOOP_STALL_EXIT_AFTER_SECONDS: Final = 300
-# From KiroCrew 0.11 an install with no engine choice defaults to KAS. kiro-cli
-# (spelled "kiro" in config.json) stays the default here: it is seeded into
-# config.json only when no engine was chosen, so a user can still switch to the
-# bundled KAS engine in Settings and the choice survives restarts.
+# From KiroCrew 0.11 an install with no engine choice defaults to KAS, and that
+# is the default here too: the image stages the KAS engine, and it signs in
+# through Kiro Crew's own Settings, so the shell needs no Kiro sign-in of its
+# own. The default is written to config.json only when no engine was chosen, so
+# a user who picks Kiro CLI in Settings keeps that choice across restarts.
+# Earlier images pinned kiro-cli (spelled "kiro") in the overlay.
 _KIRO_CLI_ACP_BACKEND: Final = "kiro"
+_DEFAULT_ACP_BACKEND: Final = "kas"
 _CONFIG_FILENAME: Final = "config.json"
 # Every open chat keeps its own kiro-cli process plus KiroCrew's MCP servers
 # alive, about 0.7 GB each on this image, until the idle sweep ends it (upstream
@@ -596,15 +599,14 @@ class KiroCrewSupervisor:
 
     @staticmethod
     def _seed_default_engine(state_home: Path) -> None:
-        """Choose kiro-cli in ``config.json`` when the user has not chosen an engine.
+        """Choose the KAS engine in ``config.json`` when the user has not chosen one.
 
-        Without a choice upstream defaults to KAS. Written to ``config.json``, not
-        the overlay, so a later choice made in Settings is the one that sticks.
-        While the overlay still carries the kiro-cli pin earlier images wrote, any
-        engine in ``config.json`` was never in effect (upstream itself may have
-        stored KAS there), so it is reset to kiro-cli once; the overlay pin is then
-        retired and later choices are kept. An unreadable or non-object file is
-        left alone.
+        Written to ``config.json``, not the overlay, so a later choice made in
+        Settings is the one that sticks. While the overlay still carries the
+        kiro-cli pin earlier images wrote, any engine in ``config.json`` was never
+        in effect (upstream itself may have stored one there), so it is reset to
+        the default once; the overlay pin is then retired and later choices are
+        kept. An unreadable or non-object file is left alone.
         """
         path = state_home / _CONFIG_FILENAME
         document: dict[str, object] = {}
@@ -626,7 +628,7 @@ class KiroCrewSupervisor:
         ):
             return
         section = cast(dict[str, object], agent) if isinstance(agent, dict) else {}
-        section["acp_backend"] = _KIRO_CLI_ACP_BACKEND
+        section["acp_backend"] = _DEFAULT_ACP_BACKEND
         document["agent"] = section
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")

@@ -137,7 +137,7 @@ RUN set -eux; \
     kirocrew kas install; \
     mv "$KIROCREW_HOME/engines/kas" /opt/kirocrew-kas; \
     rm -rf /tmp/kas-home; \
-    chmod -R a-w /opt/kirocrew-kas
+    chmod -R a+rX,a-w /opt/kirocrew-kas
 COPY --from=kiro-cli-builder /opt/kiro-cli-home/.local/bin/kiro-cli /usr/local/bin/kiro-cli
 COPY --from=kiro-cli-builder /opt/kiro-cli-home/.local/bin/kiro-cli-chat /usr/local/bin/kiro-cli-chat
 # The KiroCrew embedding model (Qwen3-Embedding-0.6B, ~640MB) lives in the

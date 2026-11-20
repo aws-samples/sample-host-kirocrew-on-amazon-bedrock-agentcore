@@ -807,9 +807,16 @@ class KiroCrewSupervisor:
         tail: deque[str] = deque(maxlen=5)
 
         output_tail = self._output_tail
+        started = self._monotonic()
+        # Where a slow start spends its time: before the first output line,
+        # before the port answers, or minting the token afterwards.
+        timing: dict[str, float] = {}
+        line_count = [0]
 
         def read_lines() -> None:
             for line in stdout:
+                line_count[0] += 1
+                timing.setdefault("first_output", self._monotonic() - started)
                 output_tail.append(line.strip())
                 code = _classify_startup_line(line)
                 if code is not None:
@@ -843,9 +850,11 @@ class KiroCrewSupervisor:
                 next_probe = now + _HEALTH_PROBE_INTERVAL_SECONDS
                 if self._health_probe(_DASHBOARD_PORT, _HEALTH_PROBE_INTERVAL_SECONDS):
                     healthy_since = now if healthy_since is None else healthy_since
+                    timing.setdefault("port_answered", now - started)
                 else:
                     healthy_since = None
                 if healthy_since is not None and now - healthy_since >= _READY_LINE_GRACE_SECONDS:
+                    timing["mint_attempts"] = timing.get("mint_attempts", 0.0) + 1
                     token = self._mint_token_without_ready_line(environment)
                     if token is not None:
                         _LOGGER.warning(
@@ -853,6 +862,7 @@ class KiroCrewSupervisor:
                             "line; minted the dashboard token through the CLI instead.",
                             _DASHBOARD_PORT,
                         )
+                        self._log_start_timing(started, timing, line_count[0])
                         return GatewayReady(process.pid, _DASHBOARD_PORT, self._state_home), token
             try:
                 line = lines.get(timeout=min(0.1, max(deadline - self._monotonic(), 0.001)))
@@ -888,9 +898,25 @@ class KiroCrewSupervisor:
                     raise ValueError
             except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
                 raise GatewayError("KiroCrew emitted invalid readiness metadata.") from error
+            self._log_start_timing(started, timing, line_count[0])
             return GatewayReady(pid, port, Path(home)), token
         _LOGGER.error("KiroCrew readiness timed out. Output tail: %s", " | ".join(tail))
         raise GatewayError("KiroCrew readiness timed out.")
+
+    def _log_start_timing(self, started: float, timing: Mapping[str, float], lines: int) -> None:
+        def at(name: str) -> str:
+            value = timing.get(name)
+            return "never" if value is None else f"{value:.1f}s"
+
+        _LOGGER.info(
+            "KiroCrew start timing total=%.1fs first_output=%s output_lines=%d "
+            "port_answered=%s token_mint_attempts=%d",
+            self._monotonic() - started,
+            at("first_output"),
+            lines,
+            at("port_answered"),
+            int(timing.get("mint_attempts", 0)),
+        )
 
     def _mint_token_without_ready_line(self, environment: Mapping[str, str]) -> str | None:
         """Ask the upstream CLI for a dashboard token; ``None`` when it is not ready yet."""

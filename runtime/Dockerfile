@@ -169,6 +169,9 @@ RUN set -eux; \
     test "$(node --version)" = "v${NODE_VERSION}"; \
     test "$(npm --version)" = "${NPM_VERSION}"; \
     uv --version | grep --extended-regexp --quiet "^uv ${UV_VERSION}( |$)"
+# Files a session start reads, pinned before the Runtime V2 snapshot when
+# KIROCREW_PAGE_PIN=1 (page_pin.py). Regenerate with tools/pin_manifest.py.
+COPY runtime/pin-manifest.txt /opt/app/pin-manifest.txt
 
 ENV HOME=/mnt/workspace/home \
     SHELL=/bin/bash \

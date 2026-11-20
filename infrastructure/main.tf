@@ -88,7 +88,7 @@ module "runtime_microvm" {
   idle_session_timeout_seconds = var.runtime_idle_session_timeout_seconds
   max_lifetime_seconds         = var.runtime_max_lifetime_seconds
   platform_version             = var.runtime_platform_version
-  environment_variables = {
+  environment_variables = merge(local.runtime_v2_environment, {
     AGENT_REGISTRY_MCP_ENDPOINT = local.agent_registry_mcp_endpoint
     AGENT_REGISTRY_REGION       = var.agent_registry_region
     TOOL_GATEWAY_URL            = local.tool_gateway_url
@@ -106,8 +106,19 @@ module "runtime_microvm" {
     # ships its own log records directly to this dedicated group.
     KIROCREW_LOG_GROUP     = module.runtime_common.runtime_log_group
     PERSISTENCE_BROKER_ARN = module.persistence.broker_function_arn
-  }
+  })
   tags = module.naming.tags
+}
+
+locals {
+  # Runtime V2 starts each session from a snapshot taken after the page cache is
+  # dropped, so the runtime pins the files a session start reads before its port
+  # opens (runtime/.../page_pin.py), and the gateway gets more time for the
+  # directory metadata that pinning cannot carry. Empty on V1.
+  runtime_v2_environment = var.runtime_platform_version == "V2" ? {
+    KIROCREW_PAGE_PIN      = "1"
+    KIROCREW_START_TIMEOUT = "300"
+  } : {}
 }
 
 # A SECOND front door, for callers that have no browser and therefore no Cognito
@@ -141,7 +152,7 @@ module "runtime_microvm_machine" {
   idle_session_timeout_seconds = var.machine_runtime_idle_session_timeout_seconds
   max_lifetime_seconds         = var.runtime_max_lifetime_seconds
   platform_version             = var.runtime_platform_version
-  environment_variables = {
+  environment_variables = merge(local.runtime_v2_environment, {
     AGENT_REGISTRY_MCP_ENDPOINT = local.agent_registry_mcp_endpoint
     AGENT_REGISTRY_REGION       = var.agent_registry_region
     TOOL_GATEWAY_URL            = local.tool_gateway_url
@@ -163,7 +174,7 @@ module "runtime_microvm_machine" {
     INBOUND_AUTH           = "iam"
     KIROCREW_LOG_GROUP     = module.runtime_common.runtime_log_group
     PERSISTENCE_BROKER_ARN = module.persistence.broker_function_arn
-  }
+  })
   tags = module.naming.tags
 }
 

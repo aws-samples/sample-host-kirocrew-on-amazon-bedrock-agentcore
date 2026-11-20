@@ -63,6 +63,7 @@ from kirocrew_agentcore_persistence.restore import (
 from kirocrew_agentcore_runtime.cloudwatch_logs import CloudWatchLogHandler
 from kirocrew_agentcore_runtime.image_runtime import ImageMetadata
 from kirocrew_agentcore_runtime.loop_health import LoopStallWatchdog, offload_stream_handlers
+from kirocrew_agentcore_runtime.page_pin import pin_from_environment
 from kirocrew_agentcore_runtime.supervisor import (
     GatewayError,
     GatewayExitedError,
@@ -1590,6 +1591,8 @@ def serve_runtime(environment: Mapping[str, str] = os.environ) -> None:
     offload_stream_handlers()
     _attach_cloudwatch_logging(environment)
     _report_workspace_disk(Path(environment.get("WORKSPACE_ROOT", "/mnt/workspace")))
+    # On Runtime V2 the snapshot is taken once this port answers: pin first.
+    pin_from_environment(environment)
     web.run_app(
         _with_loop_watchdog(build_runtime_application(environment)),
         host="0.0.0.0",  # noqa: S104  # nosec B104 - AgentCore ingress port.

@@ -150,6 +150,17 @@ variable "runtime_idle_session_timeout_seconds" {
   }
 }
 
+variable "runtime_platform_version" {
+  description = "AgentCore Runtime platform version for both runtimes: V1, V2, or null to leave it unset (an existing runtime keeps its version; a new one gets the service default)."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.runtime_platform_version == null || contains(["V1", "V2"], coalesce(var.runtime_platform_version, "V1"))
+    error_message = "runtime_platform_version must be V1, V2 or null."
+  }
+}
+
 variable "runtime_max_lifetime_seconds" {
   description = "Maximum lifetime in seconds for an AgentCore runtime session."
   type        = number

@@ -60,13 +60,13 @@ With an existing account, enter email and password in the same form and click **
 - The session is kept in the browser: closing the tab and coming back does not ask for the password again. Only **Sign out** on the panel ends it.
 - Forgot your password: **Forgot password?** → enter your email → **Send code** → enter the emailed code and a new password → **Reset password**.
 
-After signing in the panel looks like this. `Sandbox stopped` means your sandbox exists but is not running; the workspace saved last time is ready to restore.
+After signing in, the sandbox starts on its own; you do not need to click anything. If it was stopped, the panel briefly shows `Sandbox stopped` before startup begins.
 
 ![Signed in, sandbox stopped](images/07-signed-in-stopped.png)
 
 ## 4. Start the sandbox
 
-Click **Start sandbox**. The panel shows three steps with elapsed time: Requesting compute → Restoring workspace → Starting KiroCrew.
+Opening the page, or signing in, starts a stopped sandbox automatically. (**Start sandbox** is still there for a sandbox in an error state.) The panel shows three steps with elapsed time: Requesting compute → Restoring workspace → Starting KiroCrew.
 
 ![Startup progress](images/08-starting-progress.png)
 
@@ -95,24 +95,30 @@ Expand **Sandbox details** to see the microVM uptime, recent state changes, and 
 
 ## 5. Sign in to Kiro
 
-Once the sandbox is ready, the **Kiro account** section in the middle of the panel shows **Not signed in**. KiroCrew calls models with your own Kiro account. You do this once; the sign-in is saved with your workspace.
+KiroCrew calls models with your own Kiro account. Sign-in happens inside KiroCrew itself, not in the sandbox panel. You do this once; the sign-in is saved with your workspace and survives Stop safely and restarts.
 
-Two options:
+If you send a message before signing in, KiroCrew answers with a **Sign in to Kiro** button that takes you to the right place:
 
-- **Sign in with Builder ID**: a personal AWS Builder ID.
-- **Sign in with SSO**: your organization's IAM Identity Center. Fill in the Start URL (like `https://your-org.awsapps.com/start`) and Region in the two fields above the buttons first.
+![Prompt to sign in to Kiro](images/15-chat-sign-in-prompt.png)
 
-Clicking either shows a **Kiro sign-in required** section with a code and a verification address:
+Or go there directly: **Settings** → **Agent Harness** → **Kiro Agent** (the default, marked **In use**) → **Kiro sign-in**. Pick one option:
+
+- **Continue with AWS Builder ID**, **Google**, or **GitHub**: a personal account.
+- **Company SSO**: your organization's IAM Identity Center. Enter the **Company sign-in URL** (like `https://your-org.awsapps.com/start`) and, if needed, the AWS Region, then click **Continue**.
+
+![Kiro sign-in options in Settings](images/12-kiro-sign-in-settings.png)
+
+KiroCrew then shows a link and a code:
 
 ![Device authorization code](images/12-kiro-device-code.png)
 
-1. Click **Open Kiro verification** (or copy the address) to open it in a new tab.
-2. Sign in with your Builder ID or SSO account, check that the code on that page matches the panel, and allow it.
-3. Back on this page, the panel updates to **Signed in** within a few seconds (**Check status** refreshes it on demand). The code is valid for about 10 minutes; if it expires, click the sign-in button again.
+1. Open the link in your browser (or copy it with the button next to it).
+2. Sign in, check that the code on that page matches, and allow it.
+3. Back in KiroCrew the section changes to **Signed in** within a few seconds. The code is valid for about 10 minutes; if it expires, start the sign-in again.
 
 ![Kiro signed in](images/13-kiro-signed-in.png)
 
-The panel collapses on its own after sign-in. **Sign out of Kiro** disconnects only the Kiro account; the sandbox and your KiroCrew sign-in are unaffected.
+**Sign out** here disconnects only the Kiro account; the sandbox and your KiroCrew web sign-in are unaffected.
 
 ## 6. Start your first session
 
@@ -130,16 +136,13 @@ The floating panel shows different buttons depending on state:
 |---|---|---|
 | **Sign in / Create account** | Signed out | Sign in to, or register, a KiroCrew account |
 | **Forgot password?** | Signed out | Reset the password with an emailed code |
-| **Start sandbox** | Sandbox stopped, or in an error state | Request compute and restore the most recent saved workspace |
+| **Start sandbox** | Sandbox in an error state (a stopped sandbox starts on its own when the page opens) | Request compute and restore the most recent saved workspace |
 | **Stop safely** | Sandbox running | Save an encrypted checkpoint first, then release compute. Use this to stop; do not just close the page |
 | **Response in progress** | A reply is being generated | Disabled form of Stop safely; stop after the reply finishes |
 | **Retry safely / Check connection** | Connection lost | Re-establish the connection without resubmitting a request that was already accepted |
 | **Reload** | Signed in | Reload the page and reconnect without stopping the sandbox |
 | **Sign out** | Signed in | Sign out of KiroCrew in this browser. The sandbox and its data remain; sign in again to continue |
 | **Minimize** | Panel expanded | Collapse to the pill in the upper right; click the pill to expand |
-| **Sign in with SSO / Builder ID** | Kiro not signed in | Start Kiro device authorization |
-| **Sign out of Kiro** | Kiro signed in | Disconnect the Kiro account |
-| **Check status** | Sandbox running | Re-check the Kiro sign-in state |
 | **Sandbox details** | Signed in | Show uptime, state history, and persisted paths |
 
 Panel titles and what they mean:
@@ -147,7 +150,7 @@ Panel titles and what they mean:
 | Title | Meaning |
 |---|---|
 | Sign in to KiroCrew | Signed out |
-| Sandbox stopped | Signed in, sandbox not running; Start is available |
+| Sandbox stopped | Signed in, sandbox not running; it starts again the next time you open the page |
 | Starting your sandbox | Starting; watch the three-step progress |
 | Sandbox ready | Running; KiroCrew is usable |
 | KiroCrew is responding | A reply is being generated |
@@ -158,7 +161,7 @@ Panel titles and what they mean:
 
 ## 8. Stopping and signing out
 
-- **Click Stop safely when you are done.** It writes the workspace to an encrypted checkpoint before releasing compute; the next Start restores exactly that state. Stopping takes from about 10 seconds to a minute depending on workspace size.
+- **Click Stop safely when you are done.** It writes the workspace to an encrypted checkpoint before releasing compute; opening the page again starts the sandbox and restores exactly that state. Stopping takes from about 10 seconds to a minute depending on workspace size.
 - Forgetting is not fatal: an idle sandbox is reclaimed after 15 minutes, and a running sandbox checkpoints itself every few minutes, so at most a few minutes of changes are lost. If background work is running, the sandbox stays up until it finishes.
 - **Sign out** only ends the sign-in in this browser; it does not stop the sandbox.
 
@@ -169,5 +172,9 @@ Panel titles and what they mean:
 **No verification code**: check spam. The subject is "Your verification code", the sender `no-reply@verificationemail.com`; click Resend code.
 
 **Sandbox needs attention**: click **Reload** first; if that does not help, **Start sandbox**. Your data is in the checkpoint and is not lost by restarting.
+
+**The page keeps showing "The runtime request failed"**: a Stop safely whose final save failed can leave the sandbox unable to serve until the platform reclaims it (up to about an hour). Wait and open the page again; the next sign-in restores your sandbox from the last checkpoint, so no saved work is lost.
+
+**A chat says "Not signed in to Kiro"**: click **Sign in to Kiro** in that message, or follow [step 5](#5-sign-in-to-kiro).
 
 **Slow replies or Gateway offline**: the sandbox may still be cold-starting; wait for the panel to show Sandbox ready. If the panel is ready but the page still shows offline, click Reload.

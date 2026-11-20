@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "kiroCrew": {
-    "version": "0.12.2",
-    "artifactSha256": "9bd7e2a80fe413bcd9d1939747aa56b8ae031cd17a2438bf9e014768fdb0b7a8"
+    "version": "0.13.0",
+    "artifactSha256": "cd3648579e066e1266ee72e65b111de0e293ff0df18ee850f803d2db616017e5"
   },
   "bootstrap": {
     "path": "/bootstrap.js",
@@ -195,13 +195,13 @@
     "websocket"
   ],
   "compiledNetworkContract": {
-    "observedApiLiteralsSha256": "cc8609c42008ba870154d2555aaa76d57b03be9ee64e5db2b3f278e9f1a0325f",
+    "observedApiLiteralsSha256": "3fbd4f4dff30f519624cf4a3fb32971fba3412ed43d335ff17460a231b202770",
     "unlistedRouteDisposition": "allowed",
     "unsupportedConstructors": [
       "WebTransport",
       "RTCDataChannel"
     ],
-    "observedApiLiteralsCount": 621
+    "observedApiLiteralsCount": 664
   },
   "transferLimits": {
     "requestBytes": 1048576,
@@ -209,9 +209,9 @@
     "largerFiles": "sandbox-scoped-presigned-url"
   },
   "assetIntegrity": {
-    "manifest": "/upstream/0.12.2/asset-manifest.json",
+    "manifest": "/upstream/0.13.0/asset-manifest.json",
     "algorithm": "sha256",
-    "assetSetSha256": "4b8ab645ede788963d8ce2b8e8eb1e76b1a5643ddbbf0fb0da7dcefcf0acfa83",
+    "assetSetSha256": "3f4cbde3f83ca346f83618b38543aac791e23563dbcfcdabda43b1af9030440a",
     "requiredTypes": [
       "html",
       "javascript",

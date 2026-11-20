@@ -11,7 +11,7 @@ SSO). Chat, sessions, and the interactive terminal stream to the browser, while 
 workspace and the Kiro sign-in survive sandbox restarts through encrypted S3
 checkpoints.
 
-![KiroCrew running inside an AgentCore sandbox. The floating panel shows the sandbox restored and ready, and the user's own Kiro account signed in.](docs/dashboard.png)
+![KiroCrew running inside an AgentCore sandbox. In everyday use the sandbox panel is a small Sandbox pill in the upper right; clicking it opens the panel shown in the callout (sandbox restored and ready, Stop safely, Reload, Sign out).](docs/dashboard.png)
 
 *The unmodified KiroCrew dashboard, served from an AgentCore microVM. The floating
 panel in the corner is the only UI this project adds: sandbox lifecycle, Kiro
@@ -139,7 +139,7 @@ hardening profiles, is in [docs/security.md](docs/security.md).
   mint the gateway's own credential (`/api/token`) or seize gateway lifecycle from
   the supervisor (`/api/shutdown`) are denied. Host-native features that cannot
   exist in a microVM answer `501`. The policy is pinned in
-  `contracts/kirocrew/0.12.2-route-allowlist.json` and enforced by contract tests on
+  `contracts/kirocrew/0.13.0-route-allowlist.json` and enforced by contract tests on
   both the Python adapter and the TypeScript shell.
 - **Binding tokens** authorize invocations for 30 minutes and are renewed
   transparently while the sandbox's lease is alive, so a long-open page keeps
@@ -226,7 +226,7 @@ bounded.
 
 ```bash
 make image-publish \
-  IMAGE_RELEASE_TAG=0.12.2-microvm-r1 \
+  IMAGE_RELEASE_TAG=0.13.0-microvm-r1 \
   EXPECTED_AWS_ACCOUNT_ID=<AWS_ACCOUNT_ID> \
   AWS_REGION=$AWS_REGION \
   ECR_REPOSITORY_URI=<AWS_ACCOUNT_ID>.dkr.ecr.$AWS_REGION.amazonaws.com/kirocrew-agentcore-dev-runtime

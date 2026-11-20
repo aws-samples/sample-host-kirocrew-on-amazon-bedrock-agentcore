@@ -28,7 +28,7 @@ from kirocrew_agentcore_runtime.supervisor import (
 
 ROOT = Path(__file__).parents[2]
 ARTIFACT = json.loads((ROOT / "runtime" / "kirocrew-artifact.json").read_text())
-DIGEST = "9bd7e2a80fe413bcd9d1939747aa56b8ae031cd17a2438bf9e014768fdb0b7a8"
+DIGEST = "cd3648579e066e1266ee72e65b111de0e293ff0df18ee850f803d2db616017e5"
 
 
 class StaticToken:
@@ -38,7 +38,7 @@ class StaticToken:
 
 
 def runtime_metadata() -> RuntimeMetadata:
-    return RuntimeMetadata("0.12.2", DIGEST, "kirocrew-agentcore.v1")
+    return RuntimeMetadata("0.13.0", DIGEST, "kirocrew-agentcore.v1")
 
 
 def process_state(pid: int) -> str | None:
@@ -71,11 +71,11 @@ def test_pinned_official_kirocrew_start_token_pause_resume_shutdown_and_crash(
     assert ARTIFACT == {
         "schemaVersion": 1,
         "distribution": "kirocrew",
-        "version": "0.12.2",
-        "wheel": "kirocrew-0.12.2-py3-none-any.whl",
+        "version": "0.13.0",
+        "wheel": "kirocrew-0.13.0-py3-none-any.whl",
         "sha256": DIGEST,
         "entrypoint": "kirocrew",
-        "source": "https://github.com/kirodotdev/KiroCrew/releases/tag/v0.12.2",
+        "source": "https://github.com/kirodotdev/KiroCrew/releases/tag/v0.13.0",
     }
     assert version("kirocrew") == ARTIFACT["version"]
 
@@ -264,10 +264,10 @@ def test_real_loopback_rest_sse_websocket_allowlist_and_secret_boundary() -> Non
 @pytest.mark.contract
 def test_route_allowlist_contract_matches_versioned_adapter_boundary() -> None:
     contract = json.loads(
-        (ROOT / "contracts" / "kirocrew" / "0.12.2-route-allowlist.json").read_text()
+        (ROOT / "contracts" / "kirocrew" / "0.13.0-route-allowlist.json").read_text()
     )
     assert contract["schemaVersion"] == 2
-    assert contract["kirocrewVersion"] == "0.12.2"
+    assert contract["kirocrewVersion"] == "0.13.0"
     assert KiroCrewRoutePolicy.VERSION == contract["kirocrewVersion"]
     # Default-forward: the product must work end to end, so the contract records
     # only the families that stay blocked and why.

@@ -78,6 +78,11 @@ def test_extractor_rejects_sources_symlinks_and_incomplete_dist(tmp_path: Path) 
     with pytest.raises(ValueError, match="source artifact"):
         module.extract(source, tmp_path / "output", pin(module))
     (source / "source.ts").unlink()
+    # Type declarations for app authors are skipped, never shipped.
+    (source / "sdk.d.ts").write_text("export {};")
+    shipped = module.extract(source, tmp_path / "output", pin(module))
+    assert all(not asset["path"].endswith(".d.ts") for asset in shipped["assets"])
+    (source / "sdk.d.ts").unlink()
     (source / "link.js").symlink_to(source / "assets" / "main.js")
     with pytest.raises(ValueError, match="symbolic link"):
         module.extract(source, tmp_path / "output", pin(module))

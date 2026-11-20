@@ -9,7 +9,7 @@ KiroCrew 体验。
 自己的 Kiro 账号（Builder ID 或组织 SSO）完成授权。聊天、会话和交互式终端实时传输到浏览器；
 工作区和 Kiro 登录态通过加密的 S3 检查点在沙箱重启后继续保留。
 
-![运行在 AgentCore 沙箱中的 KiroCrew。悬浮面板显示沙箱已恢复就绪，用户自己的 Kiro 账号已登录。](docs/dashboard.png)
+![运行在 AgentCore 沙箱中的 KiroCrew。平时沙箱面板只是右上角的 Sandbox 小圆片，点开后就是标注里的面板（沙箱已恢复就绪，可 Stop safely、Reload、Sign out）。](docs/dashboard.png)
 
 *由 AgentCore microVM 提供服务的原版 KiroCrew 控制台。右下角的悬浮面板是本项目唯一新增的
 界面：沙箱生命周期、Kiro 登录，以及会先创建检查点的安全停止。*
@@ -107,7 +107,7 @@ KiroCrew 原本面向本地运行：浏览器中的 SPA 通过 HTTP、服务器�
   Adapter 再把绑定令牌与 Cognito subject 比对。沙箱是单租户 microVM。
 - **路由策略。** 上游全部路由默认隧穿。只有会签发 Gateway 自身凭证（`/api/token`）或抢夺
   Gateway 生命周期（`/api/shutdown`）的路由被拒绝；microVM 中不可能存在的宿主机原生功能返回
-  `501`。策略固化在 `contracts/kirocrew/0.12.2-route-allowlist.json`，由契约测试同时约束
+  `501`。策略固化在 `contracts/kirocrew/0.13.0-route-allowlist.json`，由契约测试同时约束
   Python Adapter 和 TypeScript Shell。
 - **绑定令牌** 授权每次调用，有效期 30 分钟；沙箱租约存活期间会透明续签，长时间打开的
   页面不会因此失效，也不会轮换会话。容器赢得沙箱初始化后，Broker 会为它签发一枚绑定同一
@@ -180,7 +180,7 @@ terraform -chdir=infrastructure apply -state="$TF_STATE" \
 
 ```bash
 make image-publish \
-  IMAGE_RELEASE_TAG=0.12.2-microvm-r1 \
+  IMAGE_RELEASE_TAG=0.13.0-microvm-r1 \
   EXPECTED_AWS_ACCOUNT_ID=<AWS_ACCOUNT_ID> \
   AWS_REGION=$AWS_REGION \
   ECR_REPOSITORY_URI=<AWS_ACCOUNT_ID>.dkr.ecr.$AWS_REGION.amazonaws.com/kirocrew-agentcore-dev-runtime

@@ -60,13 +60,13 @@
 - 登录状态会保存在浏览器中，关闭标签页再打开不需要重新登录；点面板上的 **Sign out** 才会退出。
 - 忘记密码：点 **Forgot password?** → 输入邮箱 → **Send code** → 填入邮件里的验证码和新密码 → **Reset password**。
 
-登录成功后的面板如下，`Sandbox stopped` 表示你的沙箱已存在但当前没有在运行，之前保存的工作区随时可以恢复。
+登录后沙箱会自动启动，不用点任何按钮。如果沙箱之前是停止的，面板会先短暂显示 `Sandbox stopped`，随后开始启动。
 
 ![登录成功，沙箱处于停止状态](images/07-signed-in-stopped.png)
 
 ## 4. 启动沙箱
 
-点击 **Start sandbox**。面板会显示三步进度：Requesting compute（申请计算资源）→ Restoring workspace（恢复加密工作区）→ Starting KiroCrew（启动 KiroCrew），并显示已用时间。
+打开页面或登录后，停止的沙箱会自动启动（只有沙箱处于错误状态时，才需要手动点 **Start sandbox**）。面板会显示三步进度：Requesting compute（申请计算资源）→ Restoring workspace（恢复加密工作区）→ Starting KiroCrew（启动 KiroCrew），并显示已用时间。
 
 ![启动进度](images/08-starting-progress.png)
 
@@ -95,24 +95,30 @@
 
 ## 5. 登录 Kiro 账号
 
-沙箱就绪后，面板中部的 **Kiro account** 区域显示 **Not signed in**。KiroCrew 需要用你自己的 Kiro 账号调用模型，这一步只需做一次，登录状态会随工作区一起保存。
+KiroCrew 用你自己的 Kiro 账号调用模型。登录在 KiroCrew 自己的设置页里完成，不在沙箱面板里。只需登录一次，登录状态会随工作区一起保存，Stop safely 和重启后都还在。
 
-两种方式：
+如果还没登录就发了消息，KiroCrew 会回复一个 **Sign in to Kiro** 按钮，点它就会进入登录位置：
 
-- **Sign in with Builder ID**：个人 AWS Builder ID。
-- **Sign in with SSO**：组织的 IAM Identity Center。先在上方两个输入框填入组织的 Start URL（形如 `https://your-org.awsapps.com/start`）和 Region，再点按钮。
+![提示登录 Kiro](images/15-chat-sign-in-prompt.png)
 
-点击后面板出现 **Kiro sign-in required** 区域，给出一个验证码和验证页地址：
+也可以直接进入：**Settings** → **Agent Harness** → **Kiro Agent**（默认引擎，标着 **In use**）→ **Kiro sign-in**，选一种方式：
+
+- **Continue with AWS Builder ID**、**Google** 或 **GitHub**：个人账号。
+- **公司 SSO**：组织的 IAM Identity Center。填入 **Company sign-in URL**（形如 `https://your-org.awsapps.com/start`），需要时填 AWS Region，然后点 **Continue**。
+
+![设置页里的 Kiro 登录选项](images/12-kiro-sign-in-settings.png)
+
+随后页面给出一个链接和一个验证码：
 
 ![设备授权码](images/12-kiro-device-code.png)
 
-1. 点击 **Open Kiro verification**（或复制下方地址）在新标签页打开。
-2. 用你的 Builder ID / SSO 账号登录，确认页面显示的代码与面板一致，点击允许。
-3. 回到本页面，面板会在几秒内自动更新为 **Signed in**（也可以点 **Check status** 主动刷新）。验证码约 10 分钟有效，过期后重新点一次登录按钮即可。
+1. 在浏览器中打开链接（或点旁边的按钮复制）。
+2. 登录账号，确认页面上的代码一致，点允许。
+3. 回到 KiroCrew，几秒内显示 **Signed in**。验证码约 10 分钟有效，过期后重新发起登录即可。
 
 ![Kiro 已登录](images/13-kiro-signed-in.png)
 
-登录后面板会自动收起。**Sign out of Kiro** 只断开 Kiro 账号，不影响沙箱和 KiroCrew 登录。
+这里的 **Sign out** 只断开 Kiro 账号，不影响沙箱和网页登录。
 
 ## 6. 开始第一个会话
 
@@ -130,16 +136,13 @@
 |---|---|---|
 | **Sign in / Create account** | 未登录 | 登录或注册 KiroCrew 账号 |
 | **Forgot password?** | 未登录 | 通过邮件验证码重置密码 |
-| **Start sandbox** | 沙箱已停止，或处于错误状态 | 申请计算资源并恢复最近一次保存的工作区 |
+| **Start sandbox** | 沙箱处于错误状态（停止的沙箱打开页面时会自动启动） | 申请计算资源并恢复最近一次保存的工作区 |
 | **Stop safely** | 沙箱运行中 | 先保存一份加密检查点，再释放计算资源。需要停用时请用它，不要直接关页面 |
 | **Response in progress** | 正在生成回复 | Stop safely 的禁用态，等回复结束后再停止 |
 | **Retry safely / Check connection** | 连接中断 | 重新建立连接；不会重复发送已经被接受的请求 |
 | **Reload** | 已登录 | 刷新页面并重连沙箱，不会停止沙箱 |
 | **Sign out** | 已登录 | 退出 KiroCrew 登录。沙箱和数据保留，下次登录可继续 |
 | **Minimize** | 面板展开时 | 收起为右上角圆片；点圆片重新展开 |
-| **Sign in with SSO / Builder ID** | Kiro 未登录 | 发起 Kiro 设备授权 |
-| **Sign out of Kiro** | Kiro 已登录 | 断开 Kiro 账号 |
-| **Check status** | 沙箱运行中 | 重新检查 Kiro 登录状态 |
 | **Sandbox details** | 已登录 | 展开运行时长、状态历史和持久化路径 |
 
 面板标题对应的状态：
@@ -147,7 +150,7 @@
 | 标题 | 含义 |
 |---|---|
 | Sign in to KiroCrew | 未登录 |
-| Sandbox stopped | 已登录，沙箱未运行，可以 Start |
+| Sandbox stopped | 已登录，沙箱未运行，下次打开页面会自动启动 |
 | Starting your sandbox | 启动中，看下方三步进度 |
 | Sandbox ready | 运行中，KiroCrew 可用 |
 | KiroCrew is responding | 正在生成回复 |
@@ -158,7 +161,7 @@
 
 ## 8. 停止与退出
 
-- **用完请点 Stop safely**。它会先把工作区写成加密检查点再释放资源，下次 Start 恢复到停止时的状态。停止过程约 10 秒到 1 分钟，视工作区大小而定。
+- **用完请点 Stop safely**。它会先把工作区写成加密检查点再释放资源，下次打开页面时自动启动，恢复到停止时的状态。停止过程约 10 秒到 1 分钟，视工作区大小而定。
 - 忘记停止也没关系：沙箱空闲 15 分钟后会自动回收；运行中每隔几分钟会自动保存检查点，最多丢失几分钟的改动。如果有后台任务在跑，沙箱会保持运行直到任务结束。
 - **Sign out** 只是退出这台浏览器的登录，不停止沙箱。
 
@@ -169,5 +172,9 @@
 **没收到验证码**：检查垃圾邮件，邮件主题是 "Your verification code"，发件人 `no-reply@verificationemail.com`；点 Resend code 重发。
 
 **Sandbox needs attention**：先点 **Reload**；仍不行就点 **Start sandbox**。数据保存在检查点里，不会因为重新启动丢失。
+
+**页面一直提示 "The runtime request failed"**：可能是 Stop safely 最后一次保存失败，沙箱暂时无法响应，要等平台回收（最长约一小时）。稍后再打开页面，下次登录会从最近一次检查点恢复，已保存的内容不会丢。
+
+**对话里提示 "Not signed in to Kiro"**：点消息里的 **Sign in to Kiro**，或按[第 5 步](#5-登录-kiro-账号)登录。
 
 **回复很慢或 Gateway offline**：沙箱可能正在冷启动，等待面板变为 Sandbox ready。如果面板已就绪但页面仍显示离线，点 Reload。

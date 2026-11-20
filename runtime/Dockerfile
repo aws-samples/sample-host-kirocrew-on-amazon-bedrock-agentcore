@@ -14,7 +14,7 @@ RUN npm install --global --no-fund --no-audit "npm@${NPM_VERSION}" \
 
 FROM python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7 AS python-builder
 
-ARG DEPENDENCY_LOCK_SHA256=96994ed7804dcfd0710645a3e9d2c31be5b1d68c1fba929ea2103e7dcbf6aaf5
+ARG DEPENDENCY_LOCK_SHA256=39aa4489780032c4890c84cb76fdea4c488fdcbc88b6f692dd266161739f4223
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
 WORKDIR /build
@@ -65,15 +65,15 @@ RUN set -eu; \
 
 FROM python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7 AS runtime
 ARG SOURCE_REVISION=uncommitted
-ARG KIROCREW_VERSION=0.12.2
-ARG KIROCREW_ARTIFACT_SHA256=9bd7e2a80fe413bcd9d1939747aa56b8ae031cd17a2438bf9e014768fdb0b7a8
+ARG KIROCREW_VERSION=0.13.0
+ARG KIROCREW_ARTIFACT_SHA256=cd3648579e066e1266ee72e65b111de0e293ff0df18ee850f803d2db616017e5
 ARG KIRO_CLI_VERSION=2.27.1
 ARG NODE_VERSION=22.23.1
 ARG NPM_VERSION=11.21.2
 ARG UV_VERSION=0.13.4
 ARG PROTOCOL_VERSION=kirocrew-agentcore.v1
 ARG BASE_IMAGE_DIGEST=sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7
-ARG DEPENDENCY_LOCK_SHA256=96994ed7804dcfd0710645a3e9d2c31be5b1d68c1fba929ea2103e7dcbf6aaf5
+ARG DEPENDENCY_LOCK_SHA256=39aa4489780032c4890c84cb76fdea4c488fdcbc88b6f692dd266161739f4223
 LABEL org.opencontainers.image.title="kirocrew-agentcore-runtime" \
       org.opencontainers.image.description="Unmodified KiroCrew on Amazon Bedrock AgentCore Runtime" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
@@ -126,6 +126,23 @@ COPY --from=python-builder /wheels /wheels
 RUN python -m pip install --no-index --no-deps /wheels/*.whl \
     && find /usr/local/lib/python3.12/site-packages -type f -name '*.pyc' -delete \
     && rm -rf /wheels
+# Kiro Crew's own agent engine (KAS) and its Node runtime, staged read-only so
+# a user who picks the KAS engine in Settings never downloads it into the
+# persisted home. `kirocrew kas install` checks the manifest against the sha256
+# this KiroCrew release pins. KIROCREW_BUNDLED_KAS_DIR is upstream's lookup
+# for a staged engine root. The engine is then trimmed with upstream's own
+# shipping step (kas_bundle.trim_for_shipping): only the node binary and the
+# engine files Node loads stay. The engine never runs the distribution's npm,
+# npx or corepack, and that npm tree carried most of the image's HIGH findings.
+RUN set -eux; \
+    export HOME=/tmp/kas-home KIROCREW_HOME=/tmp/kas-home/.kiro/crew; \
+    mkdir -p "$KIROCREW_HOME"; \
+    kirocrew kas install; \
+    mv "$KIROCREW_HOME/engines/kas" /opt/kirocrew-kas; \
+    rm -rf /tmp/kas-home; \
+    python -c 'from pathlib import Path; from kiro_crew.acp import kas_bundle as k; b = k.installed_bundle(root=Path("/opt/kirocrew-kas")); assert b is not None, "KAS not staged"; print("trimmed bytes:", k.trim_for_shipping(b))'; \
+    test -x /opt/kirocrew-kas/*/node/*/bin/node; \
+    chmod -R a+rX,a-w /opt/kirocrew-kas
 COPY --from=kiro-cli-builder /opt/kiro-cli-home/.local/bin/kiro-cli /usr/local/bin/kiro-cli
 COPY --from=kiro-cli-builder /opt/kiro-cli-home/.local/bin/kiro-cli-chat /usr/local/bin/kiro-cli-chat
 # The KiroCrew embedding model (Qwen3-Embedding-0.6B, ~640MB) lives in the
@@ -159,6 +176,7 @@ ENV HOME=/mnt/workspace/home \
     KIROCREW_PORT=5476 \
     KIROCREW_HOST=127.0.0.1 \
     KIROCREW_EMBED_MODEL_PATH=/opt/kirocrew/models/qwen3-embedding-0.6b.gguf \
+    KIROCREW_BUNDLED_KAS_DIR=/opt/kirocrew-kas \
     PROJECT_ROOT=/mnt/workspace/projects/default \
     KIROCREW_VERSION=${KIROCREW_VERSION} \
     KIROCREW_ARTIFACT_SHA256=${KIROCREW_ARTIFACT_SHA256} \

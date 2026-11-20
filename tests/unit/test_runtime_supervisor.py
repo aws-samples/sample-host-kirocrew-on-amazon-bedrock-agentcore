@@ -961,10 +961,11 @@ def test_start_pins_the_gateway_loop_stall_budget_and_preserves_user_overrides(
     supervisor.start(timeout_seconds=2)
     written = json.loads(overlay.read_text(encoding="utf-8"))
     assert written == {
-        "agent": {"acp_backend": "kiro"},
+        "agent": {"kas_bundle": True},
         "agents": {"max": 3},
         "dashboard": {"loop_stall_exit_after_secs": 300, "theme": "dark"},
         "session": {"timeout_secs": 900},
+        "tunnel": {"relay_enabled": False},
     }
     assert overlay.stat().st_mode & 0o777 == 0o600
 
@@ -973,29 +974,81 @@ def test_start_pins_the_gateway_loop_stall_budget_and_preserves_user_overrides(
     KiroCrewSupervisor._pin_local_config(layout.kirocrew_home)
     assert overlay.read_bytes() == before
 
-    # A KAS choice left in the overlay is pinned back to kiro-cli; sibling keys stay.
+    # The kiro-cli pin an earlier image left is retired; a KAS choice and sibling
+    # keys stay.
     overlay.write_text(
-        json.dumps({"agent": {"acp_backend": "kas", "model": "m"}}), encoding="utf-8"
+        json.dumps({"agent": {"acp_backend": "kiro", "model": "m"}}), encoding="utf-8"
     )
     KiroCrewSupervisor._pin_local_config(layout.kirocrew_home)
     assert json.loads(overlay.read_text(encoding="utf-8")) == {
-        "agent": {"acp_backend": "kiro", "model": "m"},
+        "agent": {"kas_bundle": True, "model": "m"},
         "dashboard": {"loop_stall_exit_after_secs": 300},
         "session": {"timeout_secs": 900},
+        "tunnel": {"relay_enabled": False},
     }
 
     # A non-object section is replaced; a fresh home gets a new overlay.
     overlay.write_text(json.dumps({"dashboard": "oops", "agent": 1}), encoding="utf-8")
     KiroCrewSupervisor._pin_local_config(layout.kirocrew_home)
     pinned = {
-        "agent": {"acp_backend": "kiro"},
+        "agent": {"kas_bundle": True},
         "dashboard": {"loop_stall_exit_after_secs": 300},
         "session": {"timeout_secs": 900},
+        "tunnel": {"relay_enabled": False},
     }
     assert json.loads(overlay.read_text(encoding="utf-8")) == pinned
     fresh = tmp_path / "fresh-home"
     KiroCrewSupervisor._pin_local_config(fresh)
     assert json.loads((fresh / "config.local.json").read_text(encoding="utf-8")) == pinned
+
+
+def test_kas_is_seeded_only_when_no_engine_was_chosen(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    KiroCrewSupervisor._seed_default_engine(home)
+    config = home / "config.json"
+    assert json.loads(config.read_text(encoding="utf-8")) == {"agent": {"acp_backend": "kas"}}
+
+    config.write_text(json.dumps({"agent": {"model": "m"}, "x": 1}), encoding="utf-8")
+    KiroCrewSupervisor._seed_default_engine(home)
+    assert json.loads(config.read_text(encoding="utf-8")) == {
+        "agent": {"model": "m", "acp_backend": "kas"},
+        "x": 1,
+    }
+
+    # A choice made in Settings is never overwritten.
+    config.write_text(json.dumps({"agent": {"acp_backend": "kiro"}}), encoding="utf-8")
+    before = config.read_bytes()
+    KiroCrewSupervisor._seed_default_engine(home)
+    assert config.read_bytes() == before
+
+    # But while an earlier image's kiro-cli pin is still in the overlay, the
+    # stored engine was never in effect: it is reset to the default once.
+    (home / "config.local.json").write_text(
+        json.dumps({"agent": {"acp_backend": "kiro"}}), encoding="utf-8"
+    )
+    KiroCrewSupervisor._seed_default_engine(home)
+    assert json.loads(config.read_text(encoding="utf-8")) == {"agent": {"acp_backend": "kas"}}
+
+    # An unreadable or non-object overlay does not count as that pin.
+    for overlay in ("{bad", "[1]"):
+        (home / "config.local.json").write_text(overlay, encoding="utf-8")
+        config.write_text(json.dumps({"agent": {"acp_backend": "kiro"}}), encoding="utf-8")
+        KiroCrewSupervisor._seed_default_engine(home)
+        assert json.loads(config.read_text(encoding="utf-8"))["agent"]["acp_backend"] == "kiro"
+
+
+@pytest.mark.parametrize("content", ["{not json", "[1, 2]"])
+def test_unreadable_or_non_object_config_is_not_seeded(
+    tmp_path: Path, content: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    config = home / "config.json"
+    config.write_text(content, encoding="utf-8")
+    with caplog.at_level(logging.WARNING):
+        KiroCrewSupervisor._seed_default_engine(home)
+    assert config.read_text(encoding="utf-8") == content
+    assert "not seeding the agent engine" in caplog.text
 
 
 @pytest.mark.parametrize("content", ["{not json", "[1, 2]"])

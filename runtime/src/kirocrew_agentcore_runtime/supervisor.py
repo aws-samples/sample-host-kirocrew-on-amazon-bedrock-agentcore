@@ -46,9 +46,15 @@ _READY_LINE_GRACE_SECONDS: Final = 3.0
 # snapshot phase is short now, but a large workspace can still exceed 25s of
 # hashing, so the sandbox pins the budget at the upstream maximum.
 _LOOP_STALL_EXIT_AFTER_SECONDS: Final = 300
-# From KiroCrew 0.11 an install with no engine choice defaults to KAS. This image
-# ships only kiro-cli (spelled "kiro" in config.json), so the choice is pinned.
+# From KiroCrew 0.11 an install with no engine choice defaults to KAS, and that
+# is the default here too: the image stages the KAS engine, and it signs in
+# through Kiro Crew's own Settings, so the shell needs no Kiro sign-in of its
+# own. The default is written to config.json only when no engine was chosen, so
+# a user who picks Kiro CLI in Settings keeps that choice across restarts.
+# Earlier images pinned kiro-cli (spelled "kiro") in the overlay.
 _KIRO_CLI_ACP_BACKEND: Final = "kiro"
+_DEFAULT_ACP_BACKEND: Final = "kas"
+_CONFIG_FILENAME: Final = "config.json"
 # Every open chat keeps its own kiro-cli process plus KiroCrew's MCP servers
 # alive, about 0.7 GB each on this image, until the idle sweep ends it (upstream
 # default 60 min). Ten chats opened within an hour fill the 8 GB microVM, which
@@ -57,8 +63,20 @@ _KIRO_CLI_ACP_BACKEND: Final = "kiro"
 _IDLE_SESSION_TIMEOUT_SECONDS: Final = 900
 _LOCAL_CONFIG_PINS: Final[tuple[tuple[str, str, object], ...]] = (
     ("dashboard", "loop_stall_exit_after_secs", _LOOP_STALL_EXIT_AFTER_SECONDS),
-    ("agent", "acp_backend", _KIRO_CLI_ACP_BACKEND),
+    # A user who picks KAS gets the engine staged in the image and Kiro Crew's
+    # own sign-in, never kiro-cli's relay.
+    ("agent", "kas_bundle", True),
     ("session", "timeout_secs", _IDLE_SESSION_TIMEOUT_SECONDS),
+    # 0.13.0 Remote Control relays this Crew to the owner's other devices. A
+    # sandbox belongs to exactly one Cognito subject and is reached only through
+    # AgentCore, so the relay stays off. Re-pinned at every start, so a
+    # `kirocrew remote-control on` run inside the sandbox never connects.
+    ("tunnel", "relay_enabled", False),
+)
+#: Overlay keys earlier images pinned, removed so the user's choice in
+#: config.json is no longer overridden.
+_RETIRED_LOCAL_CONFIG_PINS: Final[tuple[tuple[str, str, object], ...]] = (
+    ("agent", "acp_backend", _KIRO_CLI_ACP_BACKEND),
 )
 _LOCAL_CONFIG_FILENAME: Final = "config.local.json"
 _MCP_STORE_FILENAME: Final = "mcp.json"
@@ -350,6 +368,7 @@ class KiroCrewSupervisor:
         self._chdir(self._layout.root)
         self._state_home = self._resolve_state_home()
         self._scrub_runtime_residue(self._state_home)
+        self._seed_default_engine(self._state_home)
         self._pin_local_config(self._state_home)
         self._pin_agent_registry_mcp(self._state_home)
         self._pin_tool_gateway_mcp(self._state_home)
@@ -540,9 +559,8 @@ class KiroCrewSupervisor:
 
         * ``dashboard.loop_stall_exit_after_secs`` -- the upstream maximum, so a
           checkpoint freeze is not mistaken for a stalled event loop.
-        * ``agent.acp_backend = "kiro"`` -- the image ships only kiro-cli, the
-          panel's Kiro sign-in drives kiro-cli, and engine installs are denied by
-          the route policy, so the agent never relies on the KAS default.
+        * ``agent.kas_bundle = true`` -- a user who picks KAS runs the engine the
+          image stages, signed in through Kiro Crew's own login.
         * ``session.timeout_secs`` -- idle chats end after 15 minutes so their
           processes do not exhaust the microVM's memory.
 
@@ -562,6 +580,11 @@ class KiroCrewSupervisor:
                 return
             overlay = cast(dict[str, object], loaded)
         changed = False
+        for section_name, key, value in _RETIRED_LOCAL_CONFIG_PINS:
+            current = overlay.get(section_name)
+            if isinstance(current, dict) and cast(dict[str, object], current).get(key) == value:
+                del cast(dict[str, object], current)[key]
+                changed = True
         for section_name, key, value in _LOCAL_CONFIG_PINS:
             current = overlay.get(section_name)
             if isinstance(current, dict):
@@ -577,6 +600,43 @@ class KiroCrewSupervisor:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(overlay, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        path.chmod(0o600)
+
+    @staticmethod
+    def _seed_default_engine(state_home: Path) -> None:
+        """Choose the KAS engine in ``config.json`` when the user has not chosen one.
+
+        Written to ``config.json``, not the overlay, so a later choice made in
+        Settings is the one that sticks. While the overlay still carries the
+        kiro-cli pin earlier images wrote, any engine in ``config.json`` was never
+        in effect (upstream itself may have stored one there), so it is reset to
+        the default once; the overlay pin is then retired and later choices are
+        kept. An unreadable or non-object file is left alone.
+        """
+        path = state_home / _CONFIG_FILENAME
+        document: dict[str, object] = {}
+        if path.is_file():
+            try:
+                loaded = cast(object, json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                _LOGGER.warning("Gateway config is unreadable; not seeding the agent engine.")
+                return
+            if not isinstance(loaded, dict):
+                _LOGGER.warning("Gateway config is not an object; not seeding the agent engine.")
+                return
+            document = cast(dict[str, object], loaded)
+        agent = document.get("agent")
+        if (
+            isinstance(agent, dict)
+            and "acp_backend" in agent
+            and not _overlay_pins_kiro_cli(state_home)
+        ):
+            return
+        section = cast(dict[str, object], agent) if isinstance(agent, dict) else {}
+        section["acp_backend"] = _DEFAULT_ACP_BACKEND
+        document["agent"] = section
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
         path.chmod(0o600)
 
     @staticmethod
@@ -961,6 +1021,21 @@ def _probe_dashboard_health(port: int, timeout: float) -> bool:
             return bool(200 <= response.status < 300)
     except (OSError, http.client.HTTPException, ValueError):
         return False
+
+
+def _overlay_pins_kiro_cli(state_home: Path) -> bool:
+    """Whether ``config.local.json`` still carries the kiro-cli pin earlier images wrote."""
+    try:
+        loaded = cast(
+            object,
+            json.loads((state_home / _LOCAL_CONFIG_FILENAME).read_text(encoding="utf-8")),
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(loaded, dict):
+        return False
+    agent = cast(dict[str, object], loaded).get("agent")
+    return isinstance(agent, dict) and agent.get("acp_backend") == _KIRO_CLI_ACP_BACKEND
 
 
 def _exchange_link_for_session(port: int, link_token: str, timeout: float) -> str | None:

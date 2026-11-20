@@ -970,7 +970,9 @@ export class BrowserApplication {
         this.#clearTimeout(this.#reconnectTimer);
         this.#reconnectTimer = undefined;
       }
-      this.kiroCheck();
+      // No kiroCheck() here: the sandbox's default engine (KAS) signs in
+      // through Kiro Crew's own Settings, so the shell no longer probes or
+      // shows a Kiro account of its own.
       void this.#resumeStrandedStop();
     } else if (envelope.operation === "sandbox.state") {
       void this.#refreshStatus(false);
@@ -1115,11 +1117,12 @@ export class BrowserApplication {
       const sandbox = await this.#control.status();
       this.#store.dispatch({ type: "sandbox", sandbox });
       this.#refreshDetails(sandbox.stateVersion);
-      if (
-        connectActive &&
-        sandbox.state !== "STOPPED" &&
-        sandbox.state !== "ERROR"
-      ) {
+      // Opening the page (or signing in) means the user wants their sandbox:
+      // a stopped one starts on its own instead of waiting for a click. Only
+      // a parked ERROR sandbox still waits for the panel's Start button, and
+      // a Stop safely in this tab never restarts (it does not pass through
+      // here with connectActive).
+      if (connectActive && sandbox.state !== "ERROR") {
         await this.start();
       }
     } catch (error: unknown) {

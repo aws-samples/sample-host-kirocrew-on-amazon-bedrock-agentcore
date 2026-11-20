@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "kirocrewVersion": "0.12.2",
+  "kirocrewVersion": "0.13.0",
   "defaultDisposition": "allowed",
   "rationale": [
     "The sandbox is a single-tenant microVM. AgentCore validates the Cognito authorization header and the adapter verifies a binding token against the Cognito subject hash on every invocation, so tenancy is enforced by the transport, not by route filtering.",
@@ -38,12 +38,12 @@
     {
       "prefix": "/api/desktop",
       "registeredUpstream": false,
-      "reason": "Host-native desktop control; not registered by upstream 0.12.2 and impossible inside a microVM."
+      "reason": "Host-native desktop control; not registered by upstream 0.13.0 and impossible inside a microVM."
     },
     {
       "prefix": "/api/files/pick",
       "registeredUpstream": false,
-      "reason": "Native OS file picker; not registered by upstream 0.12.2 and impossible inside a microVM."
+      "reason": "Native OS file picker; not registered by upstream 0.13.0 and impossible inside a microVM."
     }
   ],
   "deniedPrefixes": [

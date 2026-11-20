@@ -111,6 +111,10 @@ def _compiled_files(source: Path) -> tuple[Path, ...]:
             continue
         if candidate.suffix in _PRECOMPRESSED_SUFFIXES:
             continue
+        if candidate.name.endswith(".d.ts"):
+            # TypeScript declarations for app authors (0.13.0 ships
+            # vendor/kirocrew-app-sdk.d.ts). Nothing in the SPA loads them.
+            continue
         if candidate.suffix in _SOURCE_SUFFIXES:
             raise ValueError(f"Upstream SPA contains a source artifact: {candidate}")
         if candidate.suffix not in _COMPILED_SUFFIXES:

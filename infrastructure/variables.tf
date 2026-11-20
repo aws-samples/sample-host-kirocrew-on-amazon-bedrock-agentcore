@@ -45,7 +45,7 @@ variable "environment" {
 variable "frontend_compatibility_version" {
   description = "Pinned upstream KiroCrew frontend compatibility version."
   type        = string
-  default     = "0.12.2"
+  default     = "0.13.0"
 }
 
 variable "persisted_paths" {
@@ -67,7 +67,7 @@ variable "persisted_paths" {
 variable "frontend_asset_directory" {
   description = "Directory containing the compiled upstream SPA and injected bootstrap assets."
   type        = string
-  default     = "../frontend-shell/upstream/0.12.2"
+  default     = "../frontend-shell/upstream/0.13.0"
 }
 
 variable "oauth_callback_paths" {

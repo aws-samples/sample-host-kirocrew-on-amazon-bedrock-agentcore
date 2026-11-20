@@ -67,6 +67,11 @@ _LOCAL_CONFIG_PINS: Final[tuple[tuple[str, str, object], ...]] = (
     # own sign-in, never kiro-cli's relay.
     ("agent", "kas_bundle", True),
     ("session", "timeout_secs", _IDLE_SESSION_TIMEOUT_SECONDS),
+    # 0.13.0 Remote Control relays this Crew to the owner's other devices. A
+    # sandbox belongs to exactly one Cognito subject and is reached only through
+    # AgentCore, so the relay stays off. Re-pinned at every start, so a
+    # `kirocrew remote-control on` run inside the sandbox never connects.
+    ("tunnel", "relay_enabled", False),
 )
 #: Overlay keys earlier images pinned, removed so the user's choice in
 #: config.json is no longer overridden.

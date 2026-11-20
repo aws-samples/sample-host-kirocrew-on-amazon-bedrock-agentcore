@@ -5172,7 +5172,3 @@
 /usr/local/lib/python3.12/zoneinfo/__pycache__/_common.cpython-312.pyc
 /usr/local/lib/python3.12/zoneinfo/__pycache__/_tzpath.cpython-312.pyc
 /usr/share/zoneinfo/Etc/UTC
-/opt/kirocrew-kas/*/node/node-*-linux-{node_arch}/bin/node
-/opt/kirocrew-kas/*/bundle/node_modules/@kiro/agent/**
-/usr/local/bin/kiro-cli
-/usr/local/bin/kiro-cli-chat

@@ -1578,6 +1578,13 @@ async def _with_loop_watchdog(
     return built
 
 
+def _flush_log_handlers() -> None:
+    """Push buffered records out now (the CloudWatch handler batches every 5 s)."""
+    for handler in logging.getLogger().handlers:
+        with contextlib.suppress(Exception):
+            handler.flush()
+
+
 def serve_runtime(environment: Mapping[str, str] = os.environ) -> None:
     # Python logging drops INFO records without a configured handler; the
     # runtime's own log lines must reach stdout to appear in the AgentCore
@@ -1592,7 +1599,10 @@ def serve_runtime(environment: Mapping[str, str] = os.environ) -> None:
     _attach_cloudwatch_logging(environment)
     _report_workspace_disk(Path(environment.get("WORKSPACE_ROOT", "/mnt/workspace")))
     # On Runtime V2 the snapshot is taken once this port answers: pin first.
+    # Flush around it so a pin that takes the process down still leaves a line.
+    _flush_log_handlers()
     pin_from_environment(environment)
+    _flush_log_handlers()
     web.run_app(
         _with_loop_watchdog(build_runtime_application(environment)),
         host="0.0.0.0",  # noqa: S104  # nosec B104 - AgentCore ingress port.

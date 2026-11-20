@@ -28,14 +28,10 @@ _SKIP_PREFIXES = (  # paths the trace saw that are not image files to pin
     "/etc",
     "/opt/kirocrew/models",
 )
-# The KAS engine starts with the first chat, after readiness, so the smoke
-# trace never opens it; pin its node binary and engine bundle by glob.
-_EXTRA = (
-    "/opt/kirocrew-kas/*/node/node-*-linux-{node_arch}/bin/node",
-    "/opt/kirocrew-kas/*/bundle/node_modules/@kiro/agent/**",
-    "/usr/local/bin/kiro-cli",
-    "/usr/local/bin/kiro-cli-chat",
-)
+# Only what the start itself reads. kiro-cli and the KAS engine start with the
+# first chat; pinning them (about 370 MB) made the V2 snapshot build exceed the
+# platform's health check while the image disk is still fetched lazily.
+_EXTRA: tuple[str, ...] = ()
 
 
 def normalize(path: str) -> str:

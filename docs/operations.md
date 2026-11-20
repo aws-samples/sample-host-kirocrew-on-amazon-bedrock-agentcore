@@ -213,6 +213,11 @@ Implemented in `infrastructure/functions/control/` and pinned by
   versioned route-allowlist and upstream-contract files, and review every
   added `/api/*` literal — the contract suite enforces the digest and the
   deny-list consistency across Python, TypeScript, and both fixtures.
+  Deploy the new runtime image, `module.frontend` and `module.control_api`
+  together: the control plane hands the browser
+  `frontend_compatibility_version`, and a control plane still on the old
+  version makes every page answer "The browser and runtime versions are
+  incompatible" while the sandbox sits in `STARTING` with no runtime log.
 
 ## Incident history and load-bearing invariants
 

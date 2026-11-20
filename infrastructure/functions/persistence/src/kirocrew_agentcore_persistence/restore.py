@@ -379,7 +379,7 @@ class RestoreEngine:
         conditions: RestoreConditions | None = None,
     ) -> RestoreReport:
         selected_conditions = conditions or RestoreConditions()
-        committed = self._store.committed_generations()
+        committed = self._store.committed_generations(latest=2)
         if not committed:
             if existing_sandbox:
                 report = self._report("failed", None, False, ("no-retained-generation",), ())

@@ -230,8 +230,8 @@ def test_broker_rejection_mid_restore_falls_back_instead_of_aborting(
         def __init__(self, inner: BrokeredCheckpointStore) -> None:
             self._inner = inner
 
-        def committed_generations(self) -> tuple[object, ...]:
-            return self._inner.committed_generations()
+        def committed_generations(self, latest: int | None = None) -> tuple[object, ...]:
+            return self._inner.committed_generations(latest)
 
         def get_manifest(self, generation: int) -> object:
             if generation == 2:

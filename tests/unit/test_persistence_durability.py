@@ -227,6 +227,31 @@ def test_next_generation_reads_key_names_only(monkeypatch: pytest.MonkeyPatch) -
     assert store.next_generation() == 3
 
 
+def test_committed_generations_fetches_only_the_newest_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reading all ~740 commit records twice held cold starts for ~3 minutes."""
+    _, objects, broker, store = components()
+    for generation in (1, 2, 10):
+        commit(store, broker, generation, manifest(generation), {})
+    # A malformed old record outside the window is never fetched.
+    objects.objects[f"snapshots/{SANDBOX_ID}/commits/1.json"] = b"[]"
+    fetched: list[int] = []
+    original = broker.presign_commit
+
+    def counting(sandbox_id: str, generation: int, operation: object) -> object:
+        fetched.append(generation)
+        return original(sandbox_id, generation, operation)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(broker, "presign_commit", counting)
+    assert tuple(item.generation for item in store.committed_generations(latest=2)) == (2, 10)
+    assert fetched == [2, 10]
+    assert store.latest_committed() == 10
+    assert store.committed_generations(latest=0) == ()
+    with pytest.raises(IntegrityError, match="Commit"):
+        store.committed_generations()
+
+
 def test_brokered_store_rejects_malformed_commit_and_manifest_objects() -> None:
     _, objects, broker, store = components()
     commit_key = f"snapshots/{SANDBOX_ID}/commits/1.json"

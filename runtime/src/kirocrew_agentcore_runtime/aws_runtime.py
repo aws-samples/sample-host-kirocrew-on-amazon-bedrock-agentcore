@@ -1287,7 +1287,7 @@ class AwsSessionInitializer:
         broker = LambdaPersistenceBroker(client, claims.sandbox_id)
         store = BrokeredCheckpointStore(broker, claims.sandbox_id, index_chunks=True)
         cipher = broker.cipher(claims.sandbox_id)
-        committed = store.committed_generations()
+        committed = store.committed_generations(latest=1)
         expected = metadata.last_checkpoint_generation
         # The durable store may be AHEAD of the recorded pointer: a background
         # checkpoint can commit its generation to S3 and die before the

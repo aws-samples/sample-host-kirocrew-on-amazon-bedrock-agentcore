@@ -130,13 +130,18 @@ RUN python -m pip install --no-index --no-deps /wheels/*.whl \
 # a user who picks the KAS engine in Settings never downloads it into the
 # persisted home. `kirocrew kas install` checks the manifest against the sha256
 # this KiroCrew release pins. KIROCREW_BUNDLED_KAS_DIR is upstream's lookup
-# for a staged engine root.
+# for a staged engine root. The engine is then trimmed with upstream's own
+# shipping step (kas_bundle.trim_for_shipping): only the node binary and the
+# engine files Node loads stay. The engine never runs the distribution's npm,
+# npx or corepack, and that npm tree carried most of the image's HIGH findings.
 RUN set -eux; \
     export HOME=/tmp/kas-home KIROCREW_HOME=/tmp/kas-home/.kiro/crew; \
     mkdir -p "$KIROCREW_HOME"; \
     kirocrew kas install; \
     mv "$KIROCREW_HOME/engines/kas" /opt/kirocrew-kas; \
     rm -rf /tmp/kas-home; \
+    python -c 'from pathlib import Path; from kiro_crew.acp import kas_bundle as k; b = k.installed_bundle(root=Path("/opt/kirocrew-kas")); assert b is not None, "KAS not staged"; print("trimmed bytes:", k.trim_for_shipping(b))'; \
+    test -x /opt/kirocrew-kas/*/node/*/bin/node; \
     chmod -R a+rX,a-w /opt/kirocrew-kas
 COPY --from=kiro-cli-builder /opt/kiro-cli-home/.local/bin/kiro-cli /usr/local/bin/kiro-cli
 COPY --from=kiro-cli-builder /opt/kiro-cli-home/.local/bin/kiro-cli-chat /usr/local/bin/kiro-cli-chat

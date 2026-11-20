@@ -395,7 +395,7 @@ class BrokeredCheckpointStore:
         manifest = self.get_manifest(generation)
         if manifest.digest != manifest_digest:
             raise CheckpointError("Manifest must exist before generation commit.")
-        committed = self.committed_generations()
+        committed = self.committed_generations(latest=1)
         if committed and generation <= committed[-1].generation:
             raise CheckpointError("Generation commit must advance monotonically.")
         payload = json.dumps(
@@ -412,7 +412,7 @@ class BrokeredCheckpointStore:
         self._broker.request(grant, StorageOperation.PUT, body=payload)
 
     def latest_committed(self) -> int | None:
-        generations = self.committed_generations()
+        generations = self.committed_generations(latest=1)
         return generations[-1].generation if generations else None
 
     def next_generation(self) -> int:
@@ -437,10 +437,24 @@ class BrokeredCheckpointStore:
                     highest = max(highest, int(name))
         return highest + 1
 
-    def committed_generations(self) -> tuple[CommittedGeneration, ...]:
-        commits: list[CommittedGeneration] = []
+    def committed_generations(self, latest: int | None = None) -> tuple[CommittedGeneration, ...]:
+        """Committed generations in order; only the newest *latest* when given.
+
+        Each record costs two broker round trips, and commits are never pruned
+        while a sandbox lives. At about 740 generations a cold start spent
+        roughly three minutes between the first request and the first manifest
+        fetch, where restore read every record twice (inferred from the log
+        gap; not timed per call). Callers that need only the newest one or two
+        list key names and fetch only those records.
+        """
+        numbers: list[int] = []
         for key in self._broker.internal_keys(self._sandbox_id, "commits"):
-            generation = int(key.rsplit("/", 1)[-1].removesuffix(".json"))
+            numbers.append(int(key.rsplit("/", 1)[-1].removesuffix(".json")))
+        numbers.sort()
+        if latest is not None:
+            numbers = numbers[-latest:] if latest > 0 else []
+        commits: list[CommittedGeneration] = []
+        for generation in numbers:
             grant = self._broker.presign_commit(self._sandbox_id, generation, StorageOperation.GET)
             raw = cast(bytes, self._broker.request(grant, StorageOperation.GET))
             value = json.loads(raw)
@@ -611,7 +625,7 @@ class IntegrityAuditor:
         self._clock = clock
 
     def run(self) -> IntegrityAuditResult:
-        generations = self._store.committed_generations()[-2:]
+        generations = self._store.committed_generations(latest=2)
         failures: list[str] = []
         for item in generations:
             try:

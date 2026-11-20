@@ -1204,7 +1204,8 @@ def test_initialize_sync_restore_composition(monkeypatch: pytest.MonkeyPatch) ->
         def __init__(self, _broker: object, _sandbox: str, *, index_chunks: bool = False) -> None:
             indexed.append(index_chunks)
 
-        def committed_generations(self) -> tuple[object, ...]:
+        def committed_generations(self, latest: int | None = None) -> tuple[object, ...]:
+            assert latest == 1
             return (SimpleNamespace(generation=3),)
 
     report = RestoreReport("restored", 3, False, (), (3,), datetime(2026, 8, 18, tzinfo=UTC))

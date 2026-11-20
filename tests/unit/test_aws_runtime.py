@@ -1069,10 +1069,31 @@ def test_remaining_state_store_and_backend_branches(caplog: pytest.LogCaptureFix
             pytest.raises(Exception, match="final checkpoint"),
         ):
             _ = [event async for event in failed.execute("sandbox.prepare_stop", "request", {})]
-        assert readiness.read_only
+        assert not readiness.read_only
         # The cause must reach the logs: the client only sees CHECKPOINT_FAILED.
         assert "Final checkpoint for Stop safely failed" in caplog.text
         assert "checkpoint failed" in caplog.text
+
+        # An authoritative loss of durability still turns the sandbox read-only.
+        class RefusedEngine(FakeCheckpointEngine):
+            def checkpoint(self, generation: int, *, final: bool = False) -> CheckpointReceipt:
+                del generation, final
+                raise RuntimeError("commit refused") from BrokerRefusalError("refused")
+
+        class BreachedEngine(BrokenEngine):
+            read_only = True
+
+        for engine_type in (RefusedEngine, BreachedEngine):
+            readiness.read_only = False
+            backend_for = ProductionRuntimeBackend(cast(Any, loopback), readiness)
+            backend_for.configure(
+                cast(CheckpointEngine, engine_type()),
+                cast(BrokeredCheckpointStore, FakeCheckpointStore()),
+                cast(LambdaBrokerClient, FakeBrokerClient()),
+            )
+            with pytest.raises(Exception, match="final checkpoint"):
+                _ = [event async for event in backend_for.execute("sandbox.prepare_stop", "r", {})]
+            assert readiness.read_only
 
     asyncio.run(scenario())
 

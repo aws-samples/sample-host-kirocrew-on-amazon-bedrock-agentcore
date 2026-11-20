@@ -558,9 +558,20 @@ class ProductionRuntimeBackend:
             receipt, checkpoint_receipt = await self._commit_checkpoint(final=True)
         except Exception as error:
             # The only record of why Stop safely failed: the browser gets a
-            # generic CHECKPOINT_FAILED and the sandbox turns read-only.
+            # generic CHECKPOINT_FAILED.
             _LOGGER.error("Final checkpoint for Stop safely failed.", exc_info=True)
-            self._readiness.read_only = True
+            # Only an authoritative loss of durability turns the sandbox
+            # read-only: a broker refusal (another holder owns the sandbox)
+            # or an engine that breached its recovery-point objective. A
+            # transient failure -- one broker call timing out -- used to land
+            # here too, and read-only is never cleared: every later request
+            # was answered 503 and periodic checkpoints stopped, so the user
+            # could neither work nor retry Stop until idle reclaim. The last
+            # committed generation is intact and the engine left nothing
+            # half-applied, so the sandbox keeps serving and Stop can retry.
+            engine = self._checkpoint_engine
+            if _caused_by_refusal(error) or bool(getattr(engine, "read_only", False)):
+                self._readiness.read_only = True
             raise AdapterRequestError(
                 503,
                 "CHECKPOINT_FAILED",

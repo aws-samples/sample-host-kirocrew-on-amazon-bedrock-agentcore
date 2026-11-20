@@ -19,10 +19,12 @@ never a requirement for start.
 
 from __future__ import annotations
 
+import ctypes
 import glob
 import json
 import logging
 import mmap
+import os
 import platform
 import select
 import signal
@@ -50,8 +52,22 @@ DEFAULT_DEADLINE_SECONDS: Final = 20.0
 DEFAULT_WAIT_SECONDS: Final = 30.0
 _NODE_ARCH: Final = {"x86_64": "x64", "aarch64": "arm64"}
 
-# Held for the life of the process: dropping a mapping releases its pages.
-_PINNED: list[mmap.mmap] = []
+# Held for the life of the process. The mappings are made through libc so no
+# descriptor stays open per file: Python's mmap keeps a duplicate of each. On
+# V2 the first pinner stopped after 1,020 files, which fits a 1,024-descriptor
+# limit (inferred from the count; the limit itself was not read).
+_PINNED: list[int] = []
+_LIBC: Final = ctypes.CDLL(None, use_errno=True)
+_LIBC.mmap.restype = ctypes.c_void_p
+_LIBC.mmap.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_size_t,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_long,
+]
+_MAP_FAILED: Final = ctypes.c_void_p(-1).value
 # The serving process keeps its pinner alive; its mappings hold the pages.
 _PINNERS: list[subprocess.Popen[str]] = []
 
@@ -86,6 +102,16 @@ def expand(lines: Iterable[str], machine: str | None = None) -> list[Path]:
     return paths
 
 
+def _map_file(descriptor: int, size: int) -> int:
+    """Map *size* bytes of the open file read-only, shared and populated."""
+    flags = mmap.MAP_SHARED | getattr(mmap, "MAP_POPULATE", 0)
+    address = _LIBC.mmap(None, size, mmap.PROT_READ, flags, descriptor, 0)
+    if address is None or address == _MAP_FAILED:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    return int(address)
+
+
 def pin(
     paths: Iterable[Path],
     budget_bytes: int = DEFAULT_BUDGET_BYTES,
@@ -106,16 +132,11 @@ def pin(
                 skipped += 1
                 continue
             with path.open("rb") as handle:
-                mapping = mmap.mmap(
-                    handle.fileno(),
-                    0,
-                    flags=mmap.MAP_SHARED | getattr(mmap, "MAP_POPULATE", 0),
-                    prot=mmap.PROT_READ,
-                )
-        except (OSError, ValueError):
+                address = _map_file(handle.fileno(), size)
+        except OSError:
             skipped += 1
             continue
-        _PINNED.append(mapping)
+        _PINNED.append(address)
         pinned += 1
         total += size
     return PinReport(pinned, total, skipped, time.monotonic() - started)

@@ -57,6 +57,24 @@ def test_pin_maps_within_budget_and_skips_failures(tmp_path: Path) -> None:
     assert page_pin.pinned_count() == before + 1
 
 
+def test_pin_holds_no_descriptor_per_file(tmp_path: Path) -> None:
+    files = []
+    for index in range(64):
+        path = tmp_path / f"f{index}"
+        path.write_bytes(b"p" * 16)
+        files.append(path)
+    descriptors = Path("/dev/fd")
+    before = len(list(descriptors.iterdir()))
+    report = page_pin.pin(files)
+    assert report.files == 64
+    assert len(list(descriptors.iterdir())) <= before
+
+
+def test_map_file_reports_failures() -> None:
+    with pytest.raises(OSError):
+        page_pin._map_file(-1, 16)
+
+
 def test_pin_stops_at_the_deadline(tmp_path: Path) -> None:
     first = tmp_path / "first"
     first.write_bytes(b"x")

@@ -89,6 +89,9 @@ LABEL org.opencontainers.image.title="kirocrew-agentcore-runtime" \
 
 # A practical in-sandbox development toolchain. Keep large language SDKs and
 # databases project-local so the runtime stays below AgentCore's 2 GB image cap.
+# The fonts-liberation and lib* entries are the shared libraries the browser
+# tool's Chromium links (ldd on the pinned 154 build): without them it exits
+# 127 on start, so the browser tool never worked in the sandbox.
 RUN apt-get update \
     && apt-get upgrade --yes --no-install-recommends \
     && apt-get install --yes --no-install-recommends \
@@ -115,6 +118,27 @@ RUN apt-get update \
         vim-tiny \
         xz-utils \
         zip \
+        fonts-liberation \
+        libasound2 \
+        libatk-bridge2.0-0 \
+        libatk1.0-0 \
+        libatspi2.0-0 \
+        libcairo2 \
+        libcups2 \
+        libdbus-1-3 \
+        libgbm1 \
+        libglib2.0-0 \
+        libnspr4 \
+        libnss3 \
+        libpango-1.0-0 \
+        libx11-6 \
+        libxcb1 \
+        libxcomposite1 \
+        libxdamage1 \
+        libxext6 \
+        libxfixes3 \
+        libxkbcommon0 \
+        libxrandr2 \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd \
     && git lfs install --system \
@@ -143,6 +167,17 @@ RUN set -eux; \
     python -c 'from pathlib import Path; from kiro_crew.acp import kas_bundle as k; b = k.installed_bundle(root=Path("/opt/kirocrew-kas")); assert b is not None, "KAS not staged"; print("trimmed bytes:", k.trim_for_shipping(b))'; \
     test -x /opt/kirocrew-kas/*/node/*/bin/node; \
     chmod -R a+rX,a-w /opt/kirocrew-kas
+# The browser tool's Chromium (~390MB unpacked), staged read-only in the image.
+# Left alone the gateway downloads it into ~/.kiro/crew/browser-harness/chromium,
+# where every checkpoint stores it and every cold start downloads it again: on
+# the dev deployment it was a third of a restored workspace, about 40 s of the
+# ~10 MB/s restore. The supervisor links that directory here at start and the
+# checkpoint excludes it. Upstream's own downloader fetches the version this
+# KiroCrew release pins, so the link always satisfies its presence check.
+RUN set -eux; \
+    python -c 'from pathlib import Path; from kiro_crew.browser_harness import chromium as c; s = c.download_chromium(Path("/opt/kirocrew-browser")); assert s.present, s; print("chromium", s.version, s.build, s.executable)'; \
+    rm -rf /opt/kirocrew-browser/chromium/chromium-*; \
+    chmod -R a+rX,a-w /opt/kirocrew-browser
 COPY --from=kiro-cli-builder /opt/kiro-cli-home/.local/bin/kiro-cli /usr/local/bin/kiro-cli
 COPY --from=kiro-cli-builder /opt/kiro-cli-home/.local/bin/kiro-cli-chat /usr/local/bin/kiro-cli-chat
 # The KiroCrew embedding model (Qwen3-Embedding-0.6B, ~640MB) lives in the

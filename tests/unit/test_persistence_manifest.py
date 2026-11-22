@@ -218,6 +218,10 @@ def test_policy_excludes_the_in_workspace_embedding_model_cache() -> None:
     # bloats checkpoints and eats the 1GB session-storage quota.
     assert not policy.includes(PurePosixPath("home/.kiro/crew/models/qwen3-embedding-0.6b.gguf"))
     assert not policy.includes(PurePosixPath("home/.kiro/crew/models"))
+    assert not policy.includes(
+        PurePosixPath("home/.kiro/crew/browser-harness/chromium/154.0.8037.0/chrome")
+    )
+    assert policy.includes(PurePosixPath("home/.kiro/crew/browser-harness/state.json"))
     # Only that exact directory: user files merely named "models" survive.
     assert policy.includes(PurePosixPath("projects/default/models/data.txt"))
     assert policy.includes(PurePosixPath("home/.kiro/crew/skills/models.md"))

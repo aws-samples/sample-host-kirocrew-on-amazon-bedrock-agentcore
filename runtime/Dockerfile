@@ -89,6 +89,9 @@ LABEL org.opencontainers.image.title="kirocrew-agentcore-runtime" \
 
 # A practical in-sandbox development toolchain. Keep large language SDKs and
 # databases project-local so the runtime stays below AgentCore's 2 GB image cap.
+# The fonts-liberation and lib* entries are the shared libraries the browser
+# tool's Chromium links (ldd on the pinned 154 build): without them it exits
+# 127 on start, so the browser tool never worked in the sandbox.
 RUN apt-get update \
     && apt-get upgrade --yes --no-install-recommends \
     && apt-get install --yes --no-install-recommends \
@@ -115,6 +118,27 @@ RUN apt-get update \
         vim-tiny \
         xz-utils \
         zip \
+        fonts-liberation \
+        libasound2 \
+        libatk-bridge2.0-0 \
+        libatk1.0-0 \
+        libatspi2.0-0 \
+        libcairo2 \
+        libcups2 \
+        libdbus-1-3 \
+        libgbm1 \
+        libglib2.0-0 \
+        libnspr4 \
+        libnss3 \
+        libpango-1.0-0 \
+        libx11-6 \
+        libxcb1 \
+        libxcomposite1 \
+        libxdamage1 \
+        libxext6 \
+        libxfixes3 \
+        libxkbcommon0 \
+        libxrandr2 \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd \
     && git lfs install --system \

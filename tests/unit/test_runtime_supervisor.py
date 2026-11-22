@@ -255,6 +255,44 @@ def test_start_scrubs_stale_gateway_residue_from_a_restored_home(
     assert (state_home / "config.json").exists()
 
 
+def test_start_links_the_image_chromium_into_the_home(tmp_path: Path) -> None:
+    """The browser tool finds the image's Chromium instead of downloading it."""
+    image = tmp_path / "opt" / "chromium"
+    (image / "154.0.8037.0").mkdir(parents=True)
+    layout = WorkspaceLayout(tmp_path / "workspace")
+    layout.create(metadata())
+    supervisor = KiroCrewSupervisor(layout, metadata(), image_chromium=image)
+    home = layout.kirocrew_home
+    link = home / "browser-harness" / "chromium"
+    # A fresh home gets the link; a correct link is left alone.
+    supervisor._link_image_chromium(home)
+    assert link.is_symlink() and link.readlink() == image
+    supervisor._link_image_chromium(home)
+    assert link.readlink() == image
+    # A link elsewhere, a stray file and a downloaded copy are all replaced.
+    link.unlink()
+    link.symlink_to(tmp_path)
+    supervisor._link_image_chromium(home)
+    assert link.readlink() == image
+    link.unlink()
+    link.write_text("x")
+    supervisor._link_image_chromium(home)
+    assert link.readlink() == image
+    link.unlink()
+    (link / "154.0.8037.0").mkdir(parents=True)
+    supervisor._link_image_chromium(home)
+    assert link.readlink() == image
+    # Without an image copy nothing changes; a failure is logged, never raised.
+    KiroCrewSupervisor(layout, metadata(), image_chromium=tmp_path / "none")._link_image_chromium(
+        tmp_path / "other"
+    )
+    assert not (tmp_path / "other").exists()
+    blocked = tmp_path / "blocked"
+    blocked.write_text("not a directory")
+    supervisor._link_image_chromium(blocked)
+    assert blocked.read_text() == "not a directory"
+
+
 def test_supervisor_rejects_root_bad_timeouts_missing_token_and_crash(tmp_path: Path) -> None:
     layout = WorkspaceLayout(tmp_path / "workspace")
     root = KiroCrewSupervisor(layout, metadata(), effective_uid=lambda: 0)

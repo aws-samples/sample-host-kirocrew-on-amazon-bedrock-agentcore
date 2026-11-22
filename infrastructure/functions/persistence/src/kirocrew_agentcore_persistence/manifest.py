@@ -172,6 +172,9 @@ class PersistencePolicy:
             # a legacy in-workspace copy is ~640MB of re-downloadable weights
             # that would bloat every checkpoint and eat the 1GB session quota.
             "home/.kiro/crew/models",
+            # The browser tool's Chromium ships in the image too; the runtime
+            # links this directory to it at start (~390MB per checkpoint).
+            "home/.kiro/crew/browser-harness/chromium",
         }
     )
     _excluded_names: Final = frozenset(

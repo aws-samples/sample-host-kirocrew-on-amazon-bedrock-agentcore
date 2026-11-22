@@ -30,6 +30,8 @@ from .team_context import config_from_environment as team_context_config
 _LOGGER = logging.getLogger(__name__)
 
 _READY_PREFIX: Final = "KIROCREW_READY:"
+# The browser tool's Chromium, staged read-only in the image (runtime/Dockerfile).
+_IMAGE_CHROMIUM: Final = Path("/opt/kirocrew-browser/chromium")
 _TOKEN_PATTERN: Final = re.compile(r"(?:^|[?&])token=([^&\s]+)")
 _DEFAULT_TOKEN_TTL_SECONDS: Final = 19 * 60 * 60
 _DASHBOARD_PORT: Final = 5476
@@ -302,8 +304,10 @@ class KiroCrewSupervisor:
         state_root: Path | None = None,
         wal_probe: Callable[[Path], bool] = supports_sqlite_wal,
         chdir: Callable[[Path], None] = os.chdir,
+        image_chromium: Path = _IMAGE_CHROMIUM,
     ) -> None:
         self._layout = layout
+        self._image_chromium = image_chromium
         self._metadata = metadata
         self._executable = executable
         self._process_factory = process_factory or _start_process
@@ -368,6 +372,7 @@ class KiroCrewSupervisor:
         self._chdir(self._layout.root)
         self._state_home = self._resolve_state_home()
         self._scrub_runtime_residue(self._state_home)
+        self._link_image_chromium(self._state_home)
         self._seed_default_engine(self._state_home)
         self._pin_local_config(self._state_home)
         self._pin_agent_registry_mcp(self._state_home)
@@ -638,6 +643,28 @@ class KiroCrewSupervisor:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
         path.chmod(0o600)
+
+    def _link_image_chromium(self, state_home: Path) -> None:
+        """Point the browser tool's Chromium directory at the image's read-only copy.
+
+        The checkpoint excludes the directory, so a restored home has none (or,
+        from an older checkpoint, a downloaded copy, which is replaced). Never
+        raises: without the link the browser tool downloads Chromium as before.
+        """
+        if not self._image_chromium.is_dir():
+            return
+        link = state_home / "browser-harness" / "chromium"
+        try:
+            if link.is_symlink() and link.readlink() == self._image_chromium:
+                return
+            if link.is_symlink() or link.is_file():
+                link.unlink()
+            elif link.is_dir():
+                shutil.rmtree(link)
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.symlink_to(self._image_chromium, target_is_directory=True)
+        except OSError:
+            _LOGGER.warning("Could not link the image's Chromium; the browser tool downloads it.")
 
     @staticmethod
     def _scrub_runtime_residue(state_home: Path) -> None:

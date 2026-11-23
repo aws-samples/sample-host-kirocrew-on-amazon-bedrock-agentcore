@@ -181,7 +181,7 @@ to 2026-11-22). Read the two timing lines in the runtime application log:
 | Phase | Typical | What sets it |
 |---|---|---|
 | Request to restore start | ~3 s | Restore reads only the newest two commit records (#116). Before, every record was fetched twice: ~190 s at 744 generations. |
-| Restore download | ~10 MB/s | Bytes, not file or chunk count. 96 download workers instead of 32 saved 10%, so the limit is the microVM's bandwidth (inferred). 0.81 GB took 88 s. |
+| Restore download | 10–15 s for 0.84 GB | Since #128. Before it, a workspace with more shared chunks than the 512-chunk prefetch window downloaded one chunk at a time: the same sandbox took 118–167 s, and adding workers did not help. This was first misread as a bandwidth limit. Sandboxes with few shared chunks were never affected (~350 MB in 7 s). |
 | Gateway start | 24–32 s | `port_answered` ~11–13 s, then one token mint. |
 
 To make cold starts faster, keep bytes out of the checkpoint: anything the
@@ -208,8 +208,10 @@ Why V2 does not help this design:
 
 - V2 restores the microVM from a snapshot, so the platform part of a cold
   start gets faster. Here that part was never the bottleneck. Every start
-  downloads and decrypts the whole workspace from S3 (about 0.8 GB, ~90 s at
-  ~10 MB/s), and that costs the same on V1 and V2.
+  downloads and decrypts the whole workspace from S3, and that costs the
+  same on V1 and V2. When this decision was made the download took about
+  90 s; since #128 it takes 10–15 s, so the slow file reads below are now
+  the main reason, not the download.
 - After a V2 restore, file reads are slow until pages come back from the
   lazily fetched disk. KiroCrew's start reads about 5,000 files. Page pins
   cover file contents but not directory metadata, and holding the pins in
@@ -225,7 +227,11 @@ not measured.
 
 Revisit when any of these happens: AWS announces an end date for V1, the
 workspace moves to an on-demand mount, or the V2 slow-read issue is fixed
-on the platform side. Existing runtimes keep their version on update, so
+on the platform side. The V2 build warmup hook
+([lifecycle hooks](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-lifecycle-hooks.html))
+is the platform's answer to slow first reads and is worth a measured trial
+first; the documentation does not say whether it covers directory
+metadata. Existing runtimes keep their version on update, so
 staying on V1 needs no action today.
 
 **New deployments:** since 2026-11-13 the service creates a runtime as V2

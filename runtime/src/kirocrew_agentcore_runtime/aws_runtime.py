@@ -74,6 +74,7 @@ from kirocrew_agentcore_runtime.supervisor import (
 from kirocrew_agentcore_runtime.team_context import (
     refresh_seconds as team_context_refresh_seconds,
 )
+from kirocrew_agentcore_runtime.warmup import WarmupHook, install_warmup_route
 
 _LOGGER = logging.getLogger(__name__)
 # When this container process started; restore timing is measured from here.
@@ -985,6 +986,11 @@ class AwsSessionInitializer:
         self._broker_client: LambdaBrokerClient | None = None
 
     @property
+    def initialized(self) -> bool:
+        """Whether this process has bound and restored a session."""
+        return self._initialized_session is not None
+
+    @property
     def _init_owner(self) -> str:
         if self._init_owner_value is None:
             self._init_owner_value = str(uuid.uuid4())
@@ -1515,6 +1521,15 @@ async def build_runtime_application(
                 await task
         await backend.checkpoint_on_shutdown()
 
+    # V2 build warmup hook (configured only on V2 runtimes; a V1 runtime never
+    # calls it). Once a session is initializing or served, the call is ignored.
+    install_warmup_route(
+        adapter.application,
+        WarmupHook(
+            environment=environment,
+            in_service=lambda: readiness.initializing or initializer.initialized,
+        ),
+    )
     adapter.application.on_startup.append(start_periodic_checkpoints)
     adapter.application.on_shutdown.append(shutdown)
     adapter.application.on_cleanup.append(cleanup)

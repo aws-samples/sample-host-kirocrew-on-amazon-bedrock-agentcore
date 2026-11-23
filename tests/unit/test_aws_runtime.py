@@ -2283,3 +2283,11 @@ def test_init_owner_is_drawn_on_first_use_not_at_construction() -> None:
     assert owner
     assert initializer._init_owner == owner
     assert StubAwsSessionInitializer()._init_owner != owner
+
+
+def test_initializer_reports_whether_a_session_is_bound() -> None:
+    """The V2 warmup hook ignores build calls once a session is bound."""
+    initializer = StubAwsSessionInitializer()
+    assert initializer.initialized is False
+    initializer._initialized_session = ("subject", "sandbox", "session")
+    assert initializer.initialized is True

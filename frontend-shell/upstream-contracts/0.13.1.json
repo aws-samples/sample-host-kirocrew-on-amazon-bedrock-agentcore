@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "kiroCrew": {
-    "version": "0.13.0",
-    "artifactSha256": "cd3648579e066e1266ee72e65b111de0e293ff0df18ee850f803d2db616017e5"
+    "version": "0.13.1",
+    "artifactSha256": "916f49de2a8cd261d0ae79edc8f9ad125069f159da70659a8ee95b241b804f80"
   },
   "bootstrap": {
     "path": "/bootstrap.js",
@@ -209,9 +209,9 @@
     "largerFiles": "sandbox-scoped-presigned-url"
   },
   "assetIntegrity": {
-    "manifest": "/upstream/0.13.0/asset-manifest.json",
+    "manifest": "/upstream/0.13.1/asset-manifest.json",
     "algorithm": "sha256",
-    "assetSetSha256": "3f4cbde3f83ca346f83618b38543aac791e23563dbcfcdabda43b1af9030440a",
+    "assetSetSha256": "a58c4c3edb9c4c1d7f703a46b08f6baf9dc56d5d6da41e1135b74c6d0703a939",
     "requiredTypes": [
       "html",
       "javascript",

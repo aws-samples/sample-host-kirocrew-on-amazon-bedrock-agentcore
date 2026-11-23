@@ -528,9 +528,18 @@ class RestoreEngine:
             self._download_wait = 0.0
             submitted = 0
             futures: dict[str, Future[bytes]] = {}
+            # A chunk shared by several files is delivered once and kept here
+            # until its last copy is written. Held chunks must not count
+            # against the prefetch window: a workspace with more shared chunks
+            # than the window (identical files across venvs and node_modules)
+            # would otherwise fill it and turn every later fetch into one
+            # blocking download at a time.
+            held: dict[str, bytes] = {}
 
             def fetch(digest: str) -> bytes:
                 nonlocal submitted
+                if digest in held:
+                    return held[digest]
                 while submitted < len(order) and (
                     len(futures) < self._prefetch_window or digest not in futures
                 ):
@@ -538,8 +547,10 @@ class RestoreEngine:
                     submitted += 1
                     futures[upcoming] = executor.submit(self._fetch_chunk, upcoming)
                 waited = time.monotonic()
-                chunk = futures[digest].result()
+                chunk = futures.pop(digest).result()
                 self._download_wait += time.monotonic() - waited
+                if remaining[digest] > 1:
+                    held[digest] = chunk
                 return chunk
 
             directories: list[tuple[Path, ManifestEntry]] = []
@@ -569,7 +580,7 @@ class RestoreEngine:
                                 if remaining[digest] == 0:
                                     # Drop delivered chunks so a large
                                     # workspace never sits in memory whole.
-                                    del futures[digest]
+                                    held.pop(digest, None)
                                 output.write(chunk)
                                 whole.update(chunk)
                                 size += len(chunk)

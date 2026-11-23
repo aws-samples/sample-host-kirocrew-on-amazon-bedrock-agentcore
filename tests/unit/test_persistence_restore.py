@@ -3,6 +3,8 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -484,6 +486,63 @@ def test_restore_with_a_one_chunk_prefetch_window(tmp_path: Path) -> None:
             broker.cipher(SANDBOX_ID),
             prefetch_window=0,
         )
+
+
+def test_shared_chunks_held_for_later_files_do_not_stall_prefetch(tmp_path: Path) -> None:
+    """Chunks kept for a later copy must not use up the prefetch window.
+
+    Two shared chunks fill a window of two. If held chunks counted against
+    it, every unique chunk after them would download alone and serially.
+    """
+    _, _, broker, store = storage()
+    source = tmp_path / "source"
+    (source / "user").mkdir(parents=True)
+    # Chunk size is 3 bytes, so each file is exactly one chunk. Entries are
+    # sorted by path: the shared pair first, their copies last.
+    (source / "user/a-shared-1.bin").write_text("AAA")
+    (source / "user/a-shared-2.bin").write_text("BBB")
+    for index in range(12):
+        (source / f"user/m-{index:02d}.bin").write_text(f"{index:03d}")
+    (source / "user/z-copy-1.bin").write_text("AAA")
+    (source / "user/z-copy-2.bin").write_text("BBB")
+    create_generation(source, 1, broker, store)
+    original = store.get_chunk
+    lock = threading.Lock()
+    calls = 0
+    in_flight = 0
+    tail_peak = 0
+
+    def slow(digest: str) -> bytes:
+        nonlocal calls, in_flight, tail_peak
+        with lock:
+            calls += 1
+            tail = calls > 2
+            in_flight += 1
+            if tail:
+                tail_peak = max(tail_peak, in_flight)
+        try:
+            time.sleep(0.05)
+            return original(digest)
+        finally:
+            with lock:
+                in_flight -= 1
+
+    store.get_chunk = slow  # type: ignore[method-assign]
+    target = tmp_path / "target"
+    report = RestoreEngine(
+        target,
+        SANDBOX_ID,
+        "runtime-v2",
+        store,
+        broker.cipher(SANDBOX_ID),
+        fetch_workers=4,
+        prefetch_window=2,
+    ).restore(existing_sandbox=True)
+    assert report.outcome == "restored"
+    assert calls == 14
+    assert (target / "user/z-copy-1.bin").read_text() == "AAA"
+    assert (target / "user/z-copy-2.bin").read_text() == "BBB"
+    assert tail_peak >= 2
 
 
 def test_failed_install_restores_backed_up_state_file(tmp_path: Path) -> None:

@@ -92,6 +92,8 @@ module "runtime_microvm" {
     AGENT_REGISTRY_MCP_ENDPOINT = local.agent_registry_mcp_endpoint
     AGENT_REGISTRY_REGION       = var.agent_registry_region
     TOOL_GATEWAY_URL            = local.tool_gateway_url
+    KIROCREW_SSO_START_URL      = var.kiro_sso_start_url
+    KIROCREW_SSO_REGION         = var.kiro_sso_region
     TEAM_CONTEXT_REPO_URL       = var.team_context_repo_url
     TEAM_CONTEXT_REF            = var.team_context_ref
     TEAM_CONTEXT_SUBDIR         = var.team_context_subdir
@@ -145,6 +147,8 @@ module "runtime_microvm_machine" {
     AGENT_REGISTRY_MCP_ENDPOINT = local.agent_registry_mcp_endpoint
     AGENT_REGISTRY_REGION       = var.agent_registry_region
     TOOL_GATEWAY_URL            = local.tool_gateway_url
+    KIROCREW_SSO_START_URL      = var.kiro_sso_start_url
+    KIROCREW_SSO_REGION         = var.kiro_sso_region
     TEAM_CONTEXT_REPO_URL       = var.team_context_repo_url
     TEAM_CONTEXT_REF            = var.team_context_ref
     TEAM_CONTEXT_SUBDIR         = var.team_context_subdir

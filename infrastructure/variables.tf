@@ -340,6 +340,28 @@ variable "tool_authorization_policy_mode" {
   }
 }
 
+variable "kiro_sso_start_url" {
+  description = "IAM Identity Center access portal that KiroCrew's Company SSO sign-in form starts filled in with, such as https://your-company.awsapps.com/start. Empty leaves the form empty. A URL a user sets in Settings is kept."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.kiro_sso_start_url == "" || can(regex("^https://[^\\s]+$", var.kiro_sso_start_url))
+    error_message = "kiro_sso_start_url must be empty or an https:// URL."
+  }
+}
+
+variable "kiro_sso_region" {
+  description = "AWS region of the Identity Center instance behind kiro_sso_start_url, such as us-east-1."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.kiro_sso_region == "" || can(regex("^[a-z]{2}(-[a-z]+)+-[0-9]$", var.kiro_sso_region))
+    error_message = "kiro_sso_region must be empty or an AWS region name such as us-east-1."
+  }
+}
+
 variable "team_context_repo_url" {
   description = "Team context (docs/design-team-context.md): an https:// Git repository of shared steering and knowledge. Every sandbox mirrors it read-only into ~/.kiro/team-context and installs its steering/*.md as global steering named team--<name>.md, at start and every 30 minutes. Empty disables it. Public repositories only for now; changes go through pull requests on the repository."
   type        = string

@@ -374,6 +374,7 @@ class KiroCrewSupervisor:
         self._scrub_runtime_residue(self._state_home)
         self._link_image_chromium(self._state_home)
         self._seed_default_engine(self._state_home)
+        self._seed_company_sign_in(self._state_home, os.environ)
         self._pin_local_config(self._state_home)
         self._pin_agent_registry_mcp(self._state_home)
         self._pin_tool_gateway_mcp(self._state_home)
@@ -639,6 +640,44 @@ class KiroCrewSupervisor:
             return
         section = cast(dict[str, object], agent) if isinstance(agent, dict) else {}
         section["acp_backend"] = _DEFAULT_ACP_BACKEND
+        document["agent"] = section
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        path.chmod(0o600)
+
+    @staticmethod
+    def _seed_company_sign_in(state_home: Path, environment: Mapping[str, str]) -> None:
+        """Pre-fill upstream's Company SSO sign-in form for this deployment.
+
+        ``KIROCREW_SSO_START_URL`` and ``KIROCREW_SSO_REGION`` (Terraform
+        ``kiro_sso_start_url`` / ``kiro_sso_region``) become upstream's own
+        ``agent.kas_sso_start_url`` / ``agent.kas_sso_region`` settings, so a new
+        user does not have to look the access portal up. They are written only
+        while the user has no start URL of their own: one set in Settings stays.
+        An unreadable or non-object file is left alone.
+        """
+        start_url = environment.get("KIROCREW_SSO_START_URL", "").strip()
+        region = environment.get("KIROCREW_SSO_REGION", "").strip()
+        if not start_url:
+            return
+        path = state_home / _CONFIG_FILENAME
+        document: dict[str, object] = {}
+        if path.is_file():
+            try:
+                loaded = cast(object, json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                _LOGGER.warning("Gateway config is unreadable; not seeding the SSO sign-in.")
+                return
+            if not isinstance(loaded, dict):
+                _LOGGER.warning("Gateway config is not an object; not seeding the SSO sign-in.")
+                return
+            document = cast(dict[str, object], loaded)
+        agent = document.get("agent")
+        section = cast(dict[str, object], agent) if isinstance(agent, dict) else {}
+        if str(section.get("kas_sso_start_url") or "").strip():
+            return
+        section["kas_sso_start_url"] = start_url
+        section["kas_sso_region"] = region
         document["agent"] = section
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")

@@ -255,6 +255,53 @@ def test_start_scrubs_stale_gateway_residue_from_a_restored_home(
     assert (state_home / "config.json").exists()
 
 
+def test_seed_company_sign_in_prefills_until_the_user_sets_their_own(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    home = tmp_path / "crew"
+    home.mkdir()
+    config = home / "config.json"
+    seed = KiroCrewSupervisor._seed_company_sign_in
+    env = {
+        "KIROCREW_SSO_START_URL": " https://example.awsapps.com/start ",
+        "KIROCREW_SSO_REGION": "us-east-1",
+    }
+    # Nothing configured for the deployment: nothing written.
+    seed(home, {})
+    assert not config.exists()
+    # A fresh home gets both values beside whatever else is there.
+    config.write_text('{"agent": {"acp_backend": "kas"}}', encoding="utf-8")
+    seed(home, env)
+    agent = json.loads(config.read_text(encoding="utf-8"))["agent"]
+    assert agent == {
+        "acp_backend": "kas",
+        "kas_sso_start_url": "https://example.awsapps.com/start",
+        "kas_sso_region": "us-east-1",
+    }
+    assert config.stat().st_mode & 0o777 == 0o600
+    # A URL the user set in Settings stays.
+    agent["kas_sso_start_url"] = "https://mine.awsapps.com/start"
+    config.write_text(json.dumps({"agent": agent}), encoding="utf-8")
+    seed(home, env)
+    assert (
+        json.loads(config.read_text(encoding="utf-8"))["agent"]["kas_sso_start_url"]
+        == "https://mine.awsapps.com/start"
+    )
+    # No file yet, and files that are not a JSON object, are handled.
+    config.unlink()
+    seed(home, env)
+    assert json.loads(config.read_text(encoding="utf-8"))["agent"]["kas_sso_region"] == "us-east-1"
+    with caplog.at_level(logging.WARNING):
+        config.write_text("{broken", encoding="utf-8")
+        seed(home, env)
+        assert config.read_text(encoding="utf-8") == "{broken"
+        config.write_text("[]", encoding="utf-8")
+        seed(home, env)
+        assert config.read_text(encoding="utf-8") == "[]"
+    assert "unreadable; not seeding the SSO sign-in" in caplog.text
+    assert "not an object; not seeding the SSO sign-in" in caplog.text
+
+
 def test_start_links_the_image_chromium_into_the_home(tmp_path: Path) -> None:
     """The browser tool finds the image's Chromium instead of downloading it."""
     image = tmp_path / "opt" / "chromium"

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   downloadOutboxFile,
   installOutboxDownloads,
+  installSandboxImages,
   isSandboxDocStash,
   MAX_SANDBOX_DOC_BYTES,
   stashSandboxDoc,
@@ -244,5 +245,128 @@ describe("outbox downloads", () => {
     if (ElementCtor === undefined) {
       delete (globalThis as { Element?: unknown }).Element;
     }
+  });
+});
+
+describe("sandbox images", () => {
+  class FakeImage {
+    public readonly tagName = "IMG";
+    #src: string | null;
+    public constructor(src: string | null) {
+      this.#src = src;
+    }
+    public getAttribute(name: string): string | null {
+      return name === "src" ? this.#src : null;
+    }
+    public setAttribute(name: string, value: string): void {
+      if (name === "src") {
+        this.#src = value;
+      }
+    }
+  }
+
+  const flush = async (): Promise<void> => {
+    for (let i = 0; i < 10; i++) {
+      await Promise.resolve();
+    }
+  };
+
+  it("loads same-origin /api images through the channel and watches for new ones", async () => {
+    const existing = new FakeImage(`${ORIGIN}/api/file-raw?path=a.png`);
+    const external = new FakeImage("https://example.com/x.png");
+    const page = new FakeImage("/assets/logo.png");
+    const bare = new FakeImage(null);
+    let callback: ((records: unknown[]) => void) | undefined;
+    const observe = vi.fn();
+    const disconnect = vi.fn();
+    class FakeObserver {
+      public constructor(cb: (records: unknown[]) => void) {
+        callback = cb;
+      }
+      public observe = observe;
+      public disconnect = disconnect;
+    }
+    const doc = {
+      querySelectorAll: () => [existing, external, page, bare],
+      defaultView: { MutationObserver: FakeObserver },
+    } as unknown as Document;
+    const fetchFn = vi.fn((url: string) =>
+      Promise.resolve(
+        url.includes("missing")
+          ? new Response("no", { status: 404 })
+          : new Response("png"),
+      ),
+    );
+    let count = 0;
+    vi.spyOn(URL, "createObjectURL").mockImplementation(
+      () => `blob:${String(++count)}`,
+    );
+    const revoke = vi
+      .spyOn(URL, "revokeObjectURL")
+      .mockImplementation(() => undefined);
+    const uninstall = installSandboxImages(doc, {
+      fetch: fetchFn as unknown as typeof fetch,
+      origin: ORIGIN,
+    });
+    await flush();
+    expect(existing.getAttribute("src")).toBe("blob:1");
+    expect(external.getAttribute("src")).toBe("https://example.com/x.png");
+    expect(page.getAttribute("src")).toBe("/assets/logo.png");
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(observe).toHaveBeenCalledOnce();
+
+    // An added container, a changed src, a failed load, and a node without
+    // querySelectorAll (a text node).
+    const added = new FakeImage("/api/file-raw?path=b.png");
+    const changed = new FakeImage("/api/file-raw?path=missing.png");
+    const container = { querySelectorAll: (): FakeImage[] => [added] };
+    callback?.([
+      { type: "childList", target: doc, addedNodes: [container, {}] },
+      { type: "attributes", target: changed, addedNodes: [] },
+    ]);
+    await flush();
+    expect(added.getAttribute("src")).toBe("blob:2");
+    expect(changed.getAttribute("src")).toBe("/api/file-raw?path=missing.png");
+    // The same URL again is served from the cache; a failed one is retried.
+    const again = new FakeImage("/api/file-raw?path=b.png");
+    callback?.([{ type: "childList", target: doc, addedNodes: [again] }]);
+    callback?.([{ type: "attributes", target: changed, addedNodes: [] }]);
+    await flush();
+    expect(again.getAttribute("src")).toBe("blob:2");
+    expect(fetchFn).toHaveBeenCalledTimes(4);
+    // A src replaced while the load was in flight is not overwritten.
+    const moved = new FakeImage("/api/file-raw?path=c.png");
+    callback?.([{ type: "childList", target: doc, addedNodes: [moved] }]);
+    moved.setAttribute("src", "/other.png");
+    await flush();
+    expect(moved.getAttribute("src")).toBe("/other.png");
+    // A rejected fetch leaves the image alone.
+    fetchFn.mockImplementationOnce(() => Promise.reject(new Error("down")));
+    const offline = new FakeImage("/api/file-raw?path=d.png");
+    callback?.([{ type: "childList", target: doc, addedNodes: [offline] }]);
+    await flush();
+    expect(offline.getAttribute("src")).toBe("/api/file-raw?path=d.png");
+
+    uninstall();
+    await flush();
+    expect(disconnect).toHaveBeenCalledOnce();
+    expect(revoke).toHaveBeenCalledWith("blob:1");
+    expect(revoke).toHaveBeenCalledWith("blob:2");
+    vi.restoreAllMocks();
+  });
+
+  it("scans once when the page has no MutationObserver", async () => {
+    const image = new FakeImage("/api/file-raw?path=a.png");
+    const doc = { querySelectorAll: () => [image] } as unknown as Document;
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:only");
+    const fetchOk: typeof fetch = () => Promise.resolve(new Response("png"));
+    const uninstall = installSandboxImages(doc, {
+      fetch: fetchOk,
+      origin: ORIGIN,
+    });
+    await flush();
+    expect(image.getAttribute("src")).toBe("blob:only");
+    uninstall();
+    vi.restoreAllMocks();
   });
 });

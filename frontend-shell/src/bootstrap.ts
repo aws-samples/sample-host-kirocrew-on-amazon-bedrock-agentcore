@@ -11,6 +11,7 @@ import {
 } from "./remote-transport.js";
 import {
   installOutboxDownloads,
+  installSandboxImages,
   isSandboxDocStash,
   stashSandboxDoc,
 } from "./local-routes.js";
@@ -262,9 +263,14 @@ export function installKiroCrewBootstrap(
             target.alert?.(message);
           },
         });
+  const uninstallImages =
+    target.document === undefined
+      ? (): void => undefined
+      : installSandboxImages(target.document, { fetch: target.fetch, origin });
   releasePendingRequests(target);
 
   return (): void => {
+    uninstallImages();
     uninstallDownloads();
     target.fetch = nativeFetch;
     target.EventSource = NativeEventSource;

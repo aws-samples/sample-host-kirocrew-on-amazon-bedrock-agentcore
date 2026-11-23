@@ -86,7 +86,7 @@ function fakeDocument(): {
 
 function sources(...answers: unknown[]): typeof fetch {
   let index = 0;
-  return vi.fn(() => {
+  return vi.fn<typeof fetch>(() => {
     const answer = answers[Math.min(index, answers.length - 1)];
     index += 1;
     if (answer instanceof Error) {
@@ -96,7 +96,7 @@ function sources(...answers: unknown[]): typeof fetch {
       return Promise.resolve(new Response("{}", { status: answer }));
     }
     return Promise.resolve(new Response(JSON.stringify(answer)));
-  }) as unknown as typeof fetch;
+  });
 }
 
 const flush = async (): Promise<void> => {

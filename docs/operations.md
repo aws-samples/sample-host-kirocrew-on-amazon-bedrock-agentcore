@@ -257,8 +257,10 @@ platform versions.
   SPA's `index.html`. `installSandboxImages` (`local-routes.ts`) loads such
   images through the channel as `blob:` URLs (#118). If one still fails,
   check whether its `src` is a same-origin `/api/` URL.
-- **Text in browser screenshots shows as boxes**: the image ships Latin
-  fonts only (`fonts-liberation`); CJK and Cyrillic pages need extra fonts.
+- **Text in browser screenshots shows as boxes**: the image ships
+  `fonts-liberation` (Latin, Greek, Cyrillic) and `fonts-wqy-microhei`
+  (Chinese). Other scripts (Arabic, Devanagari, Thai and others) still need
+  extra fonts.
 
 ## Incident history and load-bearing invariants
 

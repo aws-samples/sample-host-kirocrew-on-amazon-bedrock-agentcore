@@ -29,6 +29,7 @@ import {
   type AgentCoreDuplex,
   type AgentCoreInvocation,
 } from "./remote-transport.js";
+import { installKiroSignInHint, navigateInPage } from "./kiro-sign-in-hint.js";
 import { mountBrowserShell, type BrowserShellHandle } from "./shell.js";
 import { durableStorage } from "./storage.js";
 
@@ -59,6 +60,8 @@ export interface BrowserApplicationOptions {
     target: BootstrapTarget,
     transport: KiroCrewRemoteTransport,
   ) => () => void;
+  /** Starts the "sign in to Kiro" notice once a connection is ready. */
+  readonly installSignInHint?: (target: BootstrapTarget) => () => void;
 }
 
 export class BrowserApplicationError extends Error {
@@ -357,6 +360,8 @@ export class BrowserApplication {
     transport: KiroCrewRemoteTransport,
   ) => () => void;
   readonly #shell: BrowserShellHandle;
+  readonly #installSignInHint: (target: BootstrapTarget) => () => void;
+  #uninstallSignInHint: (() => void) | undefined;
   #duplex: AgentCoreDuplex | undefined;
   #kiroChannel?: AgentCoreBrowserChannel;
   #kiroDescriptor?: RuntimeConnectionDescriptor;
@@ -402,6 +407,26 @@ export class BrowserApplication {
           "CONFIGURATION",
           "The remote transport installer is unavailable.",
         );
+      });
+    this.#installSignInHint =
+      options.installSignInHint ??
+      ((target: BootstrapTarget): (() => void) => {
+        const doc = target.document;
+        if (doc === undefined) {
+          return (): void => undefined;
+        }
+        return installKiroSignInHint({
+          fetch: (input, init) => target.fetch(input, init),
+          document: doc,
+          navigate: (path) => {
+            navigateInPage(doc.defaultView ?? window, path);
+          },
+          currentPath: () => (doc.defaultView ?? window).location.pathname,
+          setTimeout: (callback, delay) => this.#setTimeout(callback, delay),
+          clearTimeout: (handle) => {
+            this.#clearTimeout(handle as ReturnType<typeof setTimeout>);
+          },
+        });
       });
     this.#auth = new PasswordAuthClient(config.auth, {
       storage,
@@ -971,8 +996,10 @@ export class BrowserApplication {
         this.#reconnectTimer = undefined;
       }
       // No kiroCheck() here: the sandbox's default engine (KAS) signs in
-      // through Kiro Crew's own Settings, so the shell no longer probes or
-      // shows a Kiro account of its own.
+      // through Kiro Crew's own Settings. The hint only points a user who has
+      // no sign-in yet at that page (kiro-sign-in-hint.ts).
+      this.#uninstallSignInHint?.();
+      this.#uninstallSignInHint = this.#installSignInHint(this.#target);
       void this.#resumeStrandedStop();
     } else if (envelope.operation === "sandbox.state") {
       void this.#refreshStatus(false);
@@ -1197,6 +1224,8 @@ export class BrowserApplication {
     }
     this.#duplex?.close(1000, "Browser shell disconnected");
     this.#duplex = undefined;
+    this.#uninstallSignInHint?.();
+    this.#uninstallSignInHint = undefined;
     this.#uninstallBootstrap?.();
     this.#uninstallBootstrap = undefined;
     this.#clientSequence = 1;

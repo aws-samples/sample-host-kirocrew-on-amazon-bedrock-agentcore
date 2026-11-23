@@ -162,6 +162,40 @@ Implemented in `infrastructure/functions/control/` and pinned by
   embedding model ships inside the image (`KIROCREW_EMBED_MODEL_PATH`)
   and is excluded from checkpoints; restore skips such excluded entries
   when replaying manifests from before the exclusion.
+- **Browser tool Chromium**: the image ships the pinned Chromium read-only
+  in `/opt/kirocrew-browser`, with the shared libraries it links. The
+  supervisor links `home/.kiro/crew/browser-harness/chromium` to it before
+  the gateway starts, and checkpoints exclude that directory. "Redownload
+  browser" in Settings fails against the read-only copy; it is not needed.
+
+## Where a cold start spends its time
+
+Measured on the Singapore dev deployment (V1, one test sandbox, 2026-11-20
+to 2026-11-22). Read the two timing lines in the runtime application log:
+
+- `Restore timing generation=N files=… chunks=… bytes=… manifest=…s
+  fetch_and_write=…s (waiting_on_downloads=…s) install=…s`
+- `KiroCrew start timing total=…s first_output=…s output_lines=…
+  port_answered=…s token_mint_attempts=…`
+
+| Phase | Typical | What sets it |
+|---|---|---|
+| Request to restore start | ~3 s | Restore reads only the newest two commit records (#116). Before, every record was fetched twice: ~190 s at 744 generations. |
+| Restore download | ~10 MB/s | Bytes, not file or chunk count. 96 download workers instead of 32 saved 10%, so the limit is the microVM's bandwidth (inferred). 0.81 GB took 88 s. |
+| Gateway start | 24–32 s | `port_answered` ~11–13 s, then one token mint. |
+
+To make cold starts faster, keep bytes out of the checkpoint: anything the
+image can ship or the start can rebuild. What remains in a typical home is
+installed apps (`app-sources`, `apps`, ~400 MB): they are the code apps
+execute, so re-cloning them at start would be slower than restoring them.
+A test fixture of 20,000 small files (`projects/default/bigtest`) once made
+up 22,000 of a sandbox's 35,000 files; check `files=` when a restore is
+slow.
+
+On Runtime V2, start-up files are pinned before the snapshot (branch
+`feat/v2-page-pin`, not merged). A V2 deploy with pins built and ran, but
+cold starts were no faster: the restore download above dominates on both
+platform versions.
 
 ## Known failure modes and what to do
 
@@ -218,6 +252,13 @@ Implemented in `infrastructure/functions/control/` and pinned by
   `frontend_compatibility_version`, and a control plane still on the old
   version makes every page answer "The browser and runtime versions are
   incompatible" while the sandbox sits in `STARTING` with no runtime log.
+- **Image in chat shows "Image failed to load"**: an `<img>` pointing at
+  `/api/...` bypasses the patched `fetch`, and CloudFront answers with the
+  SPA's `index.html`. `installSandboxImages` (`local-routes.ts`) loads such
+  images through the channel as `blob:` URLs (#118). If one still fails,
+  check whether its `src` is a same-origin `/api/` URL.
+- **Text in browser screenshots shows as boxes**: the image ships Latin
+  fonts only (`fonts-liberation`); CJK and Cyrillic pages need extra fonts.
 
 ## Incident history and load-bearing invariants
 

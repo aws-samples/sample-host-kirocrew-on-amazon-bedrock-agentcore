@@ -241,12 +241,16 @@ platform versions.
   `runtime_idle_session_timeout_seconds`.
 - **White page after deploy**: stale `bootstrap.js` — rebuild the bundle and
   re-apply (pipeline step 3), then invalidate.
-- **Upstream upgrade** (new KiroCrew wheel): update
-  `runtime/kirocrew-artifact.json`, `runtime/pyproject.toml`,
-  `runtime/Dockerfile` args, relock, re-extract the SPA, create the
-  versioned route-allowlist and upstream-contract files, and review every
-  added `/api/*` literal — the contract suite enforces the digest and the
-  deny-list consistency across Python, TypeScript, and both fixtures.
+- **Upstream upgrade** (new KiroCrew wheel): on a clean branch run
+  `uv run python tools/upgrade_kirocrew.py <version>`. It rewrites every
+  pin (artifact record, wheel URL, Dockerfile args, adapter policy version,
+  Terraform defaults, docs, tests), moves both versioned contracts, relocks,
+  records the lock digest, re-extracts the SPA and prints the `/api/*`
+  literals that appeared or disappeared. Review each new route against the
+  deny list in `loopback.py`, then re-run with `--accept-routes` to record
+  the new literal digest; the contract suite refuses an unreviewed one.
+  Read the release notes for config keys the supervisor pins or new
+  host-native features: those changes stay manual.
   Deploy the new runtime image, `module.frontend` and `module.control_api`
   together: the control plane hands the browser
   `frontend_compatibility_version`, and a control plane still on the old

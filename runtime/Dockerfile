@@ -92,6 +92,8 @@ LABEL org.opencontainers.image.title="kirocrew-agentcore-runtime" \
 # The fonts-liberation and lib* entries are the shared libraries the browser
 # tool's Chromium links (ldd on the pinned 154 build): without them it exits
 # 127 on start, so the browser tool never worked in the sandbox.
+# fonts-wqy-microhei (~5 MB) renders Chinese text in screenshots; the Noto
+# CJK set covers more scripts but costs 100+ MB.
 RUN apt-get update \
     && apt-get upgrade --yes --no-install-recommends \
     && apt-get install --yes --no-install-recommends \
@@ -119,6 +121,7 @@ RUN apt-get update \
         xz-utils \
         zip \
         fonts-liberation \
+        fonts-wqy-microhei \
         libasound2 \
         libatk-bridge2.0-0 \
         libatk1.0-0 \

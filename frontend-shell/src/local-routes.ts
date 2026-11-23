@@ -19,6 +19,37 @@
  * and saved from a Blob, and a failure is reported instead of saving a page.
  */
 
+/**
+ * Crew API Owner routes the bundle calls, and the `/api/*` twin each one wraps.
+ * Upstream registers `/v1/crew/owner/*` beside the dashboard API and serves the
+ * same handler under both paths (`kiro_crew/dashboard/routes/crew_api.py`).
+ * Only `/api/*` crosses the channel here, so a `/v1` request reached
+ * CloudFront, came back as `index.html`, and the starred-bots dock showed
+ * "Couldn't load your starred bots" on every load.
+ */
+const CREW_OWNER_TWINS: Readonly<Record<string, string>> = {
+  "/v1/crew/owner/bots": "/api/members",
+};
+
+/** The `/api/*` twin of a same-origin Crew API Owner request, if it has one. */
+export function crewOwnerTwin(
+  input: RequestInfo | URL,
+  origin: string,
+): string | undefined {
+  const raw = input instanceof Request ? input.url : input.toString();
+  let url: URL;
+  try {
+    url = new URL(raw, origin);
+  } catch {
+    return undefined;
+  }
+  if (url.origin !== origin) {
+    return undefined;
+  }
+  const twin = CREW_OWNER_TWINS[url.pathname];
+  return twin === undefined ? undefined : `${twin}${url.search}`;
+}
+
 const SANDBOX_DOC_PATH = "/api/sandbox-doc";
 const OUTBOX_PREFIX = "/api/outbox/";
 /**

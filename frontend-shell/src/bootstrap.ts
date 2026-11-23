@@ -10,6 +10,7 @@ import {
   syntheticRouteResponse,
 } from "./remote-transport.js";
 import {
+  crewOwnerTwin,
   installOutboxDownloads,
   installSandboxImages,
   isSandboxDocStash,
@@ -93,6 +94,17 @@ function inputUrl(input: RequestInfo | URL): string | URL {
   return input instanceof Request ? input.url : input;
 }
 
+/** The same request addressed to *url*; a `Request` keeps its method, headers and body. */
+function readdressed(
+  input: RequestInfo | URL,
+  url: string,
+  origin: string,
+): RequestInfo | URL {
+  return input instanceof Request
+    ? new Request(new URL(url, origin), input)
+    : url;
+}
+
 export function unavailablePresentation(
   error: unknown,
 ): CapabilityState | undefined {
@@ -128,6 +140,10 @@ export function installPreSessionGate(
   ): Promise<Response> => {
     if (target.__KIROCREW_REMOTE_TRANSPORT__ === true) {
       return await nativeFetch.call(target, input, init);
+    }
+    const twin = crewOwnerTwin(input, shellOrigin);
+    if (twin !== undefined) {
+      return await target.fetch(readdressed(input, twin, shellOrigin), init);
     }
     let url: URL;
     try {
@@ -212,6 +228,10 @@ export function installKiroCrewBootstrap(
   ): Promise<Response> => {
     if (isSandboxDocStash(input, init, origin)) {
       return await stashSandboxDoc(input, init);
+    }
+    const twin = crewOwnerTwin(input, origin);
+    if (twin !== undefined) {
+      return await transport.fetch(readdressed(input, twin, origin), init);
     }
     return transport.handles(inputUrl(input))
       ? await transport.fetch(input, init)

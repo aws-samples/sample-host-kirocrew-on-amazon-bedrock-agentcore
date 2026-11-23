@@ -127,6 +127,33 @@ describe("KiroCrew bootstrap", () => {
     expect(browser.__KIROCREW_REMOTE_TRANSPORT__).toBeUndefined();
   });
 
+  it("sends a Crew API Owner route through the channel as its /api twin", async (): Promise<void> => {
+    const nativeFetch = vi.fn<typeof fetch>(() =>
+      Promise.resolve(new Response("index.html")),
+    );
+    const browser = { ...target(nativeFetch), location: { origin: ORIGIN } };
+    const transport = remote(new Channel());
+    const forwarded = vi.spyOn(transport, "fetch");
+    const restore = installKiroCrewBootstrap(browser, transport);
+
+    expect((await browser.fetch("/v1/crew/owner/bots?x=1")).status).toBe(200);
+    expect(forwarded.mock.calls[0]?.[0]).toBe("/api/members?x=1");
+    const request = new Request(`${ORIGIN}/v1/crew/owner/bots`, {
+      headers: { "X-Session-Key": "s" },
+    });
+    await browser.fetch(request);
+    const sent = forwarded.mock.calls[1]?.[0];
+    expect(sent).toBeInstanceOf(Request);
+    expect((sent as Request).url).toBe(`${ORIGIN}/api/members`);
+    expect((sent as Request).headers.get("X-Session-Key")).toBe("s");
+    // Other /v1 paths and other origins are not twins.
+    await browser.fetch(`${ORIGIN}/v1/crew/owner/other`);
+    await browser.fetch("https://other.example/v1/crew/owner/bots");
+    await browser.fetch("http://[bad");
+    expect(nativeFetch).toHaveBeenCalledTimes(3);
+    restore();
+  });
+
   it("publishes hidden and explanatory unavailable capability states", (): void => {
     expect(KIROCREW_AGENTCORE_CAPABILITIES.computerUse).toEqual({
       available: false,
@@ -206,6 +233,19 @@ describe("pre-session gate", () => {
     expect(settled).toBe(false);
     installKiroCrewBootstrap(browser, remote(new Channel()));
     expect((await other).status).toBe(200);
+    expect(nativeFetch).not.toHaveBeenCalled();
+  });
+
+  it("holds a Crew API Owner route as its /api twin until the session opens", async (): Promise<void> => {
+    const nativeFetch = vi.fn<typeof fetch>(() =>
+      Promise.resolve(new Response("index.html")),
+    );
+    const browser = target(nativeFetch);
+    installPreSessionGate(browser, ORIGIN);
+    const held = browser.fetch(`${ORIGIN}/v1/crew/owner/bots`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    installKiroCrewBootstrap(browser, remote(new Channel()));
+    expect((await held).status).toBe(200);
     expect(nativeFetch).not.toHaveBeenCalled();
   });
 

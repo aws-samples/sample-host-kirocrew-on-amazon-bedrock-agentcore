@@ -192,10 +192,46 @@ A test fixture of 20,000 small files (`projects/default/bigtest`) once made
 up 22,000 of a sandbox's 35,000 files; check `files=` when a restore is
 slow.
 
-On Runtime V2, start-up files are pinned before the snapshot (branch
-`feat/v2-page-pin`, not merged). A V2 deploy with pins built and ran, but
-cold starts were no faster: the restore download above dominates on both
-platform versions.
+## Why this deployment stays on Runtime V1
+
+Decision (2026-11-23): run V1, not V2. Measured on the Singapore dev
+deployment with the same test sandbox, reopening after Stop safely:
+
+| Platform | Result |
+|---|---|
+| V2, no page pin | Not open after 10 minutes |
+| V2, page pin (branch `feat/v2-page-pin`, first build) | About 13 minutes. The pinner held only 1,020 of 5,131 files; the descriptor fix on the branch was never deployed |
+| V1, same period | About 10 minutes |
+| V1, after #116–#118 | About 2.5 minutes |
+
+Why V2 does not help this design:
+
+- V2 restores the microVM from a snapshot, so the platform part of a cold
+  start gets faster. Here that part was never the bottleneck. Every start
+  downloads and decrypts the whole workspace from S3 (about 0.8 GB, ~90 s at
+  ~10 MB/s), and that costs the same on V1 and V2.
+- After a V2 restore, file reads are slow until pages come back from the
+  lazily fetched disk. KiroCrew's start reads about 5,000 files. Page pins
+  cover file contents but not directory metadata, and holding the pins in
+  the serving process failed the V2 snapshot outright ("The runtime process
+  exited unexpectedly"); another team hit the same error.
+- The Quick on AgentCore design that is fast on V2 mounts user files on
+  demand (S3 Files) instead of restoring a workspace, so it has almost
+  nothing to read at start. Reaching its numbers here would mean replacing
+  the checkpoint restore with an on-demand mount, not tuning V2.
+
+What V2 would bring: elastic memory billing, which may cost less; this was
+not measured.
+
+Revisit when any of these happens: AWS announces an end date for V1, the
+workspace moves to an on-demand mount, or the V2 slow-read issue is fixed
+on the platform side. Existing runtimes keep their version on update, so
+staying on V1 needs no action today.
+
+**New deployments:** since 2026-11-13 the service creates a runtime as V2
+when no version is given, and `runtime_platform_version` defaults to `null`
+(unset). Set `runtime_platform_version = "V1"` in your tfvars when creating
+a new deployment, or it starts on V2.
 
 ## Known failure modes and what to do
 

@@ -172,6 +172,118 @@ export async function downloadOutboxFile(
   }, 60_000);
 }
 
+export interface SandboxImageOptions {
+  readonly fetch: typeof fetch;
+  readonly origin: string;
+}
+
+interface ImageLike {
+  readonly tagName: string;
+  getAttribute(name: string): string | null;
+  setAttribute(name: string, value: string): void;
+}
+
+interface ObservedNode {
+  readonly tagName?: string;
+  querySelectorAll?: (selectors: string) => ArrayLike<ImageLike>;
+}
+
+/**
+ * Route same-origin `/api/*` images through the channel.
+ *
+ * An `<img src="/api/file-raw?...">` is a plain browser GET: it never passes
+ * through the patched `fetch`, so CloudFront answers it with the SPA's
+ * `index.html` and the chat shows "Image failed to load" (browser-tool
+ * screenshots, sent images). Each such image is fetched through the channel
+ * and shown from a `blob:` URL, which the page's CSP allows for `img-src`.
+ */
+export function installSandboxImages(
+  doc: Document,
+  options: SandboxImageOptions,
+): () => void {
+  const objectUrls = new Map<string, Promise<string | undefined>>();
+  const load = (url: string): Promise<string | undefined> => {
+    let pending = objectUrls.get(url);
+    if (pending === undefined) {
+      pending = options
+        .fetch(url, { method: "GET" })
+        .then(async (response) =>
+          response.ok ? URL.createObjectURL(await response.blob()) : undefined,
+        )
+        .catch(() => undefined);
+      objectUrls.set(url, pending);
+      // A failed load is retried the next time the image appears.
+      void pending.then((value) => {
+        if (value === undefined) {
+          objectUrls.delete(url);
+        }
+      });
+    }
+    return pending;
+  };
+  const route = (image: ImageLike): void => {
+    if (image.tagName.toUpperCase() !== "IMG") {
+      return;
+    }
+    const src = image.getAttribute("src");
+    if (src === null) {
+      return;
+    }
+    const path = requestPath(src, options.origin);
+    if (path === undefined || !path.startsWith("/api/")) {
+      return;
+    }
+    void load(src).then((objectUrl) => {
+      if (objectUrl !== undefined && image.getAttribute("src") === src) {
+        image.setAttribute("src", objectUrl);
+      }
+    });
+  };
+  const scan = (node: ObservedNode): void => {
+    if (typeof node.tagName === "string") {
+      route(node as ImageLike);
+    }
+    const found = node.querySelectorAll?.("img[src]");
+    if (found !== undefined) {
+      for (const image of Array.from(found)) {
+        route(image);
+      }
+    }
+  };
+  scan(doc as unknown as ObservedNode);
+  const Observer = doc.defaultView?.MutationObserver;
+  const observer =
+    Observer === undefined
+      ? undefined
+      : new Observer((records) => {
+          for (const record of records) {
+            if (record.type === "attributes") {
+              scan(record.target as unknown as ObservedNode);
+            }
+            for (const node of Array.from(record.addedNodes)) {
+              scan(node as unknown as ObservedNode);
+            }
+          }
+        });
+  observer?.observe(doc, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ["src"],
+  });
+  return (): void => {
+    observer?.disconnect();
+    for (const pending of objectUrls.values()) {
+      void pending.then((objectUrl) => {
+        if (objectUrl !== undefined) {
+          URL.revokeObjectURL(objectUrl);
+        }
+      });
+    }
+    objectUrls.clear();
+  };
+}
+
 /** Intercept clicks on `/api/outbox/` links so they go through the channel. */
 export function installOutboxDownloads(
   doc: Document,

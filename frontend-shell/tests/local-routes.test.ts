@@ -359,9 +359,9 @@ describe("sandbox images", () => {
     const image = new FakeImage("/api/file-raw?path=a.png");
     const doc = { querySelectorAll: () => [image] } as unknown as Document;
     vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:only");
+    const fetchOk: typeof fetch = () => Promise.resolve(new Response("png"));
     const uninstall = installSandboxImages(doc, {
-      fetch: (() =>
-        Promise.resolve(new Response("png"))) as unknown as typeof fetch,
+      fetch: fetchOk,
       origin: ORIGIN,
     });
     await flush();

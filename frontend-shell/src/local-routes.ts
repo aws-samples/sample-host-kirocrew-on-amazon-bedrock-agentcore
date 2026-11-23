@@ -239,9 +239,13 @@ export function installSandboxImages(
       }
     });
   };
-  const scan = (node: ObservedNode): void => {
+  const scan = (value: unknown): void => {
+    if (typeof value !== "object" || value === null) {
+      return;
+    }
+    const node = value as ObservedNode;
     if (typeof node.tagName === "string") {
-      route(node as ImageLike);
+      route(value as ImageLike);
     }
     const found = node.querySelectorAll?.("img[src]");
     if (found !== undefined) {
@@ -250,7 +254,7 @@ export function installSandboxImages(
       }
     }
   };
-  scan(doc as unknown as ObservedNode);
+  scan(doc);
   const Observer = doc.defaultView?.MutationObserver;
   const observer =
     Observer === undefined
@@ -258,10 +262,10 @@ export function installSandboxImages(
       : new Observer((records) => {
           for (const record of records) {
             if (record.type === "attributes") {
-              scan(record.target as unknown as ObservedNode);
+              scan(record.target);
             }
             for (const node of Array.from(record.addedNodes)) {
-              scan(node as unknown as ObservedNode);
+              scan(node);
             }
           }
         });

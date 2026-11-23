@@ -151,9 +151,9 @@ variable "runtime_idle_session_timeout_seconds" {
 }
 
 variable "runtime_platform_version" {
-  description = "AgentCore Runtime platform version for both runtimes: V1, V2, or null to leave it unset (an existing runtime keeps its version; a new one gets the service default)."
+  description = "AgentCore Runtime platform version for both runtimes: V1 (default), V2, or null to leave it unset (an existing runtime keeps its version; a new one gets the service default, V2 since 2026-11-13). This design measured no faster on V2; see docs/operations.md."
   type        = string
-  default     = null
+  default     = "V1"
 
   validation {
     condition     = var.runtime_platform_version == null || contains(["V1", "V2"], coalesce(var.runtime_platform_version, "V1"))

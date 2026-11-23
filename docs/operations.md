@@ -229,9 +229,10 @@ on the platform side. Existing runtimes keep their version on update, so
 staying on V1 needs no action today.
 
 **New deployments:** since 2026-11-13 the service creates a runtime as V2
-when no version is given, and `runtime_platform_version` defaults to `null`
-(unset). Set `runtime_platform_version = "V1"` in your tfvars when creating
-a new deployment, or it starts on V2.
+when no version is given, so `runtime_platform_version` defaults to `"V1"`.
+Set it to `"V2"` to try V2, or to `null` to leave the version to the service.
+A deployment that relied on the old `null` default and already runs on V2
+moves to V1 on its next apply unless it sets `"V2"` explicitly.
 
 ## Known failure modes and what to do
 

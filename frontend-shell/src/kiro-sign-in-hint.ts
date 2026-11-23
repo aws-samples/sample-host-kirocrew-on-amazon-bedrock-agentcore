@@ -25,6 +25,8 @@ export interface SignInHintOptions {
   readonly fetch: typeof fetch;
   readonly document: Document;
   readonly navigate: (path: string) => void;
+  /** The page's current path; the notice stays out of the way on the sign-in page. */
+  readonly currentPath?: () => string;
   readonly setTimeout: (callback: () => void, delay: number) => unknown;
   readonly clearTimeout: (handle: unknown) => void;
   readonly pollMs?: number;
@@ -141,6 +143,7 @@ export function installKiroSignInHint(options: SignInHintOptions): () => void {
     go.className = "kcac-hint-go";
     go.textContent = "Sign in";
     go.addEventListener("click", () => {
+      hide();
       options.navigate(SIGN_IN_PATH);
     });
     const close = doc.createElement("button");
@@ -162,7 +165,11 @@ export function installKiroSignInHint(options: SignInHintOptions): () => void {
       return;
     }
     if (state === "none") {
-      show();
+      if (options.currentPath?.() === SIGN_IN_PATH) {
+        hide();
+      } else {
+        show();
+      }
       // Keep looking while the notice is up, so it goes away by itself once
       // the user finishes signing in (or signs in some other way).
       if (!dismissed) {

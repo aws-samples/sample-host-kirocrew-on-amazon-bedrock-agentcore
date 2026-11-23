@@ -421,6 +421,7 @@ export class BrowserApplication {
           navigate: (path) => {
             navigateInPage(doc.defaultView ?? window, path);
           },
+          currentPath: () => (doc.defaultView ?? window).location.pathname,
           setTimeout: (callback, delay) => this.#setTimeout(callback, delay),
           clearTimeout: (handle) => {
             this.#clearTimeout(handle as ReturnType<typeof setTimeout>);

@@ -155,9 +155,6 @@ describe("Kiro sign-in hint", () => {
     expect(shown?.id).toBe("kirocrew-agentcore-sign-in-hint");
     expect(shown?.attributes.get("role")).toBe("status");
     expect(head.children).toHaveLength(1);
-    const go = shown?.find((element) => element.className === "kcac-hint-go");
-    go?.listeners.get("click")?.();
-    expect(navigate).toHaveBeenCalledWith(SIGN_IN_PATH);
     expect(fetchFn).toHaveBeenCalledWith("/api/kas-login/sources", {
       method: "GET",
     });
@@ -167,11 +164,45 @@ describe("Kiro sign-in hint", () => {
     await flush();
     expect(notice()).toBe(shown);
     expect(head.children).toHaveLength(1);
+    // The button opens the sign-in page and puts the notice away.
+    shown
+      ?.find((element) => element.className === "kcac-hint-go")
+      ?.listeners.get("click")?.();
+    expect(navigate).toHaveBeenCalledWith(SIGN_IN_PATH);
+    expect(notice()).toBeUndefined();
     // Signed in: the notice goes and checking stops.
     clock.run();
     await flush();
     expect(notice()).toBeUndefined();
     expect(clock.pending()).toBe(0);
+  });
+
+  it("steps aside on the sign-in page and returns elsewhere while signed out", async () => {
+    const { doc, notice } = fakeDocument();
+    const clock = timers();
+    let path = "/chat";
+    installKiroSignInHint({
+      fetch: sources({ active: "none" }),
+      document: doc,
+      navigate: (target) => {
+        path = target;
+      },
+      currentPath: () => path,
+      ...clock,
+    });
+    await flush();
+    notice()
+      ?.find((element) => element.className === "kcac-hint-go")
+      ?.listeners.get("click")?.();
+    expect(path).toBe(SIGN_IN_PATH);
+    expect(notice()).toBeUndefined();
+    clock.run();
+    await flush();
+    expect(notice()).toBeUndefined();
+    path = "/chat";
+    clock.run();
+    await flush();
+    expect(notice()).toBeDefined();
   });
 
   it("stays quiet for a signed-in, unknown or failing answer", async () => {

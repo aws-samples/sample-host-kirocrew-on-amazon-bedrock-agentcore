@@ -203,6 +203,8 @@ deployment with the same test sandbox, reopening after Stop safely:
 | V2, page pin (branch `feat/v2-page-pin`, first build) | About 13 minutes. The pinner held only 1,020 of 5,131 files; the descriptor fix on the branch was never deployed |
 | V1, same period | About 10 minutes |
 | V1, after #116–#118 | About 2.5 minutes |
+| V1, after #128 (2026-11-23) | 48 s; first chat answered in about 6 s |
+| V2 with the build warmup hook (branch `feat/v2-warmup-hook`, 2026-11-23) | 78 s. Gateway start 45 s instead of 15–25 s, and both plain chats got no answer within 4 minutes on V2 microVMs; the same chat answered in 6 s once the session was back on V1 |
 
 Why V2 does not help this design:
 
@@ -227,12 +229,20 @@ not measured.
 
 Revisit when any of these happens: AWS announces an end date for V1, the
 workspace moves to an on-demand mount, or the V2 slow-read issue is fixed
-on the platform side. The V2 build warmup hook
-([lifecycle hooks](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-lifecycle-hooks.html))
-is the platform's answer to slow first reads and is worth a measured trial
-first; the documentation does not say whether it covers directory
-metadata. Existing runtimes keep their version on update, so
+on the platform side. Existing runtimes keep their version on update, so
 staying on V1 needs no action today.
+
+The V2 build warmup hook
+([lifecycle hooks](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-lifecycle-hooks.html))
+was tried on 2026-11-23 and did not help. Branch `feat/v2-warmup-hook`
+answers `POST /warmup`: the disk call starts a throwaway gateway in a
+scratch home (it reached ready in 77–91 s on the build microVMs) and reads
+the Kiro CLI and the embedding model (880 MB). Every build call succeeded,
+yet sessions were slower than on V1 (table above). Likely reasons, not
+verified: a scratch home is not the files a restored home reads (it spends
+its time adopting built-in apps), and the reads that stall a session may be
+directory metadata, which the documentation does not say the hook covers.
+The branch is kept for a later trial, not merged.
 
 **New deployments:** since 2026-11-13 the service creates a runtime as V2
 when no version is given, so `runtime_platform_version` defaults to `"V1"`.

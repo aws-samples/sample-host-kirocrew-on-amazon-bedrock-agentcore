@@ -8,7 +8,7 @@ variable "agent_registry_arn" {
   default     = ""
 }
 variable "enable_speech" {
-  description = "Grant polly:SynthesizeSpeech for apps that read replies aloud."
+  description = "Grant polly:SynthesizeSpeech and transcribe:StartStreamTranscription for apps that talk by voice."
   type        = bool
   default     = false
 }
@@ -110,12 +110,13 @@ data "aws_iam_policy_document" "runtime" {
     }
   }
   dynamic "statement" {
-    # SynthesizeSpeech authorizes against lexicons only, so it has no narrower
-    # resource than "*". It returns audio and touches no stored data.
+    # Neither action has a narrower resource than "*": SynthesizeSpeech
+    # authorizes against lexicons only and streaming transcription has no
+    # resource type. Both return results to the caller and store nothing.
     for_each = var.enable_speech ? ["speech"] : []
     content {
-      sid       = "SynthesizeSpeech"
-      actions   = ["polly:SynthesizeSpeech"]
+      sid       = "Speech"
+      actions   = ["polly:SynthesizeSpeech", "transcribe:StartStreamTranscription"]
       resources = ["*"]
     }
   }

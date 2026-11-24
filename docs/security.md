@@ -61,8 +61,9 @@ long-lived credential" is **not**: the user's Kiro sign-in lives in the sandbox.
 The execution role is **shared by all sandboxes of a deployment**. That is safe
 today because it carries no data access and only read-only Registry actions; it
 stops being safe the moment downstream business permissions are added to it.
-`enable_voice_call_speech` (off by default) adds `polly:SynthesizeSpeech`, which
-returns audio and reads no stored data; its only cross-sandbox effect is cost.
+`enable_voice_call_speech` (off by default) adds `polly:SynthesizeSpeech` and
+`transcribe:StartStreamTranscription`. Both return results to the caller and read
+or store no data; their only cross-sandbox effect is cost.
 
 ## Known gaps and boundaries
 

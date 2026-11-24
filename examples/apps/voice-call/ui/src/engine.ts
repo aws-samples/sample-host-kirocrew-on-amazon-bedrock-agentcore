@@ -117,7 +117,7 @@ export function forSpeech(text: string): string {
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
     .replace(/https?:\/\/\S+/g, '（链接在屏幕上）')
     .replace(/`([^`]*)`/g, (_m, s: string) => (s.includes('/') ? '（路径在屏幕上）' : s))
-    .replace(/[*_#>]/g, '')
+    .replace(/[*_#<>]/g, '')
     .replace(/^\s*[-•]\s+/gm, '')
     .replace(/\n{2,}/g, '\n')
     .trim()
@@ -605,16 +605,41 @@ export class VoiceCall {
     })
   }
 
+  /**
+   * Recognize one WAV segment. The app's own backend (Amazon Transcribe) goes
+   * first because it takes PCM from every browser; if it fails once, the bar
+   * says so and the rest of the call uses Kiro Crew's recognizer.
+   */
+  private appSttFailed = false
+  private async recognize(wav: Blob): Promise<string> {
+    if (!this.appSttFailed) {
+      try {
+        const res = await this.api.raw('/apps/voice-call/api/stt', {
+          method: 'POST',
+          headers: { 'Content-Type': 'audio/wav' },
+          body: wav,
+        })
+        const body = (await res.json().catch(() => ({}))) as { text?: string; error?: string }
+        if (res.ok) return body.text ?? ''
+        throw new Error(body.error || `HTTP ${res.status}`)
+      } catch (e) {
+        this.appSttFailed = true
+        this.flash(`Transcribe 不可用（${(e as Error).message}），改用 Kiro Crew 识别`)
+      }
+    }
+    const form = new FormData()
+    form.append('audio', wav, 'voice-call.wav')
+    const res = await this.api.raw('/api/stt/transcribe', { method: 'POST', body: form })
+    const body = (await res.json().catch(() => ({}))) as { text?: string; error?: string }
+    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`)
+    return body.text ?? ''
+  }
+
   /** Transcribe one segment: manual mode appends to the draft, auto mode sends it. */
   private async transcribe(chunks: Float32Array[], rate: number): Promise<void> {
     const sendNow = this.mode === 'auto'
     try {
-      const form = new FormData()
-      form.append('audio', encodeWav(chunks, rate), 'voice-call.wav')
-      const res = await this.api.raw('/api/stt/transcribe', { method: 'POST', body: form })
-      const body = (await res.json().catch(() => ({}))) as { text?: string; error?: string }
-      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`)
-      const text = toSimplified((body.text ?? '').trim())
+      const text = toSimplified((await this.recognize(encodeWav(chunks, rate))).trim())
       if (!this.running) return
       if (isJunk(text)) { this.flash('没听清，请再说一遍'); return }
       // Birds, keyboards, a cough: in auto mode keep only real words.

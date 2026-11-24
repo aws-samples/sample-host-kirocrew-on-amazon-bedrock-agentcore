@@ -116,7 +116,7 @@ variable "log_retention_days" {
 }
 
 variable "enable_voice_call_speech" {
-  description = "Let sandboxes call Amazon Polly SynthesizeSpeech, which the voice-call example app (examples/apps/voice-call) uses to read replies aloud. It goes on the shared runtime role, so every sandbox and its terminal can synthesise speech billed to this account."
+  description = "Let sandboxes call Amazon Polly SynthesizeSpeech and Amazon Transcribe StartStreamTranscription, which the voice-call example app (examples/apps/voice-call) uses to read replies aloud and recognize speech. It goes on the shared runtime role, so every sandbox and its terminal can use both, billed to this account."
   type        = bool
   default     = false
 }

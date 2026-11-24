@@ -69,6 +69,26 @@ def test_extractor_is_stable_versioned_and_bootstrap_first(tmp_path: Path) -> No
     assert index.index("/bootstrap.js") < index.index("/assets/main.js")
     assert manifest["upstream"]["artifactSha256"] == "a" * 64
     assert all(len(asset["sha256"]) == 64 for asset in manifest["assets"])
+    assert "serviceWorker" not in manifest
+
+
+def test_extractor_hooks_the_app_asset_worker_into_upstream_sw(tmp_path: Path) -> None:
+    module = load_extractor()
+    source = compiled_fixture(tmp_path)
+    original = "self.addEventListener('fetch', e => {})\n"
+    (source / "sw.js").write_text(original)
+    manifest = module.extract(source, tmp_path / "upstream", pin(module))
+    worker = (tmp_path / "upstream" / "0.2.0" / "sw.js").read_text()
+    assert worker.startswith("try { importScripts('/app-asset-worker.js') }")
+    assert worker.endswith(original)
+    assert manifest["serviceWorker"]["imports"] == "/app-asset-worker.js"
+    assert manifest["serviceWorker"]["originalSha256"] == module._sha256(original.encode())
+    (source / "sw.js").write_text("importScripts('/app-asset-worker.js')\n" + original)
+    with pytest.raises(ValueError, match="already imports"):
+        module.extract(source, tmp_path / "again", pin(module))
+    (source / "sw.js").write_text("// no handler\n")
+    with pytest.raises(ValueError, match="no fetch handler"):
+        module.extract(source, tmp_path / "again", pin(module))
 
 
 def test_extractor_rejects_sources_symlinks_and_incomplete_dist(tmp_path: Path) -> None:

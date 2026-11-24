@@ -7,6 +7,11 @@ variable "agent_registry_arn" {
   type        = string
   default     = ""
 }
+variable "enable_speech" {
+  description = "Grant polly:SynthesizeSpeech for apps that read replies aloud."
+  type        = bool
+  default     = false
+}
 variable "tags" { type = map(string) }
 
 resource "aws_ecr_repository" "runtime" {
@@ -102,6 +107,16 @@ data "aws_iam_policy_document" "runtime" {
         "agent-registry:BatchGetDiscoverableRegistryRecord",
       ]
       resources = [statement.value]
+    }
+  }
+  dynamic "statement" {
+    # SynthesizeSpeech authorizes against lexicons only, so it has no narrower
+    # resource than "*". It returns audio and touches no stored data.
+    for_each = var.enable_speech ? ["speech"] : []
+    content {
+      sid       = "SynthesizeSpeech"
+      actions   = ["polly:SynthesizeSpeech"]
+      resources = ["*"]
     }
   }
   statement {

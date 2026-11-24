@@ -10,7 +10,7 @@
     "format:check": "prettier --check frontend-shell/src frontend-shell/tests frontend-shell/playwright frontend-shell/playwright.config.ts eslint.config.mjs",
     "lint": "eslint frontend-shell/src frontend-shell/tests frontend-shell/playwright frontend-shell/playwright.config.ts",
     "typecheck": "tsc --build --pretty false",
-    "build:bootstrap": "tsc --build && esbuild frontend-shell/dist/src/bootstrap.js --bundle --format=esm --outfile=frontend-shell/dist/bootstrap.bundle.js",
+    "build:bootstrap": "tsc --build && esbuild frontend-shell/dist/src/bootstrap.js --bundle --format=esm --outfile=frontend-shell/dist/bootstrap.bundle.js && esbuild frontend-shell/dist/src/app-asset-worker-entry.js --bundle --format=iife --outfile=frontend-shell/dist/app-asset-worker.js",
     "test": "vitest run --coverage=false --exclude '**/playwright/**' --exclude '_public/**'",
     "test:playwright": "playwright test --config frontend-shell/playwright.config.ts"
   },

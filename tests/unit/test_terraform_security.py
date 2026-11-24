@@ -242,6 +242,20 @@ def test_microvm_profile_has_no_customer_capacity_or_shared_filesystem() -> None
     assert "module.runtime_microvm[0].runtime_arn" in root
 
 
+def test_runtime_speech_access_is_off_by_default_and_synthesis_only() -> None:
+    """The voice-call example reads replies with Polly; the grant is opt-in."""
+    runtime = terraform("modules/runtime-common/main.tf")
+    root = terraform("main.tf")
+    variables = terraform("variables.tf")
+    block = variables[variables.index('variable "enable_voice_call_speech"') :]
+    assert "default     = false" in block[: block.index("}")]
+    assert "enable_speech       = var.enable_voice_call_speech" in root
+    assert 'for_each = var.enable_speech ? ["speech"] : []' in runtime
+    assert 'actions   = ["polly:SynthesizeSpeech"]' in runtime
+    assert "polly:*" not in runtime
+    assert "transcribe:" not in runtime
+
+
 def test_runtime_registry_access_is_optional_scoped_and_read_only() -> None:
     runtime = terraform("modules/runtime-common/main.tf")
     root = terraform("main.tf")

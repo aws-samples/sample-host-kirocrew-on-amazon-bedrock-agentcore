@@ -18,6 +18,15 @@ from typing import Any, Final
 _PROJECT_ROOT: Final = Path(__file__).resolve().parents[1]
 _ARTIFACT_CONFIG: Final = _PROJECT_ROOT / "runtime" / "kirocrew-artifact.json"
 _BOOTSTRAP_TAG: Final = '<script type="module" src="/bootstrap.js"></script>'
+# Upstream registers /sw.js with scope "/". A page has one service worker per
+# scope, so the shell's app-asset handler joins it rather than registering a
+# second worker. It runs first and claims only GET /apps/{name}/{ui,art}/*,
+# which the upstream worker skips. A failed import must not break the upstream
+# worker's installation, so it is guarded.
+_APP_ASSET_WORKER_PATH: Final = "/app-asset-worker.js"
+_APP_ASSET_WORKER_IMPORT: Final = (
+    f"try {{ importScripts('{_APP_ASSET_WORKER_PATH}') }} catch (_error) {{}}\n"
+)
 _COMPILED_SUFFIXES: Final = frozenset(
     {
         ".css",
@@ -150,6 +159,15 @@ def _render_index(content: bytes) -> bytes:
     return rendered.encode("utf-8")
 
 
+def _render_service_worker(content: bytes) -> bytes:
+    text = content.decode("utf-8")
+    if _APP_ASSET_WORKER_PATH in text:
+        raise ValueError("The upstream service worker already imports the app-asset worker.")
+    if "addEventListener('fetch'" not in text and 'addEventListener("fetch"' not in text:
+        raise ValueError("The upstream service worker has no fetch handler.")
+    return f"{_APP_ASSET_WORKER_IMPORT}{text}".encode()
+
+
 def _asset_set_digest(records: Iterable[AssetRecord]) -> str:
     digest = hashlib.sha256()
     for record in records:
@@ -170,6 +188,7 @@ def extract(source: Path, output_root: Path, pin: ArtifactPin) -> dict[str, obje
     staging = Path(tempfile.mkdtemp(prefix=f".{pin.version}-", dir=output_root))
     records: list[AssetRecord] = []
     original_index_sha256 = ""
+    original_service_worker_sha256 = ""
     try:
         for source_file in files:
             relative = source_file.relative_to(source)
@@ -177,6 +196,9 @@ def extract(source: Path, output_root: Path, pin: ArtifactPin) -> dict[str, obje
             if relative.as_posix() == "index.html":
                 original_index_sha256 = _sha256(content)
                 content = _render_index(content)
+            elif relative.as_posix() == "sw.js":
+                original_service_worker_sha256 = _sha256(content)
+                content = _render_service_worker(content)
             destination = staging / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(content)
@@ -195,6 +217,17 @@ def extract(source: Path, output_root: Path, pin: ArtifactPin) -> dict[str, obje
                 "loadsBeforeUpstreamBundle": True,
             },
             "originalIndexSha256": original_index_sha256,
+            **(
+                {
+                    "serviceWorker": {
+                        "path": "/sw.js",
+                        "imports": _APP_ASSET_WORKER_PATH,
+                        "originalSha256": original_service_worker_sha256,
+                    }
+                }
+                if original_service_worker_sha256
+                else {}
+            ),
             "assetSetSha256": _asset_set_digest(records),
             "assets": [record.as_dict() for record in records],
         }

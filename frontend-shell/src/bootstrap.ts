@@ -7,8 +7,13 @@ import {
   KiroCrewRemoteTransport,
   KiroCrewRemoteWebSocket,
   RemoteTransportError,
+  isTunnelledPath,
   syntheticRouteResponse,
 } from "./remote-transport.js";
+import {
+  installAppAssetBridge,
+  type ServiceWorkerContainerLike,
+} from "./app-asset-bridge.js";
 import {
   crewOwnerTwin,
   installOutboxDownloads,
@@ -76,6 +81,7 @@ export interface BootstrapTarget {
   WebSocket: WebSocketConstructor;
   readonly location?: { readonly origin: string };
   readonly document?: Document;
+  readonly navigator?: { readonly serviceWorker?: ServiceWorkerContainerLike };
   alert?: (message: string) => void;
   __KIROCREW_AGENTCORE_CAPABILITIES__?: typeof KIROCREW_AGENTCORE_CAPABILITIES;
   __KIROCREW_REMOTE_TRANSPORT__?: true;
@@ -164,7 +170,7 @@ export function installPreSessionGate(
     } catch {
       return await nativeFetch.call(target, input, init);
     }
-    if (url.origin !== shellOrigin || !url.pathname.startsWith("/api/")) {
+    if (url.origin !== shellOrigin || !isTunnelledPath(url.pathname)) {
       return await nativeFetch.call(target, input, init);
     }
     const method =
@@ -324,9 +330,15 @@ export function installKiroCrewBootstrap(
     target.document === undefined
       ? (): void => undefined
       : installSandboxImages(target.document, { fetch: target.fetch, origin });
+  const uninstallAppAssets = installAppAssetBridge(
+    target.navigator?.serviceWorker,
+    (url) => transport.fetch(url),
+    origin,
+  );
   releasePendingRequests(target);
 
   return (): void => {
+    uninstallAppAssets();
     uninstallImages();
     uninstallDownloads();
     target.fetch = nativeFetch;

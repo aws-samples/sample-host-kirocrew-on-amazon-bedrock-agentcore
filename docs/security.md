@@ -37,6 +37,7 @@ model:
 | Brokered, short-lived storage access | The broker checks the binding, confirms the record still names that session, then returns presigned URLs signed with SigV4 | `infrastructure/functions/persistence/` |
 | Encrypted checkpoints | Per-sandbox KMS data key, encryption inside the VM, generation commit with rollback on restore | [persistence.md](persistence.md) |
 | Gateway credential stays in the VM | `/api/token` and `/api/shutdown` are denied by the pinned route policy, enforced by contract tests on both sides | `contracts/kirocrew/0.13.1-route-allowlist.json` |
+| Installed apps reach only their own surface | Outside `/api/*`, the shell and the adapter tunnel only `/apps/{name}/api/*` (any method) and `GET`/`HEAD` of `/apps/{name}/ui/*` and `/apps/{name}/art/*`, refusing encoded dot, slash and backslash. A module `import()` cannot pass through the patched `fetch`, so a handler imported into the upstream `/sw.js` hands those GETs to the page, which fetches them through the same bound transport; it answers nothing else. App backends still listen on loopback and verify the gateway's per-request HMAC | `frontend-shell/src/app-asset-*.ts`, `adapter/.../loopback.py`, `contracts/kirocrew/0.13.1-route-allowlist.json` |
 | Gated sign-up | Registration and sign-in go through an auth Lambda that enforces an email-domain allowlist | `infrastructure/functions/auth/` |
 | Unattended wake without a stored secret | EventBridge Scheduler → waker Lambda with an IAM role only → a separate IAM-authorized runtime endpoint. The adapter honours scheduler invocations only on that endpoint | [design-scheduled-jobs.md](design-scheduled-jobs.md) |
 | Registry access without user credentials | A stdio SigV4 MCP bridge signs Registry calls with the execution role, refuses non-`https` endpoints, and is scoped to one Registry ARN with four read-only actions | `runtime/.../sigv4_mcp_proxy.py`, [operations.md](operations.md) |
@@ -60,6 +61,8 @@ long-lived credential" is **not**: the user's Kiro sign-in lives in the sandbox.
 The execution role is **shared by all sandboxes of a deployment**. That is safe
 today because it carries no data access and only read-only Registry actions; it
 stops being safe the moment downstream business permissions are added to it.
+`enable_voice_call_speech` (off by default) adds `polly:SynthesizeSpeech`, which
+returns audio and reads no stored data; its only cross-sandbox effect is cost.
 
 ## Known gaps and boundaries
 

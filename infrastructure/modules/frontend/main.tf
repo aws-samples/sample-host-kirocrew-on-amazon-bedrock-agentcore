@@ -430,6 +430,18 @@ resource "aws_s3_object" "bootstrap" {
   etag          = md5(local.bootstrap_content)
 }
 
+# Imported by the extracted upstream /sw.js (tools/extract_kirocrew_spa.py) so an
+# installed app's UI module and artwork reach the sandbox through the page's
+# remote transport. Built next to the bootstrap bundle by `npm run build:bootstrap`.
+resource "aws_s3_object" "app_asset_worker" {
+  bucket        = aws_s3_bucket.frontend.id
+  key           = "app-asset-worker.js"
+  source        = "${dirname(var.bootstrap_path)}/app-asset-worker.js"
+  source_hash   = filemd5("${dirname(var.bootstrap_path)}/app-asset-worker.js")
+  content_type  = "text/javascript; charset=utf-8"
+  cache_control = "public,max-age=0,must-revalidate"
+}
+
 # Upstream's page uses /logo.png as the sidebar logo and the browser tab icon.
 # On a local install the gateway serves that route; here the browser never
 # reaches the gateway for a plain image GET, so CloudFront's SPA fallback

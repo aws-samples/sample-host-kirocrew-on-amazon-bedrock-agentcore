@@ -57,6 +57,7 @@ module "runtime_common" {
   broker_function_arn = module.persistence.broker_function_arn
   agent_registry_arn  = local.agent_registry_arn
   log_retention_days  = var.log_retention_days
+  enable_speech       = var.enable_voice_call_speech
   tags                = module.naming.tags
 }
 

@@ -13,6 +13,8 @@ import hashlib
 import importlib
 import json
 import sys
+import time
+import types
 from pathlib import Path
 from typing import Any
 
@@ -125,7 +127,15 @@ def waker(monkeypatch: pytest.MonkeyPatch) -> Any:
     for name in ("COGNITO_SUBJECT", "SANDBOX_ID", "WAKE_MAX_DISPATCH"):
         monkeypatch.delenv(name, raising=False)
     module = importlib.import_module("kirocrew_agentcore_waker.lambda_handler")
-    return importlib.reload(module)
+    reloaded = importlib.reload(module)
+    # A private `time` for the module, so the tests that pin `time.time` patch the
+    # waker's clock only, not the clock of every other thread in the process.
+    monkeypatch.setattr(
+        reloaded,
+        "time",
+        types.SimpleNamespace(time=time.time, monotonic=time.monotonic, sleep=time.sleep),
+    )
+    return reloaded
 
 
 def test_multi_owner_mode_follows_the_key(waker: Any, monkeypatch: pytest.MonkeyPatch) -> None:

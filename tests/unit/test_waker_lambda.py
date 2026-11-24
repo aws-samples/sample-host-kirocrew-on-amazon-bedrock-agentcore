@@ -14,6 +14,8 @@ import importlib
 import json
 import re
 import sys
+import time
+import types
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -145,13 +147,20 @@ def waker(monkeypatch: pytest.MonkeyPatch) -> Any:
     # and the poll would spin for its full timeout in wall-clock time. So sleeping
     # ADVANCES a fake clock instead: the code's timing logic runs exactly as written
     # while the tests stay instant, and the dwell test asserts on what was requested.
+    #
+    # The fake clock is the module's OWN `time`, never the shared `time` module.
+    # Patching `time.sleep` globally also reaches every thread still alive from an
+    # earlier test: a daemon loop that sleeps then returns at once and advances
+    # this clock by its interval on every pass, so the busy-wait budget ran out
+    # mid-test and the waker relayed instead of finishing -- a CI flake that
+    # depended only on thread timing.
     clock = {"now": 1000.0}
-    monkeypatch.setattr(reloaded.time, "monotonic", lambda: clock["now"])
 
     def _sleep(seconds: float) -> None:
         clock["now"] += seconds
 
-    monkeypatch.setattr(reloaded.time, "sleep", _sleep)
+    fake_time = types.SimpleNamespace(time=time.time, monotonic=lambda: clock["now"], sleep=_sleep)
+    monkeypatch.setattr(reloaded, "time", fake_time)
     return reloaded
 
 
@@ -1103,3 +1112,36 @@ def test_a_gateway_request_that_fails_is_reported_not_raised(waker: Any) -> None
             raise ClientError({"Error": {"Code": "X", "Message": "down"}}, "Invoke")
 
     assert waker._gateway_request(_Broken(), "a", "q", "s", "b", "POST", "/x") is None
+
+
+def test_the_fake_clock_is_not_shared_with_other_threads(
+    waker: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A thread left behind by an earlier test must not move the waker's clock.
+
+    The fixture used to patch the shared `time` module, so a stray daemon loop's
+    `time.sleep(1)` returned at once and advanced the fake clock on every pass.
+    The busy-wait budget then ran out mid-test and the wake relayed instead of
+    finishing; CI failed this way on a docs-only change.
+    """
+    import threading
+
+    stop = threading.Event()
+
+    def _stray() -> None:
+        while not stop.is_set():
+            time.sleep(0.01)
+
+    thread = threading.Thread(target=_stray, daemon=True)
+    thread.start()
+    try:
+        lambda_client, runtime = _StubLambda(), _StubRuntime()
+        _wire(waker, monkeypatch, lambda_client, runtime, _StubDynamo([140, 141]))
+        monkeypatch.setenv("WAKE_DWELL_SECONDS", "0")
+        before = waker.time.monotonic()
+        time.sleep(0.2)
+        assert waker.time.monotonic() == before
+        assert waker.handler({}, None).get("outcome") != "relayed"
+    finally:
+        stop.set()
+        thread.join(timeout=1)

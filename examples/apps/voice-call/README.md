@@ -17,7 +17,7 @@ A Kiro Crew app for talking to the Kiro in any chat out loud, from a phone or a 
 
 1. **The deployment tunnels app routes.** The frontend shell and the adapter forward an installed app's `/apps/{name}/api/*`, `/apps/{name}/ui/*` and `/apps/{name}/art/*` into the sandbox (see `docs/security.md`). Deployments older than this change cannot load any installed app's UI.
 2. **Speech permissions.** Set `enable_voice_call_speech = true` in your Terraform variables. It adds `polly:SynthesizeSpeech` and `transcribe:StartStreamTranscription` to the runtime role. Without it every reply is read by the browser voice, and recognition falls back to Kiro Crew's own recognizer (the call bar says so).
-3. **Speech-to-text.** The app backend sends each segment to Amazon Transcribe streaming as 16 kHz PCM, so it works with every browser, including iPhone Safari. `VOICE_CALL_LANGUAGES` (default `zh-CN,en-US`) lists the spoken languages, first one preferred; two or more turn on language identification. The runtime image ships the `amazon-transcribe` client through `kirocrew[voice-aws]`.
+3. **Speech-to-text.** The app backend sends each segment to Amazon Transcribe streaming as 16 kHz PCM, so it works with every browser, including iPhone Safari. `VOICE_CALL_LANGUAGES` (default `zh-CN`) lists the spoken languages. Two or more, such as `zh-CN,en-US`, turn on language identification, which measured about 4 s slower per sentence (5.6 s against 1.2 s for a 5 s clip). The runtime image ships the `amazon-transcribe` client through `kirocrew[voice-aws]`.
 
 ## Install
 

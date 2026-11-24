@@ -7,8 +7,9 @@
 - POST /api/stt (body: mono PCM16 WAV) -> {"text": "..."}. Amazon Transcribe
   streaming, sent as raw PCM, so every browser works (an iPhone records AAC,
   which Kiro Crew's own Transcribe path does not accept). VOICE_CALL_LANGUAGES
-  lists the spoken languages, first one preferred (default "zh-CN,en-US");
-  two or more turn on language identification.
+  lists the spoken languages (default "zh-CN", which also
+  catches common English words). Two or more turn on language identification,
+  which adds about 4 s per sentence.
 - Both SDKs use their default AWS credential chain, which inside a KiroCrew on
   AgentCore sandbox is the runtime's IAM role. It needs polly:SynthesizeSpeech
   and transcribe:StartStreamTranscription (Terraform:
@@ -36,7 +37,7 @@ MAX_TEXT = 600
 MAX_BODY = 1024 * 1024  # the sandbox transport's request limit
 LANGUAGES = [
     code.strip()
-    for code in os.environ.get("VOICE_CALL_LANGUAGES", "zh-CN,en-US").split(",")
+    for code in os.environ.get("VOICE_CALL_LANGUAGES", "zh-CN").split(",")
     if code.strip()
 ] or ["zh-CN"]
 POLLY_REGION = (
@@ -137,7 +138,7 @@ class Handler(BaseHTTPRequestHandler):
         return self.rfile.read(min(n, MAX_BODY)) if n else b""
 
     def do_GET(self):
-        if self.path == "/health":
+        if self.path in ("/health", "/api/health"):
             return self._send(200, {"status": "ok"})
         self._send(404, {"error": "not found"})
 

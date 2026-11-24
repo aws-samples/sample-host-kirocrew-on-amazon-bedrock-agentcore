@@ -208,6 +208,26 @@ deployment with the same test sandbox, reopening after Stop safely:
 
 Why V2 does not help this design:
 
+- The root cause is when the gateway starts. V2 snapshots the microVM once
+  per runtime version, before any user exists, and keeps process memory in
+  the snapshot. A service that is already running when the snapshot is
+  taken comes back warm and only has to attach the user's data. The
+  KiroCrew gateway cannot start before the user's home is restored, so on
+  V2 it starts from nothing after every restore. That start reads thousands
+  of Python files and the embedding model, and the first chat reads the
+  Kiro CLI; on V2 each of those first reads is fetched lazily after the
+  restore. Every runtime update makes a new snapshot, and first reads are
+  slowest on the first restores of a new snapshot, which is what a
+  deployment with few users sees most of the time.
+- Moving the workspace to an on-demand mount (S3 Files) would remove the
+  10-15 s download but not this: the gateway would still start after the
+  mount and read its files cold.
+- Two things would change this, neither in this repository: an upstream
+  KiroCrew gateway that can start without a user home and attach one later
+  (so it could start before the snapshot), or a platform change that makes
+  first reads after a restore fast, including directory metadata, which
+  keeping file pages in memory does not cover.
+
 - V2 restores the microVM from a snapshot, so the platform part of a cold
   start gets faster. Here that part was never the bottleneck. Every start
   downloads and decrypts the whole workspace from S3, and that costs the
@@ -219,10 +239,6 @@ Why V2 does not help this design:
   cover file contents but not directory metadata, and holding the pins in
   the serving process failed the V2 snapshot outright ("The runtime process
   exited unexpectedly"); another team hit the same error.
-- The Quick on AgentCore design that is fast on V2 mounts user files on
-  demand (S3 Files) instead of restoring a workspace, so it has almost
-  nothing to read at start. Reaching its numbers here would mean replacing
-  the checkpoint restore with an on-demand mount, not tuning V2.
 
 What V2 would bring: elastic memory billing, which may cost less; this was
 not measured.

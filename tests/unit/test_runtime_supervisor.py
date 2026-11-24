@@ -8,6 +8,7 @@ import signal
 import sqlite3
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.request
 from collections.abc import Iterator, Mapping
@@ -520,6 +521,73 @@ def test_readiness_falls_back_to_cli_token_when_ready_line_is_lost(
     assert probes and all(port == 5476 for port, _timeout in probes)
     assert len(mints) == 3
     assert mints[0]["KIROCREW_HOME"] == str(layout.kirocrew_home)
+
+
+class _OneLineThenSilent:
+    """Prints one startup line, then nothing: the readiness line was swallowed."""
+
+    def __init__(self) -> None:
+        self._sent = False
+        self.release = threading.Event()
+
+    def __iter__(self) -> Iterator[str]:
+        return self
+
+    def __next__(self) -> str:
+        if not self._sent:
+            self._sent = True
+            return "starting\n"
+        self.release.wait()
+        raise StopIteration
+
+
+def test_the_cli_mint_starts_before_the_port_answers_and_waits_for_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The CLI's own start-up overlaps the gateway's, instead of following it.
+
+    A token is still only used once the port has answered: a mint result alone
+    is not proof the gateway is serving.
+    """
+    layout = WorkspaceLayout(tmp_path / "workspace")
+    stream = _OneLineThenSilent()
+    process = FakeProcess(pid=4222, stdout=cast(IO[str], stream))
+    answered = [False]
+    probes = [0]
+
+    def probe(port: int, timeout: float) -> bool:
+        del port, timeout
+        probes[0] += 1
+        answered[0] = probes[0] > 3
+        return answered[0]
+
+    mint_saw_port: list[bool] = []
+
+    def token_command(executable: str, env: Mapping[str, str], timeout: float) -> str:
+        del executable, env, timeout
+        mint_saw_port.append(answered[0])
+        return "http://localhost:5476?token=early-token"
+
+    monkeypatch.setattr(os, "killpg", lambda _pid, _signal: None)
+    supervisor = KiroCrewSupervisor(
+        layout,
+        metadata(),
+        process_factory=factory_for(process),
+        token_command=token_command,
+        health_probe=probe,
+        monotonic=MutableClock(step=0.25),
+        effective_uid=lambda: 10001,
+        sleep=lambda _delay: None,
+    )
+    try:
+        ready = supervisor.start(timeout_seconds=60)
+    finally:
+        stream.release.set()
+
+    assert ready.pid == 4222
+    assert supervisor.token() == "early-token"
+    assert mint_saw_port == [False]
+    assert probes[0] > 3
 
 
 def test_probe_dashboard_health_reports_liveness(monkeypatch: pytest.MonkeyPatch) -> None:

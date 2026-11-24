@@ -134,11 +134,24 @@ export function installPreSessionGate(
 ): () => void {
   const nativeFetch = target.fetch;
   const shellOrigin = new URL(origin).origin;
-  target.fetch = async (
+  const gate = async (
     input: RequestInfo | URL,
     init?: RequestInit,
   ): Promise<Response> => {
     if (target.__KIROCREW_REMOTE_TRANSPORT__ === true) {
+      // The SPA can keep its own reference to `fetch` from before the
+      // transport existed -- that reference is this gate. Sending its /api
+      // traffic to native fetch then hits CloudFront, which answers with the
+      // SPA's index.html: "Unexpected token '<' ... is not valid JSON" across
+      // the sessions list and composer, on about two page loads in three
+      // (whenever the SPA captured fetch before the sandbox connected).
+      // So same-origin /api traffic goes to the CURRENT window fetch, the
+      // transport's, which routes it into the sandbox. Everything else, and
+      // the transport's own fall-through for routes it does not handle,
+      // still reaches native fetch.
+      if (target.fetch !== gate && routedByTransport(target, input)) {
+        return await target.fetch(input, init);
+      }
       return await nativeFetch.call(target, input, init);
     }
     const twin = crewOwnerTwin(input, shellOrigin);
@@ -165,9 +178,27 @@ export function installPreSessionGate(
     await untilTransport(target, signal ?? undefined);
     return await target.fetch(input, init);
   };
+  target.fetch = gate;
   return (): void => {
     target.fetch = nativeFetch;
   };
+}
+
+/**
+ * Whether the installed transport routes a request itself -- the exact test its
+ * own fetch applies, so a stale gate reference never defers a request the
+ * transport would hand straight back to native fetch (that would loop).
+ */
+const transportRoutes = new WeakMap<
+  BootstrapTarget,
+  (input: RequestInfo | URL) => boolean
+>();
+
+function routedByTransport(
+  target: BootstrapTarget,
+  input: RequestInfo | URL,
+): boolean {
+  return transportRoutes.get(target)?.(input) ?? false;
 }
 
 const pendingTransport = new WeakMap<BootstrapTarget, (() => void)[]>();
@@ -273,6 +304,12 @@ export function installKiroCrewBootstrap(
 
   target.__KIROCREW_AGENTCORE_CAPABILITIES__ = KIROCREW_AGENTCORE_CAPABILITIES;
   target.__KIROCREW_REMOTE_TRANSPORT__ = true;
+  transportRoutes.set(
+    target,
+    (input) =>
+      crewOwnerTwin(input, origin) !== undefined ||
+      transport.handles(inputUrl(input)),
+  );
   const uninstallDownloads =
     target.document === undefined
       ? (): void => undefined
@@ -297,6 +334,7 @@ export function installKiroCrewBootstrap(
     target.WebSocket = NativeWebSocket;
     delete target.__KIROCREW_AGENTCORE_CAPABILITIES__;
     delete target.__KIROCREW_REMOTE_TRANSPORT__;
+    transportRoutes.delete(target);
   };
 }
 

@@ -36,11 +36,14 @@ _TOKEN_PATTERN: Final = re.compile(r"(?:^|[?&])token=([^&\s]+)")
 _DEFAULT_TOKEN_TTL_SECONDS: Final = 19 * 60 * 60
 _DASHBOARD_PORT: Final = 5476
 _HEALTH_PROBE_INTERVAL_SECONDS: Final = 1.0
-# How long the dashboard must keep answering before we stop waiting for the
-# readiness line and mint a token ourselves. The upstream gateway prints
-# KIROCREW_READY right after the dashboard starts listening; if it has not
-# shown up by then, the line was lost and will never come.
-_READY_LINE_GRACE_SECONDS: Final = 3.0
+# The readiness line is lost on most restored starts (see `_await_ready`), and
+# the fallback -- the upstream `kirocrew token` CLI -- spends 10-15 s just
+# starting up. Measured over 22 live starts: 11-15 s when the line arrived,
+# 24-32 s when it did not, with the port answering at ~10-12 s either way. So
+# the CLI is started in the background as soon as the gateway prints anything,
+# and retried until one of the two arrives; it needs the gateway's local secret,
+# which exists only once the gateway is serving, so an early attempt that runs
+# ahead of it simply fails and the next one starts.
 # The upstream gateway arms a loop-stall watchdog that dumps every thread and
 # hard-exits when its event loop stays silent past this budget (upstream default
 # 25s, maximum 300s). A checkpoint quiesces the gateway with SIGSTOP; a freeze
@@ -857,9 +860,24 @@ class KiroCrewSupervisor:
 
         reader = threading.Thread(target=read_lines, daemon=True)
         reader.start()
+        # One background CLI mint at a time. Its result is used only once the
+        # port has answered: a token from a gateway that is not serving yet is
+        # not a readiness signal.
+        minted: queue.Queue[str | None] = queue.Queue()
+        minting = [False]
+        early_token: list[str] = []
+
+        def mint_in_background() -> None:
+            minted.put(self._mint_token_without_ready_line(environment))
+
+        def start_mint() -> None:
+            minting[0] = True
+            timing["mint_attempts"] = timing.get("mint_attempts", 0.0) + 1
+            threading.Thread(target=mint_in_background, daemon=True).start()
+
         deadline = self._monotonic() + timeout_seconds
         next_probe = self._monotonic() + _HEALTH_PROBE_INTERVAL_SECONDS
-        healthy_since: float | None = None
+        port_answered = False
         while self._monotonic() < deadline:
             if process.poll() is not None:
                 reader.join(timeout=0.2)
@@ -875,25 +893,35 @@ class KiroCrewSupervisor:
             now = self._monotonic()
             if now >= next_probe:
                 next_probe = now + _HEALTH_PROBE_INTERVAL_SECONDS
-                if self._health_probe(_DASHBOARD_PORT, _HEALTH_PROBE_INTERVAL_SECONDS):
-                    healthy_since = now if healthy_since is None else healthy_since
+                port_answered = self._health_probe(_DASHBOARD_PORT, _HEALTH_PROBE_INTERVAL_SECONDS)
+                if port_answered:
                     timing.setdefault("port_answered", now - started)
-                else:
-                    healthy_since = None
-                if healthy_since is not None and now - healthy_since >= _READY_LINE_GRACE_SECONDS:
-                    timing["mint_attempts"] = timing.get("mint_attempts", 0.0) + 1
-                    token = self._mint_token_without_ready_line(environment)
-                    if token is not None:
-                        _LOGGER.warning(
-                            "KiroCrew is serving on port %d but never printed its readiness "
-                            "line; minted the dashboard token through the CLI instead.",
-                            _DASHBOARD_PORT,
-                        )
-                        self._log_start_timing(started, timing, line_count[0])
-                        return GatewayReady(process.pid, _DASHBOARD_PORT, self._state_home), token
+            with contextlib.suppress(queue.Empty):
+                result = minted.get_nowait()
+                minting[0] = False
+                if result is not None:
+                    early_token[:] = [result]
+            if early_token and port_answered:
+                _LOGGER.warning(
+                    "KiroCrew is serving on port %d but never printed its readiness "
+                    "line; minted the dashboard token through the CLI instead.",
+                    _DASHBOARD_PORT,
+                )
+                self._log_start_timing(started, timing, line_count[0])
+                return (
+                    GatewayReady(process.pid, _DASHBOARD_PORT, self._state_home),
+                    early_token[0],
+                )
+            if not minting[0] and not early_token and port_answered:
+                start_mint()
             try:
                 line = lines.get(timeout=min(0.1, max(deadline - self._monotonic(), 0.001)))
             except queue.Empty:
+                # Output has paused with no readiness line yet: start the CLI
+                # mint now rather than after the port answers, so its own
+                # 10-15 s start-up overlaps the gateway's.
+                if not minting[0] and not early_token and line_count[0] > 0:
+                    start_mint()
                 continue
             if line is None:
                 _LOGGER.error(

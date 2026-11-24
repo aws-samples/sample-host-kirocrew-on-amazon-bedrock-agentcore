@@ -182,7 +182,7 @@ to 2026-11-22). Read the two timing lines in the runtime application log:
 |---|---|---|
 | Request to restore start | ~3 s | Restore reads only the newest two commit records (#116). Before, every record was fetched twice: ~190 s at 744 generations. |
 | Restore download | 10–15 s for 0.84 GB | Since #128. Before it, a workspace with more shared chunks than the 512-chunk prefetch window downloaded one chunk at a time: the same sandbox took 118–167 s, and adding workers did not help. This was first misread as a bandwidth limit. Sandboxes with few shared chunks were never affected (~350 MB in 7 s). |
-| Gateway start | 24–32 s | `port_answered` ~11–13 s, then one token mint. |
+| Gateway start | 14–20 s | `port_answered` ~10–13 s. The gateway's readiness line is usually lost (the vendored llama-cpp points stdout at `/dev/null` while it loads the embedding model), so the token comes from the `kirocrew token` CLI, which itself takes 10–15 s to start. Since the early-mint change that CLI starts as soon as the gateway's output pauses, overlapping the gateway's own start; before it, it started 3 s after the port answered and the phase took 24–32 s. `token_mint_attempts=2` is normal: the first attempt usually runs ahead of the gateway and fails. |
 
 To make cold starts faster, keep bytes out of the checkpoint: anything the
 image can ship or the start can rebuild. What remains in a typical home is

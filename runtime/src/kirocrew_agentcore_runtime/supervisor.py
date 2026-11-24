@@ -36,14 +36,16 @@ _TOKEN_PATTERN: Final = re.compile(r"(?:^|[?&])token=([^&\s]+)")
 _DEFAULT_TOKEN_TTL_SECONDS: Final = 19 * 60 * 60
 _DASHBOARD_PORT: Final = 5476
 _HEALTH_PROBE_INTERVAL_SECONDS: Final = 1.0
-# The readiness line is lost on most restored starts (see `_await_ready`), and
-# the fallback -- the upstream `kirocrew token` CLI -- spends 10-15 s just
-# starting up. Measured over 22 live starts: 11-15 s when the line arrived,
-# 24-32 s when it did not, with the port answering at ~10-12 s either way. So
-# the CLI is started in the background as soon as the gateway prints anything,
-# and retried until one of the two arrives; it needs the gateway's local secret,
-# which exists only once the gateway is serving, so an early attempt that runs
-# ahead of it simply fails and the next one starts.
+# On 0.13.1 the readiness line is not lost: upstream stopped the embedding
+# model load from silencing stdout (kirodotdev/KiroCrew#35401). It arrives
+# 4-6 s after the port answers. The old fallback waited 3 s after the port,
+# then blocked in the upstream `kirocrew token` CLI for its 10-15 s start-up,
+# ignoring the line that came in meanwhile: 24-32 s, against 11-15 s when the
+# line beat the 3 s wait (22 live starts). So the CLI now runs in the
+# background as soon as the gateway prints anything, and whichever of the two
+# arrives first wins; the line is never ignored. The CLI needs the gateway's
+# local secret, which exists only once it is serving, so an early attempt that
+# runs ahead simply fails and the next one starts.
 # The upstream gateway arms a loop-stall watchdog that dumps every thread and
 # hard-exits when its event loop stays silent past this budget (upstream default
 # 25s, maximum 300s). A checkpoint quiesces the gateway with SIGSTOP; a freeze
@@ -821,12 +823,12 @@ class KiroCrewSupervisor:
         """Wait for the gateway to become ready and return its readiness metadata.
 
         The primary signal is the ``KIROCREW_READY:{...}`` line the upstream gateway
-        prints with ``--json-ready``. That line can be lost: the vendored llama-cpp
-        runtime redirects the whole process's stdout to ``/dev/null`` while it loads
-        the embedding model, and on a restored home the model is already present, so
-        the load overlaps the print. When the dashboard is answering on its port but
-        the line has not arrived, the gateway is up and we mint the token through
-        the upstream CLI instead of waiting for output that will never come.
+        prints with ``--json-ready``. Older upstream releases could lose it: the
+        vendored llama-cpp runtime pointed the whole process's stdout at
+        ``/dev/null`` while it loaded the embedding model (fixed upstream in
+        0.13.1). On 0.13.1 it is only late, 4-6 s after the port answers. So the
+        token is also minted through the upstream CLI in the background, and
+        whichever arrives first is used.
         """
         stdout = process.stdout
         if stdout is None:
@@ -842,11 +844,21 @@ class KiroCrewSupervisor:
         # before the port answers, or minting the token afterwards.
         timing: dict[str, float] = {}
         line_count = [0]
+        returned = [False]
 
         def read_lines() -> None:
             for line in stdout:
                 line_count[0] += 1
                 timing.setdefault("first_output", self._monotonic() - started)
+                if line.startswith(_READY_PREFIX) and "ready_line" not in timing:
+                    timing["ready_line"] = self._monotonic() - started
+                    if returned[0]:
+                        # Evidence for the upstream report: whether the line is
+                        # lost or only late, and by how much.
+                        _LOGGER.info(
+                            "KiroCrew readiness line arrived after start returned, at %.1fs",
+                            timing["ready_line"],
+                        )
                 output_tail.append(line.strip())
                 code = _classify_startup_line(line)
                 if code is not None:
@@ -908,6 +920,7 @@ class KiroCrewSupervisor:
                     _DASHBOARD_PORT,
                 )
                 self._log_start_timing(started, timing, line_count[0])
+                returned[0] = True
                 return (
                     GatewayReady(process.pid, _DASHBOARD_PORT, self._state_home),
                     early_token[0],
@@ -965,11 +978,12 @@ class KiroCrewSupervisor:
 
         _LOGGER.info(
             "KiroCrew start timing total=%.1fs first_output=%s output_lines=%d "
-            "port_answered=%s token_mint_attempts=%d",
+            "port_answered=%s ready_line=%s token_mint_attempts=%d",
             self._monotonic() - started,
             at("first_output"),
             lines,
             at("port_answered"),
+            at("ready_line"),
             int(timing.get("mint_attempts", 0)),
         )
 

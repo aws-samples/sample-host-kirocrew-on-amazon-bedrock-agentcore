@@ -236,6 +236,27 @@ describe("pre-session gate", () => {
     expect(nativeFetch).not.toHaveBeenCalled();
   });
 
+  it("routes a fetch reference taken before the session opened through the transport", async (): Promise<void> => {
+    const nativeFetch = vi.fn<typeof fetch>(() =>
+      Promise.resolve(new Response("index.html")),
+    );
+    const browser: BootstrapTarget = {
+      ...target(nativeFetch),
+      location: { origin: ORIGIN },
+    };
+    installPreSessionGate(browser, ORIGIN);
+    // The SPA keeps its own reference to fetch from boot: that is the gate.
+    const stale = browser.fetch;
+    installKiroCrewBootstrap(browser, remote(new Channel()));
+
+    expect((await stale(`${ORIGIN}/api/status`)).status).toBe(200);
+    expect((await stale(`${ORIGIN}/v1/crew/owner/bots`)).status).toBe(200);
+    expect(nativeFetch).not.toHaveBeenCalled();
+    // Non-API traffic from the stale reference still goes to the network.
+    await stale(`${ORIGIN}/assets/app.js`);
+    expect(nativeFetch).toHaveBeenCalledTimes(1);
+  });
+
   it("holds a Crew API Owner route as its /api twin until the session opens", async (): Promise<void> => {
     const nativeFetch = vi.fn<typeof fetch>(() =>
       Promise.resolve(new Response("index.html")),

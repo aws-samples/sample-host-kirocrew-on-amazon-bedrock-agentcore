@@ -235,6 +235,10 @@ def test_start_scrubs_stale_gateway_residue_from_a_restored_home(
     (run_directory / "gateway-5476.bin").write_text("x")
     (run_directory / "unrelated.txt").write_text("keep")
     (state_home / "config.json").write_text("{}")
+    leases = layout.home / ".kiro" / "session-leases"
+    leases.mkdir(parents=True)
+    (leases / "sess_a.lease").write_text('{"pid": 442, "clientName": "kirocrew"}')
+    (leases / "notes.txt").write_text("keep")
 
     process = FakeProcess(ready_line(layout))
     supervisor = KiroCrewSupervisor(
@@ -254,6 +258,9 @@ def test_start_scrubs_stale_gateway_residue_from_a_restored_home(
     assert not (run_directory / "gateway-5476.bin").exists()
     assert (run_directory / "unrelated.txt").read_text() == "keep"
     assert (state_home / "config.json").exists()
+    # A chat's session lease names a pid of the container that wrote it.
+    assert not (leases / "sess_a.lease").exists()
+    assert (leases / "notes.txt").read_text() == "keep"
 
 
 def test_start_links_the_image_chromium_into_the_home(tmp_path: Path) -> None:

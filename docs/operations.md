@@ -239,10 +239,6 @@ Why V2 does not help this design:
   cover file contents but not directory metadata, and holding the pins in
   the serving process failed the V2 snapshot outright ("The runtime process
   exited unexpectedly"); another team hit the same error.
-- The Quick on AgentCore design that is fast on V2 mounts user files on
-  demand (S3 Files) instead of restoring a workspace, so it has almost
-  nothing to read at start. Reaching its numbers here would mean replacing
-  the checkpoint restore with an on-demand mount, not tuning V2.
 
 What V2 would bring: elastic memory billing, which may cost less; this was
 not measured.

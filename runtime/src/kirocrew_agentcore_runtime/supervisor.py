@@ -377,6 +377,7 @@ class KiroCrewSupervisor:
         self._chdir(self._layout.root)
         self._state_home = self._resolve_state_home()
         self._scrub_runtime_residue(self._state_home)
+        self._scrub_session_leases(self._layout.home)
         self._link_image_chromium(self._state_home)
         self._seed_default_engine(self._state_home)
         self._pin_local_config(self._state_home)
@@ -670,6 +671,27 @@ class KiroCrewSupervisor:
             link.symlink_to(self._image_chromium, target_is_directory=True)
         except OSError:
             _LOGGER.warning("Could not link the image's Chromium; the browser tool downloads it.")
+
+    @staticmethod
+    def _scrub_session_leases(home: Path) -> None:
+        """Remove the chat session leases a checkpoint captured.
+
+        The Kiro engine writes ``~/.kiro/session-leases/<session>.lease`` naming
+        the pid that owns each chat and renews it while that process lives. A
+        restored home brings back the previous container's leases. A new
+        container numbers its processes from the start too, so a lease's pid can
+        name an unrelated live process here, and the next message in that chat
+        fails with "This session is loaded in another program, kirocrew (pid N)".
+        Seen once on the dev deployment, right after a restore. No chat process
+        exists yet when the gateway starts (the previous gateway's process
+        group was terminated), so every lease on disk is stale.
+        """
+        leases = home / ".kiro" / "session-leases"
+        if not leases.is_dir():
+            return
+        for candidate in leases.iterdir():
+            if candidate.suffix == ".lease" and candidate.is_file():
+                candidate.unlink(missing_ok=True)
 
     @staticmethod
     def _scrub_runtime_residue(state_home: Path) -> None:

@@ -590,6 +590,52 @@ def test_the_cli_mint_starts_before_the_port_answers_and_waits_for_it(
     assert probes[0] > 3
 
 
+def test_a_readiness_line_after_the_cli_token_is_logged_with_its_delay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Whether the line is lost or only late is the evidence the upstream report needs."""
+    layout = WorkspaceLayout(tmp_path / "workspace")
+    release = threading.Event()
+
+    class LateReadyLine:
+        def __init__(self) -> None:
+            self._step = 0
+
+        def __iter__(self) -> Iterator[str]:
+            return self
+
+        def __next__(self) -> str:
+            self._step += 1
+            if self._step == 1:
+                return "starting\n"
+            if self._step == 2:
+                release.wait()
+                return ready_line(layout, pid=4223)
+            raise StopIteration
+
+    process = FakeProcess(pid=4223, stdout=cast(IO[str], LateReadyLine()))
+    monkeypatch.setattr(os, "killpg", lambda _pid, _signal: None)
+    supervisor = KiroCrewSupervisor(
+        layout,
+        metadata(),
+        process_factory=factory_for(process),
+        token_command=lambda _e, _env, _t: "http://localhost:5476?token=cli-token",
+        health_probe=lambda _port, _timeout: True,
+        monotonic=MutableClock(step=0.25),
+        effective_uid=lambda: 10001,
+        sleep=lambda _delay: None,
+    )
+    caplog.set_level(logging.INFO, logger=module.__name__)
+    supervisor.start(timeout_seconds=60)
+    assert supervisor.token() == "cli-token"
+    release.set()
+    for _ in range(200):
+        if "readiness line arrived after start returned" in caplog.text:
+            break
+        time.sleep(0.01)
+    assert "readiness line arrived after start returned" in caplog.text
+
+
 def test_probe_dashboard_health_reports_liveness(monkeypatch: pytest.MonkeyPatch) -> None:
     class Response:
         def __init__(self, status: int) -> None:

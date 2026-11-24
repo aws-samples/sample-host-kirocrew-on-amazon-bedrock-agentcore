@@ -842,11 +842,21 @@ class KiroCrewSupervisor:
         # before the port answers, or minting the token afterwards.
         timing: dict[str, float] = {}
         line_count = [0]
+        returned = [False]
 
         def read_lines() -> None:
             for line in stdout:
                 line_count[0] += 1
                 timing.setdefault("first_output", self._monotonic() - started)
+                if line.startswith(_READY_PREFIX) and "ready_line" not in timing:
+                    timing["ready_line"] = self._monotonic() - started
+                    if returned[0]:
+                        # Evidence for the upstream report: whether the line is
+                        # lost or only late, and by how much.
+                        _LOGGER.info(
+                            "KiroCrew readiness line arrived after start returned, at %.1fs",
+                            timing["ready_line"],
+                        )
                 output_tail.append(line.strip())
                 code = _classify_startup_line(line)
                 if code is not None:
@@ -908,6 +918,7 @@ class KiroCrewSupervisor:
                     _DASHBOARD_PORT,
                 )
                 self._log_start_timing(started, timing, line_count[0])
+                returned[0] = True
                 return (
                     GatewayReady(process.pid, _DASHBOARD_PORT, self._state_home),
                     early_token[0],
@@ -965,11 +976,12 @@ class KiroCrewSupervisor:
 
         _LOGGER.info(
             "KiroCrew start timing total=%.1fs first_output=%s output_lines=%d "
-            "port_answered=%s token_mint_attempts=%d",
+            "port_answered=%s ready_line=%s token_mint_attempts=%d",
             self._monotonic() - started,
             at("first_output"),
             lines,
             at("port_answered"),
+            at("ready_line"),
             int(timing.get("mint_attempts", 0)),
         )
 

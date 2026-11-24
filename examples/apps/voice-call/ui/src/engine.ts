@@ -109,8 +109,14 @@ function textOf(content: unknown): string {
 }
 
 export function forSpeech(text: string): string {
-  return text
-    .replace(/<!--[\s\S]*?-->/g, '')
+  // Strip HTML comments until none are left, so nested or split markers
+  // cannot leave a fresh "<!--" behind.
+  let plain = text
+  for (let prev = ''; prev !== plain; ) {
+    prev = plain
+    plain = plain.replace(/<!--[\s\S]*?-->/g, '')
+  }
+  return plain
     .replace(/^\s*\[OPTIONS:.*\]\s*$/gm, '')
     .replace(/<mcwidget[\s\S]*?<\/mcwidget>/g, '（图在屏幕上）')
     .replace(/```[\s\S]*?```/g, '（代码在屏幕上）')

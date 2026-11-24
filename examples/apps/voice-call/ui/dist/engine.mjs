@@ -202,7 +202,10 @@ function C(n) {
   return typeof n == "string" ? n : Array.isArray(n) ? n.map(C).join("") : n && typeof n == "object" && "text" in n ? C(n.text) : "";
 }
 function st(n) {
-  return n.replace(/<!--[\s\S]*?-->/g, "").replace(/^\s*\[OPTIONS:.*\]\s*$/gm, "").replace(/<mcwidget[\s\S]*?<\/mcwidget>/g, "（图在屏幕上）").replace(/```[\s\S]*?```/g, "（代码在屏幕上）").replace(/^\s*\|.*\|\s*$/gm, "").replace(/!\[[^\]]*\]\([^)]*\)/g, "").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/https?:\/\/\S+/g, "（链接在屏幕上）").replace(/`([^`]*)`/g, (t, e) => e.includes("/") ? "（路径在屏幕上）" : e).replace(/[*_#<>]/g, "").replace(/^\s*[-•]\s+/gm, "").replace(/\n{2,}/g, `
+  let t = n;
+  for (let e = ""; e !== t; )
+    e = t, t = t.replace(/<!--[\s\S]*?-->/g, "");
+  return t.replace(/^\s*\[OPTIONS:.*\]\s*$/gm, "").replace(/<mcwidget[\s\S]*?<\/mcwidget>/g, "（图在屏幕上）").replace(/```[\s\S]*?```/g, "（代码在屏幕上）").replace(/^\s*\|.*\|\s*$/gm, "").replace(/!\[[^\]]*\]\([^)]*\)/g, "").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/https?:\/\/\S+/g, "（链接在屏幕上）").replace(/`([^`]*)`/g, (e, i) => i.includes("/") ? "（路径在屏幕上）" : i).replace(/[*_#<>]/g, "").replace(/^\s*[-•]\s+/gm, "").replace(/\n{2,}/g, `
 `).trim();
 }
 const it = /^(谢谢(大家|观看|收看)?[。!！]*|字幕.*|请不吝点赞.*|thank you\.?|thanks for watching.*|you|\.+|。+)$/i, nt = /^[嗯啊哦呃唔哼哈嘿喂诶欸额噢呀啦吧了，。！？!?,.~…\s]+$/;

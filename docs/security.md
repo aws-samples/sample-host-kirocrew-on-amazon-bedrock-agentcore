@@ -63,7 +63,9 @@ today because it carries no data access and only read-only Registry actions; it
 stops being safe the moment downstream business permissions are added to it.
 `enable_voice_call_speech` (off by default) adds `polly:SynthesizeSpeech` and
 `transcribe:StartStreamTranscription`. Both return results to the caller and read
-or store no data; their only cross-sandbox effect is cost.
+or store no data; their only cross-sandbox effect is cost. The frontend's
+`Permissions-Policy` allows the microphone for the page's own origin only
+(`microphone=(self)`), so voice input works; frames and other origins stay denied.
 
 ## Known gaps and boundaries
 

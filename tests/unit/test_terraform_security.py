@@ -44,7 +44,8 @@ def test_frontend_is_private_oac_https_only_and_security_header_protected() -> N
     ):
         assert setting in frontend
     assert "values   = [aws_cloudfront_distribution.frontend.arn]" in frontend
-
+    # Voice input needs the microphone on the page's own origin only.
+    assert 'value    = "camera=(), geolocation=(), microphone=(self)"' in frontend
 
 def test_control_role_can_use_encrypted_sandbox_table_only_through_dynamodb() -> None:
     control = terraform("modules/control-api/main.tf")

@@ -141,8 +141,10 @@ resource "aws_cloudfront_response_headers_policy" "security" {
 
   custom_headers_config {
     items {
+      # The page itself may ask for the microphone (Kiro Crew's voice input and
+      # the voice-call app); frames and other origins still may not.
       header   = "Permissions-Policy"
-      value    = "camera=(), geolocation=(), microphone=()"
+      value    = "camera=(), geolocation=(), microphone=(self)"
       override = true
     }
     items {

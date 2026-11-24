@@ -99,6 +99,8 @@ export function slotFromSessionKey(sessionKey: string): string {
 }
 
 // ---- text helpers ----
+const SILENT_WAV = 'UklGRjQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YRAAAAAAAAAAAAAAAAAAAAAAAAAA'
+
 function textOf(content: unknown): string {
   if (typeof content === 'string') return content
   if (Array.isArray(content)) return content.map(textOf).join('')
@@ -493,9 +495,16 @@ export class VoiceCall {
   unlockAudio(): void {
     if (!this.player) this.player = new Audio()
     const a = this.player
-    // A one-millisecond silent WAV, played inside the user gesture.
-    a.src = 'data:audio/wav;base64,UklGRjQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YRAAAAAAAAAAAAAAAAAAAAAAAAAA'
-    void a.play().then(() => a.pause()).catch(() => undefined)
+    // A one-millisecond silent WAV, played inside the user gesture. A blob URL,
+    // because the page's CSP allows media from 'self' and blob: only.
+    const bytes = Uint8Array.from(atob(SILENT_WAV), (c) => c.charCodeAt(0))
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }))
+    a.src = url
+    void a
+      .play()
+      .then(() => a.pause())
+      .catch(() => undefined)
+      .finally(() => URL.revokeObjectURL(url))
     void this.ctx?.resume().catch(() => undefined)
   }
 

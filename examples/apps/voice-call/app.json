@@ -6,6 +6,8 @@
   "author": "sample-host-kirocrew-on-amazon-bedrock-agentcore",
   "license": "MIT",
   "iconPath": "assets/icon.png",
+  "heroImage": "assets/hero.png",
+  "screenshots": ["assets/screenshot-call.png"],
   "tags": ["voice", "speech", "mobile"],
   "platform": { "os": ["linux", "macos"] },
   "permissions": {

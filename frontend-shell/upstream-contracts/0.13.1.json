@@ -211,7 +211,7 @@
   "assetIntegrity": {
     "manifest": "/upstream/0.13.1/asset-manifest.json",
     "algorithm": "sha256",
-    "assetSetSha256": "a58c4c3edb9c4c1d7f703a46b08f6baf9dc56d5d6da41e1135b74c6d0703a939",
+    "assetSetSha256": "ffd4933b78b31891ec4deece04df78db87713875512c33831a7788563a9ca607",
     "requiredTypes": [
       "html",
       "javascript",

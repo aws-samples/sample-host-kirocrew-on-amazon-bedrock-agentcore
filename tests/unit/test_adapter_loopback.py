@@ -203,6 +203,37 @@ def test_route_rules_and_policy_are_closed_by_default() -> None:
         assert policy.classify("GET", path) is RouteDisposition.DENIED
 
 
+def test_installed_app_routes_tunnel_and_nothing_else_outside_api() -> None:
+    policy = KiroCrewRoutePolicy()
+    for method, path in (
+        ("POST", "/apps/voice-call/api/tts"),
+        ("GET", "/apps/voice-call/api/health?x=1"),
+        ("DELETE", "/apps/voice-call/api/items/1"),
+        ("GET", "/apps/voice-call/ui/dist/session-control.mjs"),
+        ("HEAD", "/apps/demo-app/ui/index.mjs"),
+        ("GET", "/apps/issue-radar/art/icon.png"),
+    ):
+        assert policy.classify(method, path) is RouteDisposition.ALLOWED, (method, path)
+    for method, path in (
+        # Static bundles are read-only.
+        ("POST", "/apps/voice-call/ui/dist/index.mjs"),
+        ("PUT", "/apps/voice-call/art/icon.png"),
+        # Not an app surface, a bad name, or a traversal attempt.
+        ("GET", "/apps/voice-call"),
+        ("GET", "/apps/voice-call/data/kv/x.json"),
+        ("GET", "/apps/Voice_Call/ui/index.mjs"),
+        ("GET", "/apps/voice-call/ui/../../../etc/passwd"),
+        ("GET", "/apps/voice-call/ui/%2e%2e/%2e%2e/secret"),
+        ("GET", "/apps/voice-call/ui/a%2Fb"),
+        ("GET", "/apps/voice-call/ui/a%5cb"),
+        ("GET", "/apps/voice-call/ui/a\\b"),
+        ("GET", "/apps//voice-call/ui/index.mjs"),
+        ("GET", "/assets/index.js"),
+        ("GET", "/logo.png"),
+    ):
+        assert policy.classify(method, path) is RouteDisposition.DENIED, (method, path)
+
+
 @pytest.mark.parametrize(
     "payload",
     [

@@ -204,6 +204,28 @@ function hasPrefix(path: string, prefix: string): boolean {
   return path === prefix || path.startsWith(`${prefix}/`);
 }
 
+// Mirror of KiroCrewRoutePolicy._APP_ROUTE. An installed app's backend proxy
+// (`/apps/{name}/api/*`) and its static bundle and artwork (`ui`, `art`) live on
+// the gateway's own origin; CloudFront cannot reach them, so they tunnel like
+// `/api/*`. Encoded dot, slash and backslash are refused so a static path cannot
+// climb out of the app's bundle once the gateway decodes it.
+const APP_ROUTE = /^\/apps\/[a-z0-9]+(?:-[a-z0-9]+)*\/(api|ui|art)\//;
+const ENCODED_SEPARATOR = /%(2e|2f|5c)/i;
+
+/** `api`, `ui` or `art` for an installed app's own route, else undefined. */
+export function appRouteKind(path: string): string | undefined {
+  const match = APP_ROUTE.exec(path);
+  if (match === null || ENCODED_SEPARATOR.test(path) || path.includes("\\")) {
+    return undefined;
+  }
+  return match[1];
+}
+
+/** Whether a same-origin path belongs to the sandbox rather than CloudFront. */
+export function isTunnelledPath(path: string): boolean {
+  return path.startsWith("/api/") || appRouteKind(path) !== undefined;
+}
+
 function canonicalOrigin(url: URL): string {
   if (url.protocol === "wss:") {
     return `https://${url.host}`;
@@ -218,7 +240,7 @@ function validatedUrl(value: string | URL, origin: string): URL {
   const url = new URL(value, origin);
   if (
     canonicalOrigin(url) !== origin ||
-    !url.pathname.startsWith("/api/") ||
+    !isTunnelledPath(url.pathname) ||
     url.pathname.includes("//") ||
     url.pathname.split("/").some((part) => part === "." || part === "..")
   ) {
@@ -247,6 +269,14 @@ export function classifyKiroCrewRoute(
   }
   const normalizedMethod = method.toUpperCase();
   const path = url.pathname;
+  const appKind = appRouteKind(path);
+  if (appKind !== undefined) {
+    return appKind === "api" ||
+      normalizedMethod === "GET" ||
+      normalizedMethod === "HEAD"
+      ? "allowed"
+      : "denied";
+  }
   if (DENIED_PREFIXES.some((prefix) => hasPrefix(path, prefix))) {
     return "denied";
   }
@@ -463,8 +493,7 @@ export class KiroCrewRemoteTransport {
     try {
       const url = new URL(value, this.#origin);
       return (
-        canonicalOrigin(url) === this.#origin &&
-        url.pathname.startsWith("/api/")
+        canonicalOrigin(url) === this.#origin && isTunnelledPath(url.pathname)
       );
     } catch {
       return false;

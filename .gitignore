@@ -40,3 +40,6 @@ runtime/sbom/
 # Test artifacts
 .hypothesis/
 test-results/
+
+# Example apps ship their built UI so a sandbox can install them without a Node build.
+!examples/apps/*/ui/dist/

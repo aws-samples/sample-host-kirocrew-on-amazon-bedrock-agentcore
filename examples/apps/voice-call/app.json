@@ -1,0 +1,40 @@
+{
+  "name": "voice-call",
+  "version": "0.2.0",
+  "displayName": "语音通话",
+  "description": "Talk to Kiro out loud from any chat, on a phone or a laptop. Speech-to-text is Amazon Transcribe (falling back to Kiro Crew's own recognizer), replies are read aloud with Amazon Polly (Zhiyu) and fall back to the browser voice; every request goes to Kiro in that chat, so answers use its memory, tools and approvals.",
+  "author": "sample-host-kirocrew-on-amazon-bedrock-agentcore",
+  "license": "MIT",
+  "iconPath": "assets/icon.png",
+  "tags": ["voice", "speech", "mobile"],
+  "platform": { "os": ["linux", "macos"] },
+  "permissions": {
+    "api": [
+      "/apps/voice-call/api",
+      "/apps/voice-call/api/*",
+      "/api/chat",
+      "/api/chat/slots",
+      "/api/chat/slots/*",
+      "/api/chat/slots/*/reasoning-effort",
+      "/api/stt/transcribe",
+      "/api/stt/prewarm"
+    ]
+  },
+  "backend": { "entryPoint": "backend/server.py", "port": "auto", "healthCheck": "/health" },
+  "contributes": {
+    "sessionControls": [
+      {
+        "id": "talk",
+        "entryPoint": "dist/session-control.mjs",
+        "label": "语音通话",
+        "icon": "AudioLines"
+      }
+    ]
+  },
+  "ui": {
+    "entry": "dist/index.mjs",
+    "pages": [
+      { "route": "/apps/voice-call", "label": "语音通话", "icon": "AudioLines" }
+    ]
+  }
+}

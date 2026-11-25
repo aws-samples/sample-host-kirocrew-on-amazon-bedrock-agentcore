@@ -7,6 +7,11 @@ variable "agent_registry_arn" {
   type        = string
   default     = ""
 }
+variable "enable_speech" {
+  description = "Grant polly:SynthesizeSpeech and transcribe:StartStreamTranscription for apps that talk by voice."
+  type        = bool
+  default     = false
+}
 variable "tags" { type = map(string) }
 
 resource "aws_ecr_repository" "runtime" {
@@ -102,6 +107,17 @@ data "aws_iam_policy_document" "runtime" {
         "agent-registry:BatchGetDiscoverableRegistryRecord",
       ]
       resources = [statement.value]
+    }
+  }
+  dynamic "statement" {
+    # Neither action has a narrower resource than "*": SynthesizeSpeech
+    # authorizes against lexicons only and streaming transcription has no
+    # resource type. Both return results to the caller and store nothing.
+    for_each = var.enable_speech ? ["speech"] : []
+    content {
+      sid       = "Speech"
+      actions   = ["polly:SynthesizeSpeech", "transcribe:StartStreamTranscription"]
+      resources = ["*"]
     }
   }
   statement {

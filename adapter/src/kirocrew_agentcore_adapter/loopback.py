@@ -4,6 +4,7 @@ import base64
 import binascii
 import contextlib
 import json
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
@@ -144,6 +145,24 @@ class KiroCrewRoutePolicy:
         # gates it behind a preview flag; denied so it never rests on that.
         "/api/shared-crew",
     )
+    # An installed app's own surface outside `/api/*`: `/apps/{name}/api/*` is
+    # the gateway's reverse proxy to the app backend (it signs each request for
+    # that backend, which listens on loopback only), and `/apps/{name}/ui/*` and
+    # `/apps/{name}/art/*` are the app's static bundle and artwork. Locally the
+    # browser reaches them on the gateway's own origin; here CloudFront cannot,
+    # so they tunnel like `/api/*` -- under the same per-invocation Cognito
+    # subject binding. Static files are read-only, so only GET/HEAD are allowed.
+    _APP_ROUTE: Final = re.compile(r"^/apps/[a-z0-9]+(?:-[a-z0-9]+)*/(api|ui|art)/")
+    # Encoded dot, slash or backslash would let a static path climb out of the
+    # app's bundle once the gateway decodes it; app paths never need them.
+    _ENCODED_SEPARATOR: Final = re.compile(r"%(2e|2f|5c)", re.IGNORECASE)
+
+    @classmethod
+    def _is_app_route(cls, method: str, path: str) -> bool:
+        match = cls._APP_ROUTE.match(path)
+        if match is None or cls._ENCODED_SEPARATOR.search(path) or "\\" in path:
+            return False
+        return match.group(1) == "api" or method in {"GET", "HEAD"}
 
     def classify(self, method: str, path_with_query: str) -> RouteDisposition:
         method = method.upper()
@@ -153,7 +172,7 @@ class KiroCrewRoutePolicy:
             parsed.scheme
             or parsed.netloc
             or parsed.fragment
-            or not path.startswith("/api/")
+            or not (path.startswith("/api/") or self._is_app_route(method, path))
             or "//" in path
             or any(part in {".", ".."} for part in path.split("/"))
         ):

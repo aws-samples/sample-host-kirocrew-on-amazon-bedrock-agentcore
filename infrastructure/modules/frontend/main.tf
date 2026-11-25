@@ -141,8 +141,10 @@ resource "aws_cloudfront_response_headers_policy" "security" {
 
   custom_headers_config {
     items {
+      # The page itself may ask for the microphone (Kiro Crew's voice input and
+      # the voice-call app); frames and other origins still may not.
       header   = "Permissions-Policy"
-      value    = "camera=(), geolocation=(), microphone=()"
+      value    = "camera=(), geolocation=(), microphone=(self)"
       override = true
     }
     items {
@@ -428,6 +430,18 @@ resource "aws_s3_object" "bootstrap" {
   cache_control = "public,max-age=0,must-revalidate"
   content       = local.bootstrap_content
   etag          = md5(local.bootstrap_content)
+}
+
+# Imported by the extracted upstream /sw.js (tools/extract_kirocrew_spa.py) so an
+# installed app's UI module and artwork reach the sandbox through the page's
+# remote transport. Built next to the bootstrap bundle by `npm run build:bootstrap`.
+resource "aws_s3_object" "app_asset_worker" {
+  bucket        = aws_s3_bucket.frontend.id
+  key           = "app-asset-worker.js"
+  source        = "${dirname(var.bootstrap_path)}/app-asset-worker.js"
+  source_hash   = filemd5("${dirname(var.bootstrap_path)}/app-asset-worker.js")
+  content_type  = "text/javascript; charset=utf-8"
+  cache_control = "public,max-age=0,must-revalidate"
 }
 
 # Upstream's page uses /logo.png as the sidebar logo and the browser tab icon.

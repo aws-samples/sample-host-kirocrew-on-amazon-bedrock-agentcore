@@ -107,5 +107,13 @@
       "calledByBundle": true,
       "reason": "New in 0.12.0. Shared Crew invites other people into this crew (people, presence, typing lease, a Tailscale credential and invites). A sandbox belongs to exactly one Cognito subject, so a second person or a Tailscale path into the microVM would bypass the tenancy the transport enforces. Upstream gates it behind a preview flag; denied so that never rests on the flag. The cost is the Shared Crew preview UI."
     }
-  ]
+  ],
+  "appRoutes": {
+    "pattern": "^/apps/[a-z0-9]+(?:-[a-z0-9]+)*/(api|ui|art)/",
+    "staticMethods": [
+      "GET",
+      "HEAD"
+    ],
+    "reason": "An installed app's backend proxy (/apps/{name}/api/*) and its static bundle and artwork (/apps/{name}/ui/*, /apps/{name}/art/*). The gateway serves these on its own origin locally; CloudFront cannot reach them, so they tunnel under the same per-invocation Cognito subject binding as /api/*. ui and art are read-only; encoded dot, slash and backslash are refused."
+  }
 }

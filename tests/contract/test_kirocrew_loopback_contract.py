@@ -315,6 +315,11 @@ def test_route_allowlist_contract_matches_versioned_adapter_boundary() -> None:
             f"{entry['prefix']} is answered as unavailable but upstream registers it"
         )
         assert policy.classify("GET", entry["prefix"]) is RouteDisposition.UNAVAILABLE
+    app_routes = contract["appRoutes"]
+    assert app_routes["pattern"] == KiroCrewRoutePolicy._APP_ROUTE.pattern
+    assert app_routes["staticMethods"] == ["GET", "HEAD"]
+    assert policy.classify("POST", "/apps/demo-app/api/x") is RouteDisposition.ALLOWED
+    assert policy.classify("POST", "/apps/demo-app/ui/x.mjs") is RouteDisposition.DENIED
 
     supervisor_source = (
         ROOT / "runtime" / "src" / "kirocrew_agentcore_runtime" / "supervisor.py"

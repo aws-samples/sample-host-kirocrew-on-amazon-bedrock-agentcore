@@ -115,6 +115,12 @@ variable "log_retention_days" {
   default     = 30
 }
 
+variable "enable_voice_call_speech" {
+  description = "Let sandboxes call Amazon Polly SynthesizeSpeech and Amazon Transcribe StartStreamTranscription, which the voice-call example app (examples/apps/voice-call) uses to read replies aloud and recognize speech. It goes on the shared runtime role, so every sandbox and its terminal can use both, billed to this account."
+  type        = bool
+  default     = false
+}
+
 variable "alarm_actions" {
   description = "SNS topic ARNs or other CloudWatch alarm action ARNs."
   type        = list(string)

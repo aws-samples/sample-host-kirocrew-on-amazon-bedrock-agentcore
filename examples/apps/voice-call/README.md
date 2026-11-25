@@ -29,6 +29,8 @@ git clone --depth 1 https://github.com/aws-samples/sample-host-kirocrew-on-amazo
 
 Then in the dashboard: **Apps → Discover → Install from local path**, choose `~/workplace/kirocrew-samples/examples/apps/voice-call`, and enable and trust it in **Library**. Kiro Crew refuses app installs from the terminal; installing is always the owner's own action.
 
+The app ships a backend (`backend/server.py`), so it is third-party executable code: Kiro Crew blocks it until you trust it. Choosing **Trust this app and enable** in Library sets that trust for this app only; to allow third-party apps globally instead, set `agent.apps_allow_third_party` to `true`.
+
 The built UI (`ui/dist`) is committed so the sandbox needs no Node build. To rebuild:
 
 ```bash

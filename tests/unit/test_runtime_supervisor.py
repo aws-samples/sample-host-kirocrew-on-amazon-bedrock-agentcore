@@ -643,6 +643,48 @@ def test_a_readiness_line_after_the_cli_token_is_logged_with_its_delay(
     assert "readiness line arrived after start returned" in caplog.text
 
 
+def test_a_gateway_restart_keeps_leases_held_by_live_chats(tmp_path: Path) -> None:
+    """Chat providers run in their own sessions and can outlive a crashed gateway.
+
+    Only the first start may treat every lease as stale; a restart in the same
+    container removes only leases whose pid is gone.
+    """
+    layout = WorkspaceLayout(tmp_path / "workspace")
+    supervisor = KiroCrewSupervisor(layout, metadata(), effective_uid=lambda: 10001)
+    leases = layout.home / ".kiro" / "session-leases"
+    leases.mkdir(parents=True)
+    supervisor._scrub_session_leases(layout.home)  # first start: nothing to keep
+    live = leases / "sess_live.lease"
+    live.write_text(json.dumps({"pid": os.getpid()}))
+    dead = leases / "sess_dead.lease"
+    dead.write_text(json.dumps({"pid": 2**22 + 12345}))
+    garbled = leases / "sess_garbled.lease"
+    garbled.write_text("not json")
+    no_pid = leases / "sess_nopid.lease"
+    no_pid.write_text("[]")
+
+    supervisor._scrub_session_leases(layout.home)
+
+    assert live.exists()
+    assert not dead.exists()
+    assert not garbled.exists()
+    assert not no_pid.exists()
+
+
+def test_a_lease_naming_another_users_process_counts_as_alive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lease = tmp_path / "sess.lease"
+    lease.write_text(json.dumps({"pid": 1}))
+
+    def denied(_pid: int, _signal: int) -> None:
+        raise PermissionError
+
+    monkeypatch.setattr(os, "kill", denied)
+    assert module._lease_holder_alive(lease) is True
+    assert module._lease_holder_alive(tmp_path / "missing.lease") is False
+
+
 def test_probe_dashboard_health_reports_liveness(monkeypatch: pytest.MonkeyPatch) -> None:
     class Response:
         def __init__(self, status: int) -> None:

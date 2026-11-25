@@ -333,6 +333,7 @@ class KiroCrewSupervisor:
         self._environment: dict[str, str] | None = None
         self._output_tail: deque[str] = deque(maxlen=_OUTPUT_TAIL_LINES)
         self._exit_reported = False
+        self._leases_scrubbed = False
 
     @property
     def state_home(self) -> Path:
@@ -672,9 +673,8 @@ class KiroCrewSupervisor:
         except OSError:
             _LOGGER.warning("Could not link the image's Chromium; the browser tool downloads it.")
 
-    @staticmethod
-    def _scrub_session_leases(home: Path) -> None:
-        """Remove the chat session leases a checkpoint captured.
+    def _scrub_session_leases(self, home: Path) -> None:
+        """Remove the chat session leases no live chat in THIS container holds.
 
         The Kiro engine writes ``~/.kiro/session-leases/<session>.lease`` naming
         the pid that owns each chat and renews it while that process lives. A
@@ -682,15 +682,24 @@ class KiroCrewSupervisor:
         container numbers its processes from the start too, so a lease's pid can
         name an unrelated live process here, and the next message in that chat
         fails with "This session is loaded in another program, kirocrew (pid N)".
-        Seen once on the dev deployment, right after a restore. No chat process
-        exists yet when the gateway starts (the previous gateway's process
-        group was terminated), so every lease on disk is stale.
+
+        On the first start in a process no chat can exist yet, so every lease is
+        stale and all go. A later start is the in-container gateway restart
+        after a crash, and upstream spawns each chat provider in its OWN
+        session (``start_new_session=True``), so a provider can outlive the
+        gateway that started it. There only leases whose pid is gone are
+        removed: deleting a live provider's lease would let a second process
+        drive the same chat.
         """
+        first = not self._leases_scrubbed
+        self._leases_scrubbed = True
         leases = home / ".kiro" / "session-leases"
         if not leases.is_dir():
             return
         for candidate in leases.iterdir():
-            if candidate.suffix == ".lease" and candidate.is_file():
+            if candidate.suffix != ".lease" or not candidate.is_file():
+                continue
+            if first or not _lease_holder_alive(candidate):
                 candidate.unlink(missing_ok=True)
 
     @staticmethod
@@ -1138,6 +1147,24 @@ def _probe_dashboard_health(port: int, timeout: float) -> bool:
             return bool(200 <= response.status < 300)
     except (OSError, http.client.HTTPException, ValueError):
         return False
+
+
+def _lease_holder_alive(lease: Path) -> bool:
+    """Whether the pid a session lease names is a live process; unreadable means no."""
+    try:
+        loaded = cast(object, json.loads(lease.read_text(encoding="utf-8")))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    pid = cast(dict[str, object], loaded).get("pid") if isinstance(loaded, dict) else None
+    if type(pid) is not int or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _overlay_pins_kiro_cli(state_home: Path) -> bool:

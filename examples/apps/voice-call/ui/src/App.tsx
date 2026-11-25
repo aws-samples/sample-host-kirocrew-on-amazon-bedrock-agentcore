@@ -77,7 +77,7 @@ export default function VoiceCallPage() {
         </select>
         <label style={{ ...label, display: 'flex', gap: 8, alignItems: 'center' }}>
           <input type="radio" checked={s.mode === 'manual'} onChange={() => update({ mode: 'manual' })} />
-          手动发送（推荐）：手机上按住按钮说、松开发；电脑上按快捷键开始，再按一次发出。旁边有人说话也不会被听进去。
+          手动发送（推荐）：点「说」或按 ⌥空格 开始，点「发送」或再按一次 ⌥空格 发出。旁边有人说话也不会被听进去。手机上是按住大按钮说、松开发送。
         </label>
         <label style={{ ...label, display: 'flex', gap: 8, alignItems: 'center' }}>
           <input type="radio" checked={s.mode === 'auto'} onChange={() => update({ mode: 'auto' })} />

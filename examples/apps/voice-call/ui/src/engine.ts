@@ -69,10 +69,10 @@ export const HOTKEYS: Record<HotkeyId, { label: string; code: string; ctrl?: boo
   'alt+space': { label: '⌥空格（会和豆包输入法冲突）', code: 'Space', alt: true },
 }
 export function hotkeyLabel(): string {
-  return HOTKEYS[loadSettings().hotkey]?.label.split('（')[0] ?? '⌃`'
+  return HOTKEYS[loadSettings().hotkey]?.label.split('（')[0] ?? '⌥空格'
 }
 const SETTINGS_KEY = 'voice-call.settings.v6'
-const DEFAULTS: Settings = { voice: 'polly', rate: 1.15, maxSpokenChars: 500, silenceMs: 1300, mode: 'manual', fast: true, autoSendMs: 5000, hotkey: 'ctrl+backquote' }
+const DEFAULTS: Settings = { voice: 'polly', rate: 1.15, maxSpokenChars: 500, silenceMs: 1300, mode: 'manual', fast: true, autoSendMs: 5000, hotkey: 'alt+space' }
 export function loadSettings(): Settings {
   try {
     const s = { ...DEFAULTS, ...(JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}') as Partial<Settings>) }
@@ -885,7 +885,7 @@ export function bindHotkey(): void {
       c.cancelTalk()
       return
     }
-    const k = HOTKEYS[loadSettings().hotkey] ?? HOTKEYS['ctrl+backquote']
+    const k = HOTKEYS[loadSettings().hotkey] ?? HOTKEYS['alt+space']
     if (e.code === k.code && !!k.ctrl === e.ctrlKey && !!k.alt === e.altKey && !e.metaKey) {
       e.preventDefault()
       if (e.repeat) return
@@ -900,7 +900,7 @@ export function bindHotkey(): void {
     }
   }, true)
   window.addEventListener('keyup', (e) => {
-    const k = HOTKEYS[loadSettings().hotkey] ?? HOTKEYS['ctrl+backquote']
+    const k = HOTKEYS[loadSettings().hotkey] ?? HOTKEYS['alt+space']
     if (e.code !== k.code && e.key !== 'Alt' && e.key !== 'Control') return
     const c = liveCall()
     if (!c || !startedByThisPress) return

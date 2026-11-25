@@ -47,8 +47,8 @@ const hint = (state: string, phone: boolean): string | undefined => {
   }
   const k = hotkeyLabel()
   return ({
-    ready: `按 ${k} 说话 · 按住说、松开发；或按一下开始、再按一下发`,
-    recording: `在听… 再按 ${k} 发送，Esc 不发`,
+    ready: `点「说」或按 ${k} 开始`,
+    recording: `在听… 点「发送」或再按一次 ${k} 发出，Esc 不发`,
     speaking: `在说… 按 ${k} 打断`,
   } as Record<string, string>)[state]
 }
@@ -157,6 +157,21 @@ export default function VoiceCallControl({ session, onClose }: Props) {
         >
           {call.draft ? <bdi>{text}</bdi> : text}
         </span>
+        {!phone && call.mode === 'manual' && (
+          <button
+            type="button"
+            data-testid="voice-call-toggle"
+            style={{ ...btn, background: recording ? 'var(--danger, #e5484d)' : 'var(--accent, #9046ff)', color: '#fff', border: 'none' }}
+            onClick={() => {
+              call.unlockAudio()
+              if (recording) void call.sendTalk()
+              else if (call.running) call.beginTalk()
+              else { stopOthers(slot); void call.start().then(() => call.beginTalk()) }
+            }}
+          >
+            {recording ? '发送' : '说'}
+          </button>
+        )}
         <button type="button" style={btn} onClick={() => { call.stop(); onClose() }}>{call.running ? '挂断' : '关闭'}</button>
       </div>
       {phone && call.mode === 'manual' && (

@@ -227,7 +227,13 @@ def _walk_included_roots(workspace: Path) -> list[Path]:
             continue
         paths.append(candidate)
         if candidate.is_dir() and not candidate.is_symlink():
-            paths.extend(sorted(candidate.rglob("*")))
+            # os.walk, not rglob: a directory deleted mid-walk (git removes
+            # its temp dirs) is skipped instead of failing the checkpoint.
+            # Neither follows symlinked directories.
+            for current, directories, files in os.walk(candidate):
+                base = Path(current)
+                paths.extend(base / name for name in directories)
+                paths.extend(base / name for name in files)
     return sorted(set(paths))
 
 
@@ -245,7 +251,10 @@ def workspace_fingerprint(workspace: Path, *, policy: PersistencePolicy | None =
         relative = PurePosixPath(path.relative_to(workspace).as_posix())
         if not selected.includes(relative):
             continue
-        metadata = path.lstat()
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            continue
         digest.update(
             f"{relative.as_posix()}\x00{metadata.st_mode}\x00"
             f"{metadata.st_mtime_ns}\x00{metadata.st_size}\x00".encode()
@@ -297,7 +306,14 @@ class ManifestBuilder:
         racy_after = self._clock_ns() - _RACY_WINDOW_NS
         for path in self._walk():
             relative = PurePosixPath(path.relative_to(self._workspace).as_posix())
-            metadata = path.lstat()
+            try:
+                metadata = path.lstat()
+            except FileNotFoundError:
+                # Removed between the walk and this stat: a git temp pack, a
+                # lock file. It is gone, so the checkpoint has nothing to keep.
+                # Failing the whole build here failed Stop safely while an app
+                # was cloning in the background.
+                continue
             if not self._policy.includes(relative):
                 continue
             if stat.S_ISDIR(metadata.st_mode):
@@ -314,7 +330,10 @@ class ManifestBuilder:
                     )
                 )
             elif stat.S_ISLNK(metadata.st_mode):
-                target = str(path.readlink())
+                try:
+                    target = str(path.readlink())
+                except FileNotFoundError:
+                    continue
                 if not safe_symlink_target(relative, target):
                     # Restore refuses a link that is absolute or climbs out of
                     # the workspace, and one such entry invalidates the whole
@@ -345,26 +364,41 @@ class ManifestBuilder:
                     entries.append(previous[1])
                     stamps[key] = previous
                     continue
-                file_chunks = self._read_chunks(path)
+                try:
+                    file_chunks = self._read_chunks(path)
+                except FileNotFoundError:
+                    continue
                 chunk_digests: list[str] = []
                 whole_file = hashlib.sha256()
+                read_size = 0
                 for data in file_chunks:
                     digest = hashlib.sha256(data).hexdigest()
                     chunks.setdefault(digest, data)
                     chunk_digests.append(digest)
                     whole_file.update(data)
+                    read_size += len(data)
+                # The size is what was READ, not what lstat saw earlier. A file
+                # written between the two (an app's git clone, a log) used to be
+                # recorded with the old size and the new content, and restore
+                # then rejected the whole generation as corrupt: the sandbox
+                # could never be opened again.
                 entry = ManifestEntry(
                     key,
                     "file",
                     stat.S_IMODE(metadata.st_mode),
                     metadata.st_mtime_ns,
-                    metadata.st_size,
+                    read_size,
                     whole_file.hexdigest(),
                     tuple(chunk_digests),
                     None,
                 )
                 entries.append(entry)
-                if metadata.st_mtime_ns < racy_after and metadata.st_ctime_ns < racy_after:
+                changed_while_read = read_size != metadata.st_size
+                if (
+                    not changed_while_read
+                    and metadata.st_mtime_ns < racy_after
+                    and metadata.st_ctime_ns < racy_after
+                ):
                     stamps[key] = (stamp, entry)
         manifest = PersistenceManifest(
             MANIFEST_SCHEMA_VERSION,

@@ -336,3 +336,117 @@ def test_builder_rereads_a_file_whose_inode_changed(tmp_path: Path) -> None:
     built = builder.build(2, SANDBOX_ID, "2026-10-29T00:01:00Z")
     entry = next(e for e in built.manifest.entries if e.path == "projects/app/swap.txt")
     assert entry.chunks and set(entry.chunks) <= set(built.chunks)
+
+
+class _GrowingWhileRead(ManifestBuilder):
+    """Appends to the file between the builder's lstat and its read."""
+
+    def _read_chunks(self, path: Path) -> list[bytes]:
+        if path.name == "pack":
+            with path.open("ab") as handle:
+                handle.write(b"-appended")
+        return super()._read_chunks(path)
+
+
+def test_a_file_written_during_the_build_records_the_size_actually_read(
+    tmp_path: Path,
+) -> None:
+    """Restore checks size and digest together; a stale size made the whole
+    generation unrestorable (seen on a sandbox whose app was cloning)."""
+    workspace = tmp_path / "workspace"
+    target = workspace / "home" / ".kiro" / "crew" / "pack"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"original")
+
+    builder = _GrowingWhileRead(workspace)
+    built = builder.build(1, SANDBOX_ID, "2026-08-17T16:00:00Z")
+
+    entry = next(e for e in built.manifest.entries if e.path.endswith("crew/pack"))
+    content = b"".join(built.chunks[digest] for digest in entry.chunks)
+    assert content == b"original-appended"
+    assert entry.size == len(content)
+    assert entry.digest == hashlib.sha256(content).hexdigest()
+    # Not offered as an unchanged baseline: its stamp no longer matches.
+    assert entry.path not in built.stamps
+
+
+class _VanishingBuilder(ManifestBuilder):
+    """Deletes files right after the walk lists them, as git does with temp packs."""
+
+    def _walk(self) -> list[Path]:
+        paths = super()._walk()
+        for name in ("tmp_pack", "tmp_link"):
+            victim = self._workspace / "home" / ".kiro" / "crew" / name
+            victim.unlink()
+        return paths
+
+
+def test_a_file_removed_during_the_build_is_skipped_not_fatal(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    crew = workspace / "home" / ".kiro" / "crew"
+    crew.mkdir(parents=True)
+    (crew / "tmp_pack").write_bytes(b"x")
+    (crew / "tmp_link").symlink_to("tmp_pack")
+    (crew / "kept").write_bytes(b"kept")
+
+    built = _VanishingBuilder(workspace).build(1, SANDBOX_ID, "2026-08-17T16:00:00Z")
+
+    paths = {entry.path for entry in built.manifest.entries}
+    assert "home/.kiro/crew/kept" in paths
+    assert not any(path.endswith(("tmp_pack", "tmp_link")) for path in paths)
+
+
+def test_a_file_removed_between_stat_and_read_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    crew = workspace / "home" / ".kiro" / "crew"
+    crew.mkdir(parents=True)
+    (crew / "gone").write_bytes(b"x")
+    builder = ManifestBuilder(workspace)
+
+    def vanished(_path: Path) -> list[bytes]:
+        raise FileNotFoundError
+
+    monkeypatch.setattr(builder, "_read_chunks", vanished)
+    built = builder.build(1, SANDBOX_ID, "2026-08-17T16:00:00Z")
+    assert not any(e.path.endswith("crew/gone") for e in built.manifest.entries)
+
+
+def test_the_fingerprint_ignores_a_file_removed_mid_walk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import kirocrew_agentcore_persistence.manifest as manifest_module
+
+    workspace = tmp_path / "workspace"
+    crew = workspace / "home" / ".kiro" / "crew"
+    crew.mkdir(parents=True)
+    (crew / "gone").write_bytes(b"x")
+    real_walk = manifest_module._walk_included_roots
+
+    def walk_then_delete(root: Path) -> list[Path]:
+        paths = real_walk(root)
+        (crew / "gone").unlink()
+        return paths
+
+    monkeypatch.setattr(manifest_module, "_walk_included_roots", walk_then_delete)
+    assert workspace_fingerprint(workspace)
+
+
+def test_a_symlink_removed_between_stat_and_readlink_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    crew = workspace / "home" / ".kiro" / "crew"
+    crew.mkdir(parents=True)
+    (crew / "link").symlink_to("elsewhere")
+    real_readlink = Path.readlink
+
+    def gone(self: Path) -> Path:
+        if self.name == "link":
+            raise FileNotFoundError
+        return real_readlink(self)
+
+    monkeypatch.setattr(Path, "readlink", gone)
+    built = ManifestBuilder(workspace).build(1, SANDBOX_ID, "2026-08-17T16:00:00Z")
+    assert not any(e.path.endswith("crew/link") for e in built.manifest.entries)

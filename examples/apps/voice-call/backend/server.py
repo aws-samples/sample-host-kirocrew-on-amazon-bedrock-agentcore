@@ -17,8 +17,7 @@ settings page says so (GET-free: POST /api/status).
 - Credentials: the AWS profile named in VOICE_CALL_AWS_PROFILE or in the file
   backend/aws-profile (one line, the profile name only), otherwise the
   default chain (inside KiroCrew on AgentCore, the runtime's IAM role).
-  Needed: polly:SynthesizeSpeech, polly:DescribeVoices (status check only) and
-  transcribe:StartStreamTranscription.
+  Needed: polly:SynthesizeSpeech, and transcribe:StartStreamTranscription.
 - VOICE_CALL_AWS_REGION picks the region (default AWS_REGION, then us-east-1).
 - Logs carry no recognized or spoken text: only kind, size, language, outcome.
 """
@@ -106,7 +105,8 @@ def _check_status() -> dict:
         return _status[1]
     out: dict = {"region": REGION, "polly": False, "transcribe": False}
     try:
-        _polly_client().describe_voices(LanguageCode="cmn-CN")
+        # Uses only polly:SynthesizeSpeech, the permission speaking needs anyway.
+        _synth("好")
         out["polly"] = True
     except Exception as e:  # no credentials, no permission, no network
         out["error"] = f"{type(e).__name__}: {str(e)[:160]}"

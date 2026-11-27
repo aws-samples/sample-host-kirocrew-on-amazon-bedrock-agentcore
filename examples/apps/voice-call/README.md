@@ -20,7 +20,7 @@ A Kiro Crew app for talking to the Kiro in any chat out loud, from a phone or a 
 
 The app page shows whether Polly and Transcribe are connected.
 
-- **Permissions**: `polly:SynthesizeSpeech`, `polly:DescribeVoices` (the status check) and `transcribe:StartStreamTranscription`. On KiroCrew on AgentCore set `enable_voice_call_speech = true` in your Terraform variables.
+- **Permissions**: `polly:SynthesizeSpeech` and `transcribe:StartStreamTranscription`. On KiroCrew on AgentCore set `enable_voice_call_speech = true` in your Terraform variables.
 - **Credentials**: the default AWS credential chain (inside a sandbox, the runtime role). Locally you can name a profile instead, either in the environment variable `VOICE_CALL_AWS_PROFILE` or in a one-line file `backend/aws-profile` containing only the profile name (git-ignored). The app never stores keys.
 - **Region**: `VOICE_CALL_AWS_REGION`, else `AWS_REGION`, else `us-east-1`.
 - **Transcribe client**: the backend needs the `amazon-transcribe` Python package; KiroCrew on AgentCore images ship it through `kirocrew[voice-aws]`.

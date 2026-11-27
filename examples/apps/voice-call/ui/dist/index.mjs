@@ -1,7 +1,7 @@
 import { jsxs as a, jsx as n, Fragment as P } from "react/jsx-runtime";
 import { useAppApi as T } from "@kirocrew/app-sdk";
 import { useState as h, useEffect as x } from "react";
-import { l as V, u as j, s as E, a as H, H as I, h as M, d as _, c as $, b as B } from "./engine.mjs";
+import { l as j, u as E, s as V, a as H, H as I, h as M, d as _, c as $, b as B } from "./engine.mjs";
 const u = {
   background: "var(--surface, transparent)",
   color: "var(--text)",
@@ -9,7 +9,7 @@ const u = {
   borderRadius: 10,
   padding: 16,
   marginBottom: 14
-}, p = { display: "block", fontSize: 13, margin: "10px 0 4px" }, d = {
+}, d = { display: "block", fontSize: 13, margin: "10px 0 4px" }, p = {
   background: "var(--bg, transparent)",
   color: "var(--text)",
   border: "1px solid var(--border)",
@@ -26,7 +26,7 @@ const u = {
     off: "未接通",
     pollyOff: "回复会改用浏览器自带的声音朗读。",
     sttOff: "识别会改用 Kiro Crew 自带的识别。",
-    howToAws: "要用 Amazon 的声音和识别：给运行这个 App 的环境配好 AWS 凭证（本机可设 VOICE_CALL_AWS_PROFILE），需要 polly:SynthesizeSpeech、polly:DescribeVoices、transcribe:StartStreamTranscription 权限。",
+    howToAws: "要用 Amazon 的声音和识别：给运行这个 App 的环境配好 AWS 凭证（本机可设 VOICE_CALL_AWS_PROFILE），需要 polly:SynthesizeSpeech、transcribe:StartStreamTranscription 权限。",
     region: "区域",
     voices: "各语言的声音（Amazon Polly）",
     voicesHelp: "回复是哪种语言，就用那种语言选中的声音读。通话里说「说慢一点」「说快一点」「正常语速」，会调刚才那种语言的语速。",
@@ -61,7 +61,7 @@ const u = {
     off: "not connected",
     pollyOff: "Replies are read by the browser voice instead.",
     sttOff: "Recognition falls back to Kiro Crew's own recognizer.",
-    howToAws: "For Amazon voices and recognition, give the environment running this app AWS credentials (locally you can set VOICE_CALL_AWS_PROFILE) with polly:SynthesizeSpeech, polly:DescribeVoices and transcribe:StartStreamTranscription.",
+    howToAws: "For Amazon voices and recognition, give the environment running this app AWS credentials (locally you can set VOICE_CALL_AWS_PROFILE) with polly:SynthesizeSpeech and transcribe:StartStreamTranscription.",
     region: "Region",
     voices: "Voice per language (Amazon Polly)",
     voicesHelp: 'Each reply is read by the voice chosen for its language. During a call, say "slower", "faster" or "normal speed" to change the speed of the language just spoken.',
@@ -88,8 +88,8 @@ const u = {
     uiLang: "Interface language"
   }
 };
-function D() {
-  const v = T(), [o, C] = h(V()), [m, z] = h(j()), [S, L] = h([]), [b, A] = h({}), [s, k] = h(null), [O, f] = h(""), t = K[m];
+function Y() {
+  const v = T(), [o, C] = h(j()), [m, z] = h(E()), [S, L] = h([]), [b, A] = h({}), [s, k] = h(null), [O, f] = h(""), t = K[m];
   x(() => {
     var l;
     const e = () => L($());
@@ -135,9 +135,9 @@ function D() {
       /* @__PURE__ */ a("label", { style: { fontSize: 12, color: "var(--muted)" }, children: [
         t.uiLang,
         " ",
-        /* @__PURE__ */ a("select", { style: d, value: m, onChange: (e) => {
+        /* @__PURE__ */ a("select", { style: p, value: m, onChange: (e) => {
           const l = e.target.value;
-          E(l), z(l);
+          V(l), z(l);
         }, children: [
           /* @__PURE__ */ n("option", { value: "zh", children: "中文" }),
           /* @__PURE__ */ n("option", { value: "en", children: "English" })
@@ -179,7 +179,7 @@ function D() {
         const c = o.pollyVoices[e] ?? l.default, g = o.pollyRates[e] ?? 1;
         return /* @__PURE__ */ a("div", { style: { display: "flex", alignItems: "center", gap: 8, margin: "6px 0", flexWrap: "wrap" }, children: [
           /* @__PURE__ */ n("span", { style: { width: 130, fontSize: 13 }, children: H(e, m) }),
-          /* @__PURE__ */ n("select", { style: d, value: c, onChange: (r) => i({ pollyVoices: { ...o.pollyVoices, [e]: r.target.value } }), children: l.options.map((r) => /* @__PURE__ */ a("option", { value: r.id, children: [
+          /* @__PURE__ */ n("select", { style: p, value: c, onChange: (r) => i({ pollyVoices: { ...o.pollyVoices, [e]: r.target.value } }), children: l.options.map((r) => /* @__PURE__ */ a("option", { value: r.id, children: [
             r.id,
             "（",
             t.gender[r.gender],
@@ -192,19 +192,19 @@ function D() {
             g.toFixed(2),
             "×"
           ] }),
-          g !== 1 && /* @__PURE__ */ n("button", { type: "button", style: d, onClick: () => i({ pollyRates: { ...o.pollyRates, [e]: 1 } }), children: t.reset }),
-          /* @__PURE__ */ n("button", { type: "button", style: d, onClick: () => void R(e, c), children: O === `${e}:${c}` ? t.playing : t.play })
+          g !== 1 && /* @__PURE__ */ n("button", { type: "button", style: p, onClick: () => i({ pollyRates: { ...o.pollyRates, [e]: 1 } }), children: t.reset }),
+          /* @__PURE__ */ n("button", { type: "button", style: p, onClick: () => void R(e, c), children: O === `${e}:${c}` ? t.playing : t.play })
         ] }, e);
       })
     ] }),
     /* @__PURE__ */ a("div", { style: u, children: [
       /* @__PURE__ */ n("strong", { style: { fontSize: 14 }, children: t.fallback }),
-      /* @__PURE__ */ n("label", { style: p, children: /* @__PURE__ */ a("select", { style: d, value: o.voice === "polly" ? "polly" : "", onChange: (e) => i({ voice: e.target.value }), children: [
+      /* @__PURE__ */ n("label", { style: d, children: /* @__PURE__ */ a("select", { style: p, value: o.voice === "polly" ? "polly" : "", onChange: (e) => i({ voice: e.target.value }), children: [
         /* @__PURE__ */ n("option", { value: "polly", children: t.usePolly }),
         /* @__PURE__ */ n("option", { value: "", children: t.useBrowser })
       ] }) }),
-      o.voice !== "polly" && S.length > 0 && /* @__PURE__ */ n("select", { style: d, value: o.voice, onChange: (e) => i({ voice: e.target.value }), children: S.map((e) => /* @__PURE__ */ n("option", { value: e.name, children: e.name }, e.name)) }),
-      /* @__PURE__ */ a("label", { style: p, children: [
+      o.voice !== "polly" && S.length > 0 && /* @__PURE__ */ n("select", { style: p, value: o.voice, onChange: (e) => i({ voice: e.target.value }), children: S.map((e) => /* @__PURE__ */ n("option", { value: e.name, children: e.name }, e.name)) }),
+      /* @__PURE__ */ a("label", { style: d, children: [
         t.maxChars,
         ": ",
         o.maxSpokenChars
@@ -213,32 +213,32 @@ function D() {
     ] }),
     /* @__PURE__ */ a("div", { style: u, children: [
       /* @__PURE__ */ n("strong", { style: { fontSize: 14 }, children: t.send }),
-      /* @__PURE__ */ n("label", { style: p, children: t.hotkey }),
-      /* @__PURE__ */ n("select", { style: d, value: o.hotkey, onChange: (e) => i({ hotkey: e.target.value }), children: Object.keys(I).map((e) => /* @__PURE__ */ n("option", { value: e, children: M(e) }, e)) }),
-      /* @__PURE__ */ a("label", { style: { ...p, display: "flex", gap: 8, alignItems: "center" }, children: [
+      /* @__PURE__ */ n("label", { style: d, children: t.hotkey }),
+      /* @__PURE__ */ n("select", { style: p, value: o.hotkey, onChange: (e) => i({ hotkey: e.target.value }), children: Object.keys(I).map((e) => /* @__PURE__ */ n("option", { value: e, children: M(e) }, e)) }),
+      /* @__PURE__ */ a("label", { style: { ...d, display: "flex", gap: 8, alignItems: "center" }, children: [
         /* @__PURE__ */ n("input", { type: "radio", checked: o.mode === "manual", onChange: () => i({ mode: "manual" }) }),
         t.manual
       ] }),
-      /* @__PURE__ */ a("label", { style: { ...p, display: "flex", gap: 8, alignItems: "center" }, children: [
+      /* @__PURE__ */ a("label", { style: { ...d, display: "flex", gap: 8, alignItems: "center" }, children: [
         /* @__PURE__ */ n("input", { type: "radio", checked: o.mode === "auto", onChange: () => i({ mode: "auto" }) }),
         t.auto.replace("{0}", String(o.autoSendMs / 1e3))
       ] }),
-      /* @__PURE__ */ a("label", { style: { ...p, display: "flex", gap: 8, alignItems: "center" }, children: [
+      /* @__PURE__ */ a("label", { style: { ...d, display: "flex", gap: 8, alignItems: "center" }, children: [
         /* @__PURE__ */ n("input", { type: "checkbox", checked: o.fast, onChange: (e) => i({ fast: e.target.checked }) }),
         t.fast
       ] })
     ] }),
     /* @__PURE__ */ a("div", { style: u, children: [
       /* @__PURE__ */ n("strong", { style: { fontSize: 14 }, children: t.stt }),
-      /* @__PURE__ */ n("label", { style: p, children: t.sttLangs }),
-      /* @__PURE__ */ n("input", { style: { ...d, width: 220 }, value: o.sttLangs, placeholder: _(m), onChange: (e) => i({ sttLangs: e.target.value }) }),
-      /* @__PURE__ */ a("label", { style: p, children: [
+      /* @__PURE__ */ n("label", { style: d, children: t.sttLangs }),
+      /* @__PURE__ */ n("input", { style: { ...p, width: 220 }, value: o.sttLangs, placeholder: _(m), onChange: (e) => i({ sttLangs: e.target.value }) }),
+      /* @__PURE__ */ a("label", { style: d, children: [
         t.silence,
         ": ",
         o.silenceMs
       ] }),
       /* @__PURE__ */ n("input", { type: "range", min: 500, max: 2500, step: 100, value: o.silenceMs, onChange: (e) => i({ silenceMs: Number(e.target.value) }) }),
-      /* @__PURE__ */ a("label", { style: p, children: [
+      /* @__PURE__ */ a("label", { style: d, children: [
         t.autoSend,
         ": ",
         o.autoSendMs
@@ -249,5 +249,5 @@ function D() {
   ] });
 }
 export {
-  D as default
+  Y as default
 };

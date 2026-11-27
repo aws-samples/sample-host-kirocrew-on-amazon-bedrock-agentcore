@@ -242,7 +242,27 @@ deployment with the same test sandbox, reopening after Stop safely:
 | V1, after #128 (2026-11-23) | 48 s; first chat answered in about 6 s |
 | V2 with the build warmup hook (branch `feat/v2-warmup-hook`, 2026-11-23) | 78 s. Gateway start 45 s instead of 15–25 s, and both plain chats got no answer within 4 minutes on V2 microVMs; the same chat answered in 6 s once the session was back on V1 |
 
-Why V2 does not help this design:
+**Status (2026-11-27): still V1, but V2 is now close.** The fork server
+(#143) changed the picture. It keeps a process with KiroCrew's ~4,200
+modules already imported, on V2 inside the snapshot, and the gateway forks
+from it after the restore instead of importing everything cold:
+
+| 25 users reopening at once, ~470 MiB homes | Median | 90th percentile |
+|---|---|---|
+| V1 + fork server | 49.2 s | 54.7 s |
+| V2 + fork server, first round | 32 s | 35 s |
+| V2 + fork server, second round | 25 s | 27 s |
+
+V2 also has no warm-pool step: on V1 the 11th and later sessions of a burst
+wait 15–25 s longer for a microVM (see "Many users opening at once"). What
+keeps this deployment on V1 is the first chat after a reopen: one chat with
+one tool call took 76 s on V2 and 39 s on V1 (one run each, same test
+account). Where those 76 s go (the Kiro engine's start, the CLI's first file
+reads, or the model call) has not been measured; the runtime logs carry no
+chat timing, so measuring it means running V2 with timing added. Switch to
+V2 once that first chat is close to V1's.
+
+Why V2 did not help before the fork server (analysis of 2026-11-23):
 
 - The root cause is when the gateway starts. V2 snapshots the microVM once
   per runtime version, before any user exists, and keeps process memory in
@@ -279,9 +299,9 @@ Why V2 does not help this design:
 What V2 would bring: elastic memory billing, which may cost less; this was
 not measured.
 
-Revisit when any of these happens: AWS announces an end date for V1, the
-workspace moves to an on-demand mount, or the V2 slow-read issue is fixed
-on the platform side. Existing runtimes keep their version on update, so
+Revisit when any of these happens: the V2 first chat is close to V1's,
+AWS announces an end date for V1, the workspace moves to an on-demand
+mount, or the V2 slow-read issue is fixed on the platform side. Existing runtimes keep their version on update, so
 staying on V1 needs no action today.
 
 The V2 build warmup hook

@@ -97,7 +97,10 @@ KiroCrew 原本面向本地运行：浏览器中的 SPA 通过 HTTP、服务器�
 
 [打开 SVG 矢量图](docs/startup-sequence.zh-CN.svg)
 
-启动耗时大多花在第 7 步：工作区越大，恢复越慢。
+在新加坡开发环境实测（Runtime V1，工作区约 470 MiB，2026-11-27）：单个用户重新打开，约
+20–30 秒可用。microVM 里，恢复工作区约 14 秒，网关从预先导入好模块的进程分叉出来，再要约
+4 秒。很多人同时打开时，平台预热好的 microVM 大约 10 台就用完，之后的用户要多等 15–25 秒。
+各阶段耗时和看法见 [docs/operations.md](docs/operations.md#where-a-cold-start-spends-its-time)。
 
 ## 安全与持久化模型
 
@@ -200,8 +203,8 @@ terraform -chdir=infrastructure output -state="$TF_STATE" deployment
 过一个受限的 Lambda 网关，只接受 `allowed_email_domains` 变量所列域名（默认 `amazon.com`）
 的邮箱；域名之外的个别地址可通过 `allowed_email_patterns`（对完整地址匹配的正则列表）放行。
 新账号需要输入发送到邮箱的验证码完成确认，表单支持重新发送。任何人都无法绕过该网关直接对
-Cognito 注册或登录。登录后点击 **Start**。新沙箱首次启动约需一分钟，之后每次启动都会在数秒
-内恢复检查点。
+Cognito 注册或登录。登录后点击 **Start**。新沙箱首次启动约需一分钟，之后每次启动恢复检查点，
+约 20–30 秒可用。
 
 ## 日常运维
 

@@ -6,6 +6,7 @@
 import { useAppApi } from '@kirocrew/app-sdk'
 import { useEffect, useRef, useState } from 'react'
 import { bindHotkey, hotkeyLabel, LABEL, slotFromSessionKey, stopOthers } from './engine'
+import { t } from './i18n'
 import { useCall } from './useCall'
 
 interface Props {
@@ -40,16 +41,16 @@ function usePhone(): boolean {
 const hint = (state: string, phone: boolean): string | undefined => {
   if (phone) {
     return ({
-      ready: '按住下面的按钮说话，松开发送',
-      recording: '在听… 松开发送，滑出按钮不发',
-      speaking: '在说… 按住按钮就能打断',
+      ready: t('phone.ready'),
+      recording: t('phone.recording'),
+      speaking: t('phone.speaking'),
     } as Record<string, string>)[state]
   }
   const k = hotkeyLabel()
   return ({
-    ready: `点「说」或按 ${k} 开始`,
-    recording: `在听… 点「发送」或再按一次 ${k} 发出，Esc 不发`,
-    speaking: `在说… 按 ${k} 打断`,
+    ready: t('desk.ready', k),
+    recording: t('desk.recording', k),
+    speaking: t('desk.speaking', k),
   } as Record<string, string>)[state]
 }
 
@@ -65,7 +66,7 @@ function Dot({ state, level, onClick }: { state: string; level: number; onClick:
   return (
     <span
       role="button"
-      aria-label="说话或发送"
+      aria-label={`${t('talk')} / ${t('send')}`}
       onClick={onClick}
       style={{
         width: 14, height: 14, borderRadius: 7, background: color, flex: 'none', cursor: 'pointer',
@@ -94,7 +95,7 @@ export default function VoiceCallControl({ session, onClose }: Props) {
   }, [slot, call])
 
   if (!slot) {
-    return <p style={{ fontSize: 12, color: 'var(--muted)', margin: 0, padding: '8px 12px' }}>先打开一个会话，再从会话里开始通话。</p>
+    return <p style={{ fontSize: 12, color: 'var(--muted)', margin: 0, padding: '8px 12px' }}>{t('state.idle')}</p>
   }
 
   const recording = call.state === 'recording'
@@ -169,17 +170,17 @@ export default function VoiceCallControl({ session, onClose }: Props) {
               else { stopOthers(slot); void call.start().then(() => call.beginTalk()) }
             }}
           >
-            {recording ? '发送' : '说'}
+            {recording ? t('send') : t('talk')}
           </button>
         )}
-        <button type="button" style={btn} onClick={() => { call.stop(); onClose() }}>{call.running ? '挂断' : '关闭'}</button>
+        <button type="button" style={btn} onClick={() => { call.stop(); onClose() }}>{call.running ? t('hangup') : t('close')}</button>
       </div>
       {phone && call.mode === 'manual' && (
         <>
           <button
             type="button"
             data-testid="voice-call-hold"
-            aria-label="按住说话"
+            aria-label={t('hold.idle')}
             onPointerDown={(e) => void press(e)}
             onPointerUp={release}
             onPointerMove={move}
@@ -193,10 +194,10 @@ export default function VoiceCallControl({ session, onClose }: Props) {
               WebkitUserSelect: 'none', WebkitTouchCallout: 'none', cursor: 'pointer',
             } as React.CSSProperties}
           >
-            {recording ? '松开发送' : '按住说话'}
+            {recording ? t('hold.recording') : t('hold.idle')}
           </button>
           <p style={{ fontSize: 11, color: 'var(--muted)', margin: '6px 0 0', textAlign: 'center' }}>
-            请保持本页在前台、屏幕常亮：切到后台时手机会停掉麦克风。
+            {t('hold.keepFront')}
           </p>
         </>
       )}

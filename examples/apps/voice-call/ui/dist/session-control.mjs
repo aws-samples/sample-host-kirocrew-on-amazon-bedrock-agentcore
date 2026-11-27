@@ -1,17 +1,17 @@
-import { jsx as c, jsxs as v, Fragment as S } from "react/jsx-runtime";
-import { useAppApi as T } from "@kirocrew/app-sdk";
-import { useRef as m, useCallback as A, useSyncExternalStore as P, useEffect as k, useState as L } from "react";
-import { a as D, b as E, d as z, e as f, L as M, h as R } from "./engine.mjs";
-function W(n, i) {
-  const o = D(n, i), t = m(0), e = A(
-    (a) => o.subscribe(() => {
-      t.current++, a();
+import { jsx as l, jsxs as m, Fragment as T } from "react/jsx-runtime";
+import { useAppApi as A } from "@kirocrew/app-sdk";
+import { useRef as b, useCallback as P, useSyncExternalStore as L, useEffect as x, useState as D } from "react";
+import { e as z, f as E, g as M, i as p, t as r, L as R, h as F } from "./engine.mjs";
+function W(t, a) {
+  const i = z(t, a), n = b(0), e = P(
+    (c) => i.subscribe(() => {
+      n.current++, c();
     }),
-    [o]
+    [i]
   );
-  return P(e, () => t.current), o;
+  return L(e, () => n.current), i;
 }
-const b = {
+const k = {
   background: "transparent",
   color: "var(--text)",
   border: "1px solid var(--border)",
@@ -22,82 +22,82 @@ const b = {
   whiteSpace: "nowrap"
 };
 function $() {
-  const n = "(pointer: coarse), (max-width: 700px)", [i, o] = L(() => {
-    var t;
-    return typeof window < "u" && ((t = window.matchMedia) == null ? void 0 : t.call(window, n).matches) === !0;
+  const t = "(pointer: coarse), (max-width: 700px)", [a, i] = D(() => {
+    var n;
+    return typeof window < "u" && ((n = window.matchMedia) == null ? void 0 : n.call(window, t).matches) === !0;
   });
-  return k(() => {
-    var a;
-    const t = (a = window.matchMedia) == null ? void 0 : a.call(window, n);
-    if (!t) return;
-    const e = () => o(t.matches);
-    return t.addEventListener("change", e), () => t.removeEventListener("change", e);
-  }, []), i;
+  return x(() => {
+    var c;
+    const n = (c = window.matchMedia) == null ? void 0 : c.call(window, t);
+    if (!n) return;
+    const e = () => i(n.matches);
+    return n.addEventListener("change", e), () => n.removeEventListener("change", e);
+  }, []), a;
 }
-const F = (n, i) => {
-  if (i)
+const j = (t, a) => {
+  if (a)
     return {
-      ready: "按住下面的按钮说话，松开发送",
-      recording: "在听… 松开发送，滑出按钮不发",
-      speaking: "在说… 按住按钮就能打断"
-    }[n];
-  const o = R();
+      ready: r("phone.ready"),
+      recording: r("phone.recording"),
+      speaking: r("phone.speaking")
+    }[t];
+  const i = F();
   return {
-    ready: `点「说」或按 ${o} 开始`,
-    recording: `在听… 点「发送」或再按一次 ${o} 发出，Esc 不发`,
-    speaking: `在说… 按 ${o} 打断`
-  }[n];
+    ready: r("desk.ready", i),
+    recording: r("desk.recording", i),
+    speaking: r("desk.speaking", i)
+  }[t];
 };
-function j({ state: n, level: i, onClick: o }) {
-  const t = n === "error" ? "var(--danger, #e5484d)" : n === "speaking" ? "var(--accent, #9046ff)" : n === "thinking" || n === "transcribing" ? "#f5a524" : n === "recording" || n === "hearing" ? "#e5484d" : "var(--muted, #888)", a = n === "hearing" || n === "listening" || n === "recording" ? 1 + Math.min(i * 12, 0.8) : 1;
-  return /* @__PURE__ */ c(
+function B({ state: t, level: a, onClick: i }) {
+  const n = t === "error" ? "var(--danger, #e5484d)" : t === "speaking" ? "var(--accent, #9046ff)" : t === "thinking" || t === "transcribing" ? "#f5a524" : t === "recording" || t === "hearing" ? "#e5484d" : "var(--muted, #888)", c = t === "hearing" || t === "listening" || t === "recording" ? 1 + Math.min(a * 12, 0.8) : 1;
+  return /* @__PURE__ */ l(
     "span",
     {
       role: "button",
-      "aria-label": "说话或发送",
-      onClick: o,
+      "aria-label": `${r("talk")} / ${r("send")}`,
+      onClick: i,
       style: {
         width: 14,
         height: 14,
         borderRadius: 7,
-        background: t,
+        background: n,
         flex: "none",
         cursor: "pointer",
-        transform: `scale(${a})`,
+        transform: `scale(${c})`,
         transition: "transform 80ms linear, background 200ms"
       }
     }
   );
 }
-function U({ session: n, onClose: i }) {
-  const o = T(), t = E(n.sessionKey), e = W(o, t), a = m(!1), p = $(), s = m(!1);
-  if (k(() => {
-    z(), !(a.current || !t) && (a.current = !0, e.running || (f(t), e.start()));
-  }, [t, e]), !t)
-    return /* @__PURE__ */ c("p", { style: { fontSize: 12, color: "var(--muted)", margin: 0, padding: "8px 12px" }, children: "先打开一个会话，再从会话里开始通话。" });
-  const u = e.state === "recording", g = e.state === "error" ? e.note : e.notice ? e.notice : e.draft ? e.draft : F(e.state, p) ?? M[e.state], x = () => {
-    e.running ? u ? e.sendTalk() : e.mode === "manual" && e.beginTalk() : (f(t), e.start());
-  }, y = async (r) => {
-    var l, d;
-    r.preventDefault(), (d = (l = r.currentTarget).setPointerCapture) == null || d.call(l, r.pointerId), s.current = !0, e.unlockAudio(), e.running || (f(t), await e.start()), s.current && e.beginTalk();
-  }, w = (r) => {
-    r.preventDefault(), s.current && (s.current = !1, e.state === "recording" && e.sendTalk());
-  }, C = (r) => {
+function X({ session: t, onClose: a }) {
+  const i = A(), n = E(t.sessionKey), e = W(i, n), c = b(!1), g = $(), s = b(!1);
+  if (x(() => {
+    M(), !(c.current || !n) && (c.current = !0, e.running || (p(n), e.start()));
+  }, [n, e]), !n)
+    return /* @__PURE__ */ l("p", { style: { fontSize: 12, color: "var(--muted)", margin: 0, padding: "8px 12px" }, children: r("state.idle") });
+  const f = e.state === "recording", h = e.state === "error" ? e.note : e.notice ? e.notice : e.draft ? e.draft : j(e.state, g) ?? R[e.state], y = () => {
+    e.running ? f ? e.sendTalk() : e.mode === "manual" && e.beginTalk() : (p(n), e.start());
+  }, w = async (o) => {
+    var d, u;
+    o.preventDefault(), (u = (d = o.currentTarget).setPointerCapture) == null || u.call(d, o.pointerId), s.current = !0, e.unlockAudio(), e.running || (p(n), await e.start()), s.current && e.beginTalk();
+  }, C = (o) => {
+    o.preventDefault(), s.current && (s.current = !1, e.state === "recording" && e.sendTalk());
+  }, S = (o) => {
     if (!s.current) return;
-    const l = r.currentTarget.getBoundingClientRect(), d = 48;
-    (r.clientX < l.left - d || r.clientX > l.right + d || r.clientY < l.top - d || r.clientY > l.bottom + d) && h();
-  }, h = () => {
+    const d = o.currentTarget.getBoundingClientRect(), u = 48;
+    (o.clientX < d.left - u || o.clientX > d.right + u || o.clientY < d.top - u || o.clientY > d.bottom + u) && v();
+  }, v = () => {
     s.current && (s.current = !1, e.state === "recording" && e.cancelTalk());
   };
-  return /* @__PURE__ */ v("div", { "data-testid": "voice-call-control", style: { color: "var(--text)", padding: "6px 10px" }, children: [
-    /* @__PURE__ */ v("div", { style: { display: "flex", alignItems: "center", gap: 10 }, children: [
-      /* @__PURE__ */ c(j, { state: e.state, level: e.level, onClick: x }),
-      /* @__PURE__ */ c(
+  return /* @__PURE__ */ m("div", { "data-testid": "voice-call-control", style: { color: "var(--text)", padding: "6px 10px" }, children: [
+    /* @__PURE__ */ m("div", { style: { display: "flex", alignItems: "center", gap: 10 }, children: [
+      /* @__PURE__ */ l(B, { state: e.state, level: e.level, onClick: y }),
+      /* @__PURE__ */ l(
         "span",
         {
           "aria-live": "polite",
           "data-testid": "voice-call-status",
-          title: g,
+          title: h,
           style: {
             flex: 1,
             minWidth: 0,
@@ -109,45 +109,45 @@ function U({ session: n, onClose: i }) {
             direction: e.draft ? "rtl" : "ltr",
             textAlign: "left"
           },
-          children: e.draft ? /* @__PURE__ */ c("bdi", { children: g }) : g
+          children: e.draft ? /* @__PURE__ */ l("bdi", { children: h }) : h
         }
       ),
-      !p && e.mode === "manual" && /* @__PURE__ */ c(
+      !g && e.mode === "manual" && /* @__PURE__ */ l(
         "button",
         {
           type: "button",
           "data-testid": "voice-call-toggle",
-          style: { ...b, background: u ? "var(--danger, #e5484d)" : "var(--accent, #9046ff)", color: "#fff", border: "none" },
+          style: { ...k, background: f ? "var(--danger, #e5484d)" : "var(--accent, #9046ff)", color: "#fff", border: "none" },
           onClick: () => {
-            e.unlockAudio(), u ? e.sendTalk() : e.running ? e.beginTalk() : (f(t), e.start().then(() => e.beginTalk()));
+            e.unlockAudio(), f ? e.sendTalk() : e.running ? e.beginTalk() : (p(n), e.start().then(() => e.beginTalk()));
           },
-          children: u ? "发送" : "说"
+          children: f ? r("send") : r("talk")
         }
       ),
-      /* @__PURE__ */ c("button", { type: "button", style: b, onClick: () => {
-        e.stop(), i();
-      }, children: e.running ? "挂断" : "关闭" })
+      /* @__PURE__ */ l("button", { type: "button", style: k, onClick: () => {
+        e.stop(), a();
+      }, children: e.running ? r("hangup") : r("close") })
     ] }),
-    p && e.mode === "manual" && /* @__PURE__ */ v(S, { children: [
-      /* @__PURE__ */ c(
+    g && e.mode === "manual" && /* @__PURE__ */ m(T, { children: [
+      /* @__PURE__ */ l(
         "button",
         {
           type: "button",
           "data-testid": "voice-call-hold",
-          "aria-label": "按住说话",
-          onPointerDown: (r) => void y(r),
-          onPointerUp: w,
-          onPointerMove: C,
-          onPointerCancel: h,
-          onLostPointerCapture: h,
-          onContextMenu: (r) => r.preventDefault(),
+          "aria-label": r("hold.idle"),
+          onPointerDown: (o) => void w(o),
+          onPointerUp: C,
+          onPointerMove: S,
+          onPointerCancel: v,
+          onLostPointerCapture: v,
+          onContextMenu: (o) => o.preventDefault(),
           style: {
             width: "100%",
             height: 64,
             marginTop: 8,
             borderRadius: 32,
             border: "none",
-            background: u ? "var(--danger, #e5484d)" : "var(--accent, #9046ff)",
+            background: f ? "var(--danger, #e5484d)" : "var(--accent, #9046ff)",
             color: "#fff",
             fontSize: 17,
             fontWeight: 600,
@@ -157,13 +157,13 @@ function U({ session: n, onClose: i }) {
             WebkitTouchCallout: "none",
             cursor: "pointer"
           },
-          children: u ? "松开发送" : "按住说话"
+          children: f ? r("hold.recording") : r("hold.idle")
         }
       ),
-      /* @__PURE__ */ c("p", { style: { fontSize: 11, color: "var(--muted)", margin: "6px 0 0", textAlign: "center" }, children: "请保持本页在前台、屏幕常亮：切到后台时手机会停掉麦克风。" })
+      /* @__PURE__ */ l("p", { style: { fontSize: 11, color: "var(--muted)", margin: "6px 0 0", textAlign: "center" }, children: r("hold.keepFront") })
     ] })
   ] });
 }
 export {
-  U as default
+  X as default
 };

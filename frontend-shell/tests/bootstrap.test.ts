@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  HeldWebSocket,
   KIROCREW_AGENTCORE_CAPABILITIES,
   installKiroCrewBootstrap,
   installPreSessionGate,
@@ -322,6 +323,211 @@ describe("pre-session gate", () => {
     installKiroCrewBootstrap(browser, remote(new Channel()));
     expect((await gated).status).toBe(200);
     expect(nativeFetch).not.toHaveBeenCalled();
+  });
+});
+
+class FakeSocket extends EventTarget {
+  public static readonly CONNECTING = 0;
+  public static readonly OPEN = 1;
+  public static readonly CLOSING = 2;
+  public static readonly CLOSED = 3;
+  public static made: FakeSocket[] = [];
+  public readyState = 0;
+  public binaryType: BinaryType = "blob";
+  public sent: unknown[] = [];
+  public closedWith: [number | undefined, string | undefined] | undefined;
+  public readonly url: string;
+
+  public constructor(url: string | URL) {
+    super();
+    this.url = String(url);
+    FakeSocket.made.push(this);
+  }
+
+  public send(data: unknown): void {
+    this.sent.push(data);
+  }
+
+  public close(code?: number, reason?: string): void {
+    this.closedWith = [code, reason];
+  }
+}
+
+const tick = (): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, 0));
+
+describe("pre-session socket gate", () => {
+  it("holds a same-origin API socket until the session opens", async (): Promise<void> => {
+    const native = vi.fn();
+    class CountingNative extends NativeWebSocket {
+      public constructor(url: string | URL) {
+        super(url);
+        native(String(url));
+      }
+    }
+    const browser: BootstrapTarget = {
+      ...target(vi.fn<typeof fetch>()),
+      WebSocket: CountingNative,
+    };
+    installPreSessionGate(browser, ORIGIN);
+    const held = new browser.WebSocket(
+      "wss://shell.example/api/ws?caps=x",
+    ) as unknown as HeldWebSocket;
+    expect(held).toBeInstanceOf(HeldWebSocket);
+    expect(held.readyState).toBe(HeldWebSocket.CONNECTING);
+    expect(held.url).toBe("wss://shell.example/api/ws?caps=x");
+    expect(() => {
+      held.send("early");
+    }).toThrow(/not open/);
+    await tick();
+    expect(native).not.toHaveBeenCalled();
+
+    installKiroCrewBootstrap(browser, remote(new Channel()));
+    await tick();
+    // Connected through the transport's bridge, never the network.
+    expect(native).not.toHaveBeenCalled();
+    held.close();
+  });
+
+  it("re-dispatches the connected socket's events and forwards send and close", async (): Promise<void> => {
+    const browser = target(vi.fn<typeof fetch>());
+    installPreSessionGate(browser, ORIGIN);
+    const held = new browser.WebSocket(
+      `${ORIGIN}/api/ws`,
+    ) as unknown as HeldWebSocket;
+    held.binaryType = "arraybuffer";
+    const seen: string[] = [];
+    held.onopen = (): void => {
+      seen.push("onopen");
+    };
+    held.onmessage = (event): void => {
+      seen.push(`onmessage:${String(event.data)}`);
+    };
+    held.onerror = (): void => {
+      seen.push("onerror");
+    };
+    held.onclose = (event): void => {
+      seen.push(`onclose:${event.code}:${event.reason}:${event.wasClean}`);
+    };
+    held.addEventListener("message", () => {
+      seen.push("listener");
+    });
+
+    FakeSocket.made = [];
+    installKiroCrewBootstrap(browser, remote(new Channel()));
+    // Stand in for the bridge the transport installed.
+    browser.WebSocket = FakeSocket;
+    await tick();
+    const [socket] = FakeSocket.made;
+    expect(socket?.url).toBe(`${ORIGIN}/api/ws`);
+    expect(socket?.binaryType).toBe("arraybuffer");
+
+    socket!.readyState = FakeSocket.OPEN;
+    socket!.dispatchEvent(new Event("open"));
+    expect(held.readyState).toBe(HeldWebSocket.OPEN);
+    held.send("hello");
+    expect(socket!.sent).toEqual(["hello"]);
+    socket!.dispatchEvent(new MessageEvent("message", { data: "frame" }));
+    socket!.dispatchEvent(new Event("error"));
+    socket!.dispatchEvent(
+      Object.assign(new Event("close"), {
+        code: 4001,
+        reason: "gone",
+        wasClean: true,
+      }),
+    );
+    held.close(1000, "bye");
+    expect(socket!.closedWith).toEqual([1000, "bye"]);
+    expect(seen).toEqual([
+      "onopen",
+      "listener",
+      "onmessage:frame",
+      "onerror",
+      "onclose:4001:gone:true",
+    ]);
+  });
+
+  it("closes a held socket without connecting it", async (): Promise<void> => {
+    const browser = target(vi.fn<typeof fetch>());
+    installPreSessionGate(browser, ORIGIN);
+    const held = new browser.WebSocket(
+      `${ORIGIN}/api/ws`,
+    ) as unknown as HeldWebSocket;
+    const codes: number[] = [];
+    held.onclose = (event): void => {
+      codes.push(event.code);
+    };
+    held.close(4000, "page left");
+    held.close();
+    expect(held.readyState).toBe(HeldWebSocket.CLOSED);
+    FakeSocket.made = [];
+    installKiroCrewBootstrap(browser, remote(new Channel()));
+    browser.WebSocket = FakeSocket;
+    await tick();
+    expect(FakeSocket.made).toEqual([]);
+    expect(codes).toEqual([4000]);
+  });
+
+  it("reports a socket that cannot be constructed as an error and a close", async (): Promise<void> => {
+    const browser = target(vi.fn<typeof fetch>());
+    installPreSessionGate(browser, ORIGIN);
+    const held = new browser.WebSocket(
+      `${ORIGIN}/api/ws`,
+    ) as unknown as HeldWebSocket;
+    const seen: string[] = [];
+    held.onerror = (): void => {
+      seen.push("error");
+    };
+    held.onclose = (event): void => {
+      seen.push(`close:${event.code}`);
+    };
+    installKiroCrewBootstrap(browser, remote(new Channel()));
+    browser.WebSocket = class {
+      public static readonly CONNECTING = 0;
+      public static readonly OPEN = 1;
+      public static readonly CLOSING = 2;
+      public static readonly CLOSED = 3;
+      public constructor() {
+        throw new Error("refused");
+      }
+    } as unknown as BootstrapTarget["WebSocket"];
+    await tick();
+    expect(seen).toEqual(["error", "close:1006"]);
+    expect(held.readyState).toBe(HeldWebSocket.CLOSED);
+  });
+
+  it("passes cross-origin, non-API and unparsable sockets to the network", (): void => {
+    const browser = target(vi.fn<typeof fetch>());
+    installPreSessionGate(browser, ORIGIN);
+    for (const url of [
+      "wss://other.example/api/ws",
+      `${ORIGIN}/assets/live`,
+      "ws://shell.example/socket",
+      "http://[",
+    ]) {
+      expect(new browser.WebSocket(url)).toBeInstanceOf(NativeWebSocket);
+    }
+    expect(browser.WebSocket.OPEN).toBe(1);
+  });
+
+  it("routes a constructor taken before the session through the transport", (): void => {
+    const browser = target(vi.fn<typeof fetch>());
+    const restoreGate = installPreSessionGate(browser, ORIGIN);
+    const stale = browser.WebSocket;
+    installKiroCrewBootstrap(browser, remote(new Channel()));
+
+    const routed = new stale(`${ORIGIN}/api/ws`);
+    expect(routed).toBeInstanceOf(KiroCrewRemoteWebSocket);
+    routed.close();
+    expect(new stale("wss://other.example/api/ws")).toBeInstanceOf(
+      NativeWebSocket,
+    );
+    // The gate is what the bridge falls back to; it must not loop back.
+    expect(new browser.WebSocket("wss://other.example/x")).toBeInstanceOf(
+      NativeWebSocket,
+    );
+    restoreGate();
+    expect(browser.WebSocket).toBe(NativeWebSocket);
   });
 });
 

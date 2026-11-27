@@ -185,9 +185,188 @@ export function installPreSessionGate(
     return await target.fetch(input, init);
   };
   target.fetch = gate;
+
+  // The SPA opens its `/api/ws` socket as soon as it boots, which can be
+  // before the sandbox is connected. A native socket then reaches CloudFront,
+  // gets the SPA fallback (200 text/html), fails its handshake and puts
+  // "Gateway offline" on screen until the SPA's own reconnect catches up.
+  // Hold such a socket in CONNECTING instead, and connect it through the
+  // transport the moment the transport is installed.
+  const NativeWebSocket = target.WebSocket;
+  const socketGate = function (
+    this: unknown,
+    url: string | URL,
+    protocols?: string | readonly string[],
+  ): WebSocketLike {
+    if (target.__KIROCREW_REMOTE_TRANSPORT__ === true) {
+      // Same as fetch: a constructor reference taken at boot is this gate.
+      return target.WebSocket !== socketGate && routedByTransport(target, url)
+        ? new target.WebSocket(url, protocols)
+        : new NativeWebSocket(url, protocols);
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(url, shellOrigin);
+    } catch {
+      return new NativeWebSocket(url, protocols);
+    }
+    return canonicalSocketOrigin(parsed) === shellOrigin &&
+      isTunnelledPath(parsed.pathname)
+      ? new HeldWebSocket(target, url, protocols)
+      : new NativeWebSocket(url, protocols);
+  } as unknown as WebSocketConstructor;
+  Object.defineProperties(socketGate, {
+    CONNECTING: { value: HeldWebSocket.CONNECTING },
+    OPEN: { value: HeldWebSocket.OPEN },
+    CLOSING: { value: HeldWebSocket.CLOSING },
+    CLOSED: { value: HeldWebSocket.CLOSED },
+  });
+  target.WebSocket = socketGate;
   return (): void => {
     target.fetch = nativeFetch;
+    target.WebSocket = NativeWebSocket;
   };
+}
+
+function canonicalSocketOrigin(url: URL): string {
+  if (url.protocol === "wss:") {
+    return `https://${url.host}`;
+  }
+  if (url.protocol === "ws:") {
+    return `http://${url.host}`;
+  }
+  return url.origin;
+}
+
+type ConnectedSocket = WebSocketLike &
+  EventTarget & {
+    readonly readyState: number;
+    binaryType: BinaryType;
+    send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void;
+  };
+
+/**
+ * A socket the SPA opened before the sandbox was connected. It reports
+ * CONNECTING until the remote transport is installed, then opens the real
+ * socket through `target.WebSocket` and re-dispatches that socket's events
+ * as its own, so the SPA's handlers see one ordinary socket.
+ */
+export class HeldWebSocket extends EventTarget {
+  public static readonly CONNECTING = 0;
+  public static readonly OPEN = 1;
+  public static readonly CLOSING = 2;
+  public static readonly CLOSED = 3;
+
+  public readonly url: string;
+  public readonly protocol = "";
+  public readonly extensions = "";
+  public binaryType: BinaryType = "blob";
+  public readonly bufferedAmount = 0;
+  public onopen: ((event: Event) => void) | null = null;
+  public onmessage: ((event: MessageEvent) => void) | null = null;
+  public onerror: ((event: Event) => void) | null = null;
+  public onclose: ((event: CloseEvent) => void) | null = null;
+  #socket: ConnectedSocket | undefined;
+  #closed = false;
+
+  public constructor(
+    target: BootstrapTarget,
+    url: string | URL,
+    protocols?: string | readonly string[],
+  ) {
+    super();
+    this.url = String(url);
+    void untilTransport(target, undefined).then(() => {
+      this.#attach(target, url, protocols);
+    });
+  }
+
+  public get readyState(): number {
+    if (this.#socket !== undefined) {
+      return this.#socket.readyState;
+    }
+    return this.#closed ? HeldWebSocket.CLOSED : HeldWebSocket.CONNECTING;
+  }
+
+  public send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
+    if (this.#socket === undefined) {
+      throw new DOMException("WebSocket is not open.", "InvalidStateError");
+    }
+    this.#socket.send(data);
+  }
+
+  public close(code = 1000, reason = ""): void {
+    if (this.#socket !== undefined) {
+      this.#socket.close(code, reason);
+      return;
+    }
+    if (this.#closed) {
+      return;
+    }
+    this.#closed = true;
+    this.#emit(closeEvent(code, reason, false));
+  }
+
+  #attach(
+    target: BootstrapTarget,
+    url: string | URL,
+    protocols?: string | readonly string[],
+  ): void {
+    if (this.#closed) {
+      return;
+    }
+    let socket: ConnectedSocket;
+    try {
+      socket = new target.WebSocket(url, protocols) as ConnectedSocket;
+    } catch {
+      this.#closed = true;
+      this.#emit(new Event("error"));
+      this.#emit(closeEvent(1006, "", false));
+      return;
+    }
+    socket.binaryType = this.binaryType;
+    this.#socket = socket;
+    socket.addEventListener("open", () => {
+      this.#emit(new Event("open"));
+    });
+    socket.addEventListener("message", (event) => {
+      this.#emit(
+        new MessageEvent<unknown>("message", {
+          data: (event as MessageEvent<unknown>).data,
+        }),
+      );
+    });
+    socket.addEventListener("error", () => {
+      this.#emit(new Event("error"));
+    });
+    socket.addEventListener("close", (event) => {
+      const closed = event as CloseEvent;
+      this.#emit(closeEvent(closed.code, closed.reason, closed.wasClean));
+    });
+  }
+
+  #emit(event: Event): void {
+    this.dispatchEvent(event);
+    switch (event.type) {
+      case "open":
+        this.onopen?.(event);
+        break;
+      case "message":
+        this.onmessage?.(event as MessageEvent);
+        break;
+      case "error":
+        this.onerror?.(event);
+        break;
+      default:
+        this.onclose?.(event as CloseEvent);
+    }
+  }
+}
+
+function closeEvent(code: number, reason: string, clean: boolean): CloseEvent {
+  return typeof CloseEvent === "undefined"
+    ? Object.assign(new Event("close"), { code, reason, wasClean: clean })
+    : new CloseEvent("close", { code, reason, wasClean: clean });
 }
 
 /**

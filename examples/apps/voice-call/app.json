@@ -1,15 +1,26 @@
 {
   "name": "voice-call",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "displayName": "语音通话",
-  "description": "Talk to Kiro out loud from any chat, on a phone or a laptop. Speech-to-text is Amazon Transcribe (falling back to Kiro Crew's own recognizer), replies are read aloud with Amazon Polly (Zhiyu) and fall back to the browser voice; every request goes to Kiro in that chat, so answers use its memory, tools and approvals.",
+  "description": "Talk to Kiro out loud from any chat, on a phone or a laptop. Each reply is read by a native Amazon Polly voice for its language (ten languages; pick the voice and speed per language), and speech is recognized with Amazon Transcribe. Without AWS it falls back to Kiro Crew's recognizer and the browser voice. Every request goes to Kiro in that chat, so answers use its memory, tools and approvals.",
   "author": "sample-host-kirocrew-on-amazon-bedrock-agentcore",
   "license": "MIT",
   "iconPath": "assets/icon.png",
   "heroImage": "assets/hero.png",
-  "screenshots": ["assets/screenshot-call.png"],
-  "tags": ["voice", "speech", "mobile"],
-  "platform": { "os": ["linux", "macos"] },
+  "screenshots": [
+    "assets/screenshot-call.png"
+  ],
+  "tags": [
+    "voice",
+    "speech",
+    "mobile"
+  ],
+  "platform": {
+    "os": [
+      "linux",
+      "macos"
+    ]
+  },
   "permissions": {
     "api": [
       "/apps/voice-call/api",
@@ -22,7 +33,11 @@
       "/api/stt/prewarm"
     ]
   },
-  "backend": { "entryPoint": "backend/server.py", "port": "auto", "healthCheck": "/health" },
+  "backend": {
+    "entryPoint": "backend/server.py",
+    "port": "auto",
+    "healthCheck": "/health"
+  },
   "contributes": {
     "sessionControls": [
       {
@@ -36,7 +51,11 @@
   "ui": {
     "entry": "dist/index.mjs",
     "pages": [
-      { "route": "/apps/voice-call", "label": "语音通话", "icon": "AudioLines" }
+      {
+        "route": "/apps/voice-call",
+        "label": "语音通话",
+        "icon": "AudioLines"
+      }
     ]
   }
 }

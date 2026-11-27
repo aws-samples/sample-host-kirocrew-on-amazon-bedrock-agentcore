@@ -1,7 +1,8 @@
-// Voice call engine, cloud edition (KiroCrew on AgentCore, phone or laptop):
-// mic -> Kiro Crew's own recognizer (/api/stt/transcribe inside the sandbox) ->
-// the chat slot -> spoken reply (Amazon Polly Zhiyu through the app backend,
-// falling back to the browser voice).
+// Voice call engine (Kiro Crew locally or on AgentCore, phone or laptop):
+// mic -> Amazon Transcribe through the app backend (falling back to Kiro Crew's
+// own recognizer) -> the chat slot -> spoken reply (Amazon Polly, one native
+// voice per language, falling back to the browser voice). Without AWS access
+// the fallbacks are the whole path, and the call still works.
 //
 // Phones: there is no keyboard, so the bar shows a large hold-to-talk button.
 // A phone browser stops the microphone when the page goes to the background;
@@ -18,6 +19,10 @@
 // approving a tool in the chat must not hang up. One engine per chat slot.
 import type { AppApi } from '@kirocrew/app-sdk'
 import * as OpenCC from 'opencc-js/t2cn'
+import { defaultSttLanguages, langName, t, uiLang, type Key } from './i18n'
+import { autoSendDelay, forSpeech as forSpeechWith, isJunk, isSpeech, nextRate, rateCommand, splitSentences, type RateCommand } from './text'
+
+export { isJunk, isSpeech, rateCommand, splitSentences } from './text'
 
 /** Whisper often answers Mandarin in Traditional characters; show and send Simplified. */
 const toSimplified = OpenCC.Converter({ from: 'tw', to: 'cn' })
@@ -27,18 +32,9 @@ export type CallState =
   | 'transcribing' | 'thinking' | 'speaking' | 'error'
 export type Mode = 'manual' | 'auto'
 
-export const LABEL: Record<CallState, string> = {
-  idle: '点一下开始通话',
-  starting: '正在打开麦克风…',
-  ready: '按住说话，松开发送',
-  listening: '在听，直接说',
-  hearing: '在听你说…',
-  recording: '在录…再按一次快捷键发送',
-  transcribing: '在识别…',
-  thinking: '在想…',
-  speaking: '在说…',
-  error: '出错了',
-}
+export const LABEL = new Proxy({} as Record<CallState, string>, {
+  get: (_o, k) => t(`state.${String(k)}` as Key),
+})
 
 export interface Line {
   who: 'you' | 'kiro' | 'note'
@@ -46,7 +42,9 @@ export interface Line {
 }
 
 export const VOICE_PREFIX = '🎙️ '
-export const SPEECH_HINT = '\n\n（语音通话：用口语简短回答，先说结论，两三句话；表格、代码、链接放在后面，我看屏幕。）'
+export function speechHint(): string {
+  return '\n\n' + t('hint')
+}
 
 // ---- settings (per browser) ----
 export interface Settings {
@@ -60,19 +58,26 @@ export interface Settings {
   /** Auto mode: how long with nobody talking before the collected words are sent. */
   autoSendMs: number
   hotkey: HotkeyId
+  /** Chosen Polly voice per language code (zh, pt, es, ...); missing = the backend default. */
+  pollyVoices: Record<string, string>
+  /** Polly speaking rate per language code, 1 = normal; voice commands like 「说慢一点」 change it. */
+  pollyRates: Record<string, number>
+  /** Transcribe languages, comma separated; empty = the UI language. Two or more turn on language ID. */
+  sttLangs: string
 }
 export type HotkeyId = 'ctrl+backquote' | 'ctrl+alt+space' | 'f8' | 'alt+space'
 export const HOTKEYS: Record<HotkeyId, { label: string; code: string; ctrl?: boolean; alt?: boolean }> = {
-  'ctrl+backquote': { label: '⌃`（Control + 反引号，Esc 下面那个键）', code: 'Backquote', ctrl: true },
-  'ctrl+alt+space': { label: '⌃⌥空格', code: 'Space', ctrl: true, alt: true },
+  'ctrl+backquote': { label: '⌃`', code: 'Backquote', ctrl: true },
+  'ctrl+alt+space': { label: '⌃⌥Space', code: 'Space', ctrl: true, alt: true },
   f8: { label: 'F8', code: 'F8' },
-  'alt+space': { label: '⌥空格（会和豆包输入法冲突）', code: 'Space', alt: true },
+  'alt+space': { label: '⌥Space', code: 'Space', alt: true },
 }
-export function hotkeyLabel(): string {
-  return HOTKEYS[loadSettings().hotkey]?.label.split('（')[0] ?? '⌥空格'
+export function hotkeyLabel(id: HotkeyId = loadSettings().hotkey): string {
+  const l = HOTKEYS[id]?.label ?? '⌥Space'
+  return uiLang() === 'zh' ? l.replace('Space', '空格') : l
 }
 const SETTINGS_KEY = 'voice-call.settings.v6'
-const DEFAULTS: Settings = { voice: 'polly', rate: 1.15, maxSpokenChars: 500, silenceMs: 1300, mode: 'manual', fast: true, autoSendMs: 5000, hotkey: 'alt+space' }
+const DEFAULTS: Settings = { voice: 'polly', rate: 1.15, maxSpokenChars: 500, silenceMs: 1300, mode: 'manual', fast: true, autoSendMs: 5000, hotkey: 'alt+space', pollyVoices: {}, pollyRates: {}, sttLangs: '' }
 export function loadSettings(): Settings {
   try {
     const s = { ...DEFAULTS, ...(JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}') as Partial<Settings>) }
@@ -109,55 +114,7 @@ function textOf(content: unknown): string {
 }
 
 export function forSpeech(text: string): string {
-  // Strip HTML comments until none are left, so nested or split markers
-  // cannot leave a fresh "<!--" behind.
-  let plain = text
-  for (let prev = ''; prev !== plain; ) {
-    prev = plain
-    plain = plain.replace(/<!--[\s\S]*?-->/g, '')
-  }
-  return plain
-    .replace(/^\s*\[OPTIONS:.*\]\s*$/gm, '')
-    .replace(/<mcwidget[\s\S]*?<\/mcwidget>/g, '（图在屏幕上）')
-    .replace(/```[\s\S]*?```/g, '（代码在屏幕上）')
-    .replace(/^\s*\|.*\|\s*$/gm, '')
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-    .replace(/https?:\/\/\S+/g, '（链接在屏幕上）')
-    .replace(/`([^`]*)`/g, (_m, s: string) => (s.includes('/') ? '（路径在屏幕上）' : s))
-    .replace(/[*_#<>]/g, '')
-    .replace(/^\s*[-•]\s+/gm, '')
-    .replace(/\n{2,}/g, '\n')
-    .trim()
-}
-
-/** Whisper's well-known hallucinations on silence or noise. */
-const JUNK = /^(谢谢(大家|观看|收看)?[。!！]*|字幕.*|请不吝点赞.*|thank you\.?|thanks for watching.*|you|\.+|。+)$/i
-const FILLER = /^[嗯啊哦呃唔哼哈嘿喂诶欸额噢呀啦吧了，。！？!?,.~…\s]+$/
-/** Auto mode only keeps real words: at least 2 Chinese characters or 2 Latin words, not just fillers. */
-export function isSpeech(t: string): boolean {
-  const s = t.trim()
-  if (FILLER.test(s)) return false
-  const cjk = (s.match(/[\u4e00-\u9fff]/g) ?? []).length
-  const words = (s.match(/[A-Za-z]{2,}/g) ?? []).length
-  return cjk >= 2 || words >= 2
-}
-export function isJunk(t: string): boolean {
-  const s = t.trim()
-  return s.length === 0 || JUNK.test(s)
-}
-
-export function splitSentences(text: string): string[] {
-  const parts = text.split(/(?<=[。！？!?；;\n])/)
-  const out: string[] = []
-  for (const p of parts) {
-    const s = p.trim()
-    if (!s) continue
-    // Very long runs without punctuation: cut on commas so speech starts sooner.
-    if (s.length > 80) out.push(...s.split(/(?<=[，,])/).map((x) => x.trim()).filter(Boolean))
-    else out.push(s)
-  }
-  return out
+  return forSpeechWith(text, { image: t('screen.image'), code: t('screen.code'), link: t('screen.link'), path: t('screen.path') })
 }
 
 // ---- WAV encoding (16 kHz mono PCM16) ----
@@ -197,6 +154,19 @@ export function encodeWav(chunks: Float32Array[], sampleRate: number): Blob {
 }
 
 // ---- voices ----
+/** Script-level language guess for the browser fallback voice. */
+function scriptLang(text: string): string {
+  if (/[\u3040-\u30ff]/.test(text)) return 'ja'
+  if (/[\uac00-\ud7af]/.test(text)) return 'ko'
+  if (/[\u0600-\u06ff]/.test(text)) return 'ar'
+  if (/[\u4e00-\u9fff]/.test(text)) return 'zh'
+  return 'en'
+}
+function voiceForLang(lang: string): SpeechSynthesisVoice | null {
+  const all = window.speechSynthesis.getVoices()
+  const same = all.filter((v) => v.lang.toLowerCase().startsWith(lang === 'zh' ? 'zh' : lang))
+  return same.find((v) => v.localService) ?? same[0] ?? null
+}
 export function chineseVoices(): SpeechSynthesisVoice[] {
   if (!('speechSynthesis' in window)) return []
   return window.speechSynthesis.getVoices().filter((v) => /^zh[-_](CN|TW|HK)/i.test(v.lang) || /^cmn/i.test(v.lang))
@@ -260,7 +230,10 @@ export class VoiceCall {
   /** Effort the chat had before the call lowered it; null = we did not change it. */
   private prevEffort: string | null = null
   private autoTimer: number | null = null
-  private lastVoiceAt = 0
+  /** When the last recognized words arrived; auto mode sends autoSendMs after it. */
+  private lastTextAt = 0
+  private lastSpoken = ''
+  private ttsFailed = false
   /** Keeps a phone's screen on during a call; the mic stops when the page sleeps. */
   private wakeLock: { release(): Promise<void> } | null = null
   /** One element for every reply clip: a phone only lets an element play after a tap unlocked it. */
@@ -336,6 +309,9 @@ export class VoiceCall {
   async start(): Promise<void> {
     if (this.running) return
     this.settings = loadSettings()
+    this.ttsFailed = false
+    this.appSttFailed = false
+    this.lastTextAt = 0
     this.mode = this.settings.mode
     this.fast = this.settings.fast
     this.draft = ''
@@ -363,11 +339,14 @@ export class VoiceCall {
       this.waiting = !!d.running
       this.pollTimer = window.setInterval(() => void this.poll(), POLL_MS)
       if (this.fast) void this.applyFast(true)
-      this.say('我在。')
+      this.say(t('greet'))
       this.settle()
     } catch (e) {
       this.teardown()
-      const msg = (e as Error)?.name === 'NotAllowedError' ? '麦克风被拒绝了：请在浏览器或系统设置里允许麦克风' : `打不开麦克风：${(e as Error)?.message ?? e}`
+      const name = (e as Error)?.name
+      const msg = name === 'NotAllowedError' ? t('mic.denied')
+        : name === 'NotFoundError' || /object can not be found/i.test(String((e as Error)?.message)) ? t('mic.notFound')
+          : t('mic.failed', String((e as Error)?.message ?? e))
       this.set('error', msg)
     }
   }
@@ -420,7 +399,7 @@ export class VoiceCall {
     const text = this.draft.trim()
     this.draft = ''
     if (!text) {
-      this.flash('没听到内容，请再说一遍')
+      this.flash(t('heard.nothing'))
       this.settle()
       return
     }
@@ -434,7 +413,7 @@ export class VoiceCall {
       await this.send(text)
     } catch (e) {
       this.draft = text
-      this.flash(`没发出去：${(e as Error).message}，请再试一次`)
+      this.flash(t('send.failed', (e as Error).message))
       this.settle()
     }
   }
@@ -493,7 +472,7 @@ export class VoiceCall {
       this.teardown()
       this.set('idle')
       await this.start()
-      this.flash('页面回到前台，麦克风已重新打开')
+      this.flash(t('mic.back'))
     }
   }
 
@@ -540,7 +519,7 @@ export class VoiceCall {
         await this.api.post(`/api/chat/slots/${encodeURIComponent(this.slot)}/reasoning-effort`, { reasoning_effort: restore })
       }
     } catch (e) {
-      this.add({ who: 'note', text: `调推理强度没成功：${(e as Error).message}` })
+      this.add({ who: 'note', text: t('effort.failed', (e as Error).message) })
     }
   }
 
@@ -576,7 +555,6 @@ export class VoiceCall {
         const need = this.speaking ? BARGE_MS : 120
         if (this.bargeMs >= need) {
           if (this.speaking) this.cancelSpeech()
-          this.clearAuto()
           this.inSpeech = true
           this.utter = [...this.preroll]
           this.preroll = []
@@ -592,7 +570,6 @@ export class VoiceCall {
 
     this.utter.push(frame)
     if (loud) {
-      this.lastVoiceAt = Date.now()
       this.speechMs += frameMs
       this.silenceMs = 0
     } else {
@@ -629,7 +606,8 @@ export class VoiceCall {
   private async recognize(wav: Blob): Promise<string> {
     if (!this.appSttFailed) {
       try {
-        const res = await this.api.raw('/apps/voice-call/api/stt', {
+        const langs = encodeURIComponent(this.settings.sttLangs || defaultSttLanguages())
+        const res = await this.api.raw(`/apps/voice-call/api/stt?langs=${langs}`, {
           method: 'POST',
           headers: { 'Content-Type': 'audio/wav' },
           body: wav,
@@ -639,7 +617,7 @@ export class VoiceCall {
         throw new Error(body.error || `HTTP ${res.status}`)
       } catch (e) {
         this.appSttFailed = true
-        this.flash(`Transcribe 不可用（${(e as Error).message}），改用 Kiro Crew 识别`)
+        this.flash(t('stt.fallback', (e as Error).message))
       }
     }
     const form = new FormData()
@@ -656,15 +634,18 @@ export class VoiceCall {
     try {
       const text = toSimplified((await this.recognize(encodeWav(chunks, rate))).trim())
       if (!this.running) return
-      if (isJunk(text)) { this.flash('没听清，请再说一遍'); return }
-      // Birds, keyboards, a cough: in auto mode keep only real words.
-      if (sendNow && !isSpeech(text)) { this.flash(`只听到「${text}」，没发出去`); return }
-      this.draft = this.draft ? `${this.draft}${/[\s，。！？,.!?]$/.test(this.draft) ? '' : '，'}${text}` : text
+      if (isJunk(text)) { this.flash(t('heard.unclear')); return }
+      // Yawns, hums, a cough: in either mode keep only real words.
+      if (!isSpeech(text)) { this.flash(t('heard.filler', text)); return }
+      const cmd = rateCommand(text)
+      if (cmd && !this.draft) { await this.applyRate(cmd); return }
+      this.draft = this.draft ? `${this.draft}${/[\s，。！？,.!?]$/.test(this.draft) ? '' : uiLang() === 'zh' ? '，' : ' '}${text}` : text
+      this.lastTextAt = Date.now()
       this.emit()
       if (sendNow) this.armAuto()
     } catch (e) {
       // Shown in the bar itself, so a failed segment is never silent.
-      this.flash(`没识别出来：${(e as Error).message}，请再说一遍`)
+      this.flash(t('heard.failed', (e as Error).message))
     }
   }
 
@@ -676,20 +657,39 @@ export class VoiceCall {
 
   private armAuto(): void {
     this.clearAuto()
-    const wait = Math.max(500, this.settings.autoSendMs - (Date.now() - this.lastVoiceAt))
+    const wait = autoSendDelay(Date.now(), this.lastTextAt, this.settings.autoSendMs, this.pending.size > 0) || 1
     this.autoTimer = window.setTimeout(() => void this.flushAuto(), wait)
   }
 
+  /** Send autoSendMs after the last recognized words; noise never holds this up. */
   private async flushAuto(): Promise<void> {
     this.autoTimer = null
-    if (!this.running || this.mode !== 'auto' || this.inSpeech) return
-    if (this.pending.size > 0) { this.armAuto(); return }
+    if (!this.running || this.mode !== 'auto') return
+    if (!this.draft.trim()) return
+    const wait = autoSendDelay(Date.now(), this.lastTextAt, this.settings.autoSendMs, this.pending.size > 0)
+    if (wait > 0) { this.autoTimer = window.setTimeout(() => void this.flushAuto(), wait); return }
     const text = this.draft.trim()
     this.draft = ''
     this.emit()
     if (!text) return
     this.add({ who: 'you', text })
     await this.sendSafely(text)
+  }
+
+  // ---- voice commands: speaking rate, remembered per language ----
+  private async applyRate(cmd: RateCommand): Promise<void> {
+    let lang = uiLang() === 'zh' ? 'zh' : 'en'
+    try {
+      const r = await this.api.raw('/apps/voice-call/api/lang', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: this.lastSpoken || t('greet') }),
+      })
+      if (r.ok) lang = ((await r.json()) as { lang: string }).lang
+    } catch { /* keep the UI language */ }
+    const cur = this.settings.pollyRates[lang] ?? 1
+    const next = nextRate(cur, cmd)
+    patchSettings({ pollyRates: { ...this.settings.pollyRates, [lang]: next } })
+    this.settings = loadSettings()
+    this.flash(t('rate.set', langName(lang), next.toFixed(2)) + (next === cur && cmd !== 'reset' ? t('rate.edge') : ''))
   }
 
   // ---- chat bridge ----
@@ -699,7 +699,7 @@ export class VoiceCall {
 
   private async send(text: string): Promise<void> {
     // Mid-turn messages are fine: Kiro Crew steers or queues them like typed ones.
-    await this.api.post('/api/chat?ws=1', { message: VOICE_PREFIX + text + SPEECH_HINT, slot: this.slot })
+    await this.api.post('/api/chat?ws=1', { message: VOICE_PREFIX + text + speechHint(), slot: this.slot })
     this.waiting = true
     this.beep()
     this.settle()
@@ -729,9 +729,10 @@ export class VoiceCall {
         if (spoken.length > this.settings.maxSpokenChars) {
           const cut = spoken.slice(0, this.settings.maxSpokenChars)
           const end = Math.max(cut.lastIndexOf('。'), cut.lastIndexOf('！'), cut.lastIndexOf('？'))
-          spoken = (end > 40 ? cut.slice(0, end + 1) : cut) + '后面的内容在屏幕上。'
+          spoken = (end > 40 ? cut.slice(0, end + 1) : cut) + t('screen.more')
         }
         this.add({ who: 'kiro', text: spoken })
+        this.lastSpoken = spoken
         // Don't talk over the user while they are recording.
         if (!this.capturing) this.say(spoken)
       }
@@ -740,7 +741,7 @@ export class VoiceCall {
   }
 
   // ---- speech out ----
-  // voice === 'polly': Amazon Polly Zhiyu via the app backend.
+  // voice === 'polly': Amazon Polly via the app backend, a native voice per language.
   // Sentences are synthesized one after another while earlier ones play, so
   // after the first sentence speech runs roughly without gaps. Any failure
   // falls back to the OS voice for that sentence.
@@ -769,9 +770,18 @@ export class VoiceCall {
 
   private async synth(text: string): Promise<Blob | null> {
     const res = await this.api.raw('/apps/voice-call/api/tts', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, voice: this.settings.voice }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, voices: this.settings.pollyVoices, rates: this.settings.pollyRates }),
     })
-    if (!res.ok) return null
+    if (!res.ok) {
+      // Said once per call; every failed sentence is then read by the browser voice.
+      if (!this.ttsFailed) {
+        this.ttsFailed = true
+        const body = (await res.json().catch(() => ({}))) as { error?: string }
+        this.flash(t('tts.fallback', body.error || `HTTP ${res.status}`))
+      }
+      return null
+    }
     return res.blob()
   }
 
@@ -815,8 +825,9 @@ export class VoiceCall {
   private speakOs(s: string): void {
     if (!('speechSynthesis' in window)) return this.nextSentence()
     const u = new SpeechSynthesisUtterance(s)
-    const v = pickVoice(this.remote() ? 'Tingting' : this.settings.voice)
-    if (v) { u.voice = v; u.lang = v.lang } else u.lang = 'zh-CN'
+    const lang = scriptLang(s)
+    const v = this.remote() || lang !== 'zh' ? (lang === 'zh' ? pickVoice('Tingting') : voiceForLang(lang)) : pickVoice(this.settings.voice)
+    if (v) { u.voice = v; u.lang = v.lang } else u.lang = lang === 'zh' ? 'zh-CN' : lang
     u.rate = this.settings.rate
     u.onend = () => this.nextSentence()
     u.onerror = () => this.nextSentence()

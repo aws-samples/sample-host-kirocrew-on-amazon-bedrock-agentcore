@@ -91,6 +91,36 @@ case "${1:-}" in
       --mount type=volume,destination=/mnt/workspace \
       "$IMAGE_TAG" smoke
     ;;
+  forkserver-modules)
+    # Start the gateway in a throwaway home inside the image, record every
+    # module it imports until its readiness line, and write them in import
+    # order. Run against an image that carries the KiroCrew release to pin.
+    capture=$(mktemp)
+    trap 'rm -f "$capture"' EXIT
+    docker run --rm --entrypoint /bin/sh "$IMAGE_TAG" -c '
+      export HOME=$(mktemp -d) KIROCREW_FORKSERVER=0
+      kirocrew=$(command -v kirocrew)
+      python -X importtime "$kirocrew" gateway --no-open --port 5476 \
+        --json-ready --approval reads >"$HOME/stdout" 2>"$HOME/importtime" &
+      gateway=$!
+      i=0
+      until grep -q KIROCREW_READY "$HOME/stdout"; do
+        i=$((i + 1))
+        if [ "$i" -gt 360 ] || ! kill -0 "$gateway" 2>/dev/null; then
+          echo "The gateway did not report ready." >&2
+          exit 1
+        fi
+        sleep 0.5
+      done
+      kill "$gateway"
+      cat "$HOME/importtime"' >"$capture"
+    {
+      echo "# Modules the KiroCrew gateway imports while it starts, in import order."
+      echo "# Regenerate after a KiroCrew upgrade: see docs/operations.md."
+      sed -nE 's/^import time: +[0-9]+ \| +[0-9]+ \| *([^ ]+)$/\1/p' "$capture" | awk '!seen[$0]++'
+    } >"$ROOT/runtime/forkserver-modules.txt"
+    echo "Wrote $(grep -vc '^#' "$ROOT/runtime/forkserver-modules.txt") modules to runtime/forkserver-modules.txt."
+    ;;
   audit)
     listing=$(mktemp)
     container=$(docker create "$IMAGE_TAG")
@@ -116,7 +146,7 @@ case "${1:-}" in
       --output /reports/runtime-vulnerabilities.json --exit-code 1 "$IMAGE_TAG"
     ;;
   *)
-    echo "usage: $0 {build|multiarch|publish|inspect|smoke|audit|sbom|vulnerability}" >&2
+    echo "usage: $0 {build|multiarch|publish|inspect|smoke|forkserver-modules|audit|sbom|vulnerability}" >&2
     exit 2
     ;;
 esac

@@ -315,7 +315,7 @@ class KiroCrewSupervisor:
         self._image_chromium = image_chromium
         self._metadata = metadata
         self._executable = executable
-        self._process_factory = process_factory or _start_process
+        self._process_factory = process_factory or start_gateway_process
         self._token_command = token_command or _run_token_command
         self._health_probe = health_probe or _probe_dashboard_health
         self._session_exchange = session_exchange or _exchange_link_for_session
@@ -1115,7 +1115,8 @@ def _last_exception_type(exception_types: list[str]) -> str:
     return exception_types[-1] if exception_types else "UNKNOWN"
 
 
-def _start_process(command: list[str], env: Mapping[str, str]) -> ProcessHandle:
+def start_gateway_process(command: list[str], env: Mapping[str, str]) -> ProcessHandle:
+    """Start the gateway as a plain subprocess (the fork server's fallback)."""
     process = subprocess.Popen(  # noqa: S603  # nosec B603
         command,
         env=dict(env),

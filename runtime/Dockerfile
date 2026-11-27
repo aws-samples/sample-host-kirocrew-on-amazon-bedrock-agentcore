@@ -226,6 +226,8 @@ ENV HOME=/mnt/workspace/home \
     PATH=/mnt/workspace/home/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
+# What the gateway fork server pre-imports (runtime/.../forkserver.py).
+COPY runtime/forkserver-modules.txt /opt/app/forkserver-modules.txt
 WORKDIR /mnt/workspace/projects/default
 USER 10001:10001
 EXPOSE 8080

@@ -1283,7 +1283,7 @@ def test_build_runtime_application_cleanup_and_serve(monkeypatch: pytest.MonkeyP
     )
 
     class Supervisor:
-        def __init__(self, *_args: object) -> None:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
             self.ready = False
             self.terminated = 0
 
@@ -1292,8 +1292,8 @@ def test_build_runtime_application_cleanup_and_serve(monkeypatch: pytest.MonkeyP
 
     supervisor_instances: list[Supervisor] = []
 
-    def make_supervisor(*args: object) -> Supervisor:
-        value = Supervisor(*args)
+    def make_supervisor(*args: object, **kwargs: object) -> Supervisor:
+        value = Supervisor(*args, **kwargs)
         supervisor_instances.append(value)
         return value
 
@@ -2283,3 +2283,11 @@ def test_init_owner_is_drawn_on_first_use_not_at_construction() -> None:
     assert owner
     assert initializer._init_owner == owner
     assert StubAwsSessionInitializer()._init_owner != owner
+
+
+def test_initializer_reports_whether_a_session_is_bound() -> None:
+    """The V2 warmup hook ignores build calls once a session is bound."""
+    initializer = StubAwsSessionInitializer()
+    assert initializer.initialized is False
+    initializer._initialized_session = ("subject", "sandbox", "session")
+    assert initializer.initialized is True

@@ -937,7 +937,10 @@ def test_subprocess_helpers_use_public_commands(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     monkeypatch.setattr(subprocess, "run", fake_run)
-    assert module._start_process(["kirocrew", "gateway"], {"HOME": "/workspace/home"}) is process
+    assert (
+        module.start_gateway_process(["kirocrew", "gateway"], {"HOME": "/workspace/home"})
+        is process
+    )
     assert popen_call["start_new_session"] is True
     assert (
         module._run_token_command("kirocrew", {"HOME": "/workspace/home"}, 4) == "dashboard output"

@@ -74,7 +74,21 @@ locals {
   # Omitted unless set: an existing runtime then keeps its platform version, and
   # the template body (and so the runtime VERSION) does not change.
   platform_properties = var.platform_version == null ? {} : { PlatformVersion = var.platform_version }
-  runtime_properties = merge(local.authorizer_properties, local.platform_properties, {
+  # V2 only (V1 rejects hooks): the platform calls POST /warmup twice while it
+  # builds the runtime, so new sessions read the gateway's start files fast
+  # after a snapshot restore. See runtime/.../warmup.py.
+  hooks_properties = var.platform_version == "V2" ? {
+    HooksConfiguration = {
+      Build = {
+        Warmup = {
+          Action = {
+            HttpPost = { Path = "/warmup", Port = 8080 }
+          }
+        }
+      }
+    }
+  } : {}
+  runtime_properties = merge(local.authorizer_properties, local.platform_properties, local.hooks_properties, {
     AgentRuntimeName = local.runtime_name
     AgentRuntimeArtifact = {
       ContainerConfiguration = {

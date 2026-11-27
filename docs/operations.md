@@ -185,12 +185,48 @@ to 2026-11-22). Read the two timing lines in the runtime application log:
 | Gateway start | 14–16 s | `port_answered` ~10–13 s, `ready_line` 4–6 s later. On 0.13.1 the readiness line is late, not lost (upstream fixed the embedding-model stdout silencing in kirodotdev/KiroCrew#35401). The `kirocrew token` CLI runs in the background as a second way to get the token, and whichever arrives first is used. Before that change the supervisor waited 3 s after the port, then blocked in that CLI for its 10–15 s start-up while ignoring the line: 24–32 s. `token_mint_attempts=2` is normal: the first attempt usually runs ahead of the gateway and fails. |
 
 To make cold starts faster, keep bytes out of the checkpoint: anything the
-image can ship or the start can rebuild. What remains in a typical home is
-installed apps (`app-sources`, `apps`, ~400 MB): they are the code apps
-execute, so re-cloning them at start would be slower than restoring them.
-A test fixture of 20,000 small files (`projects/default/bigtest`) once made
-up 22,000 of a sandbox's 35,000 files; check `files=` when a restore is
-slow.
+image can ship or the start can rebuild. Most of a typical home is apps:
+in a load-test sandbox that never chatted, the checkpoint grew from 103 MiB
+(3,130 files) at generation 1 to 472 MiB (8,830 files) within an hour, and
+all of the growth was under `home/.kiro/crew`: `app-sources` 249 MiB (of
+which `.git` 107 MiB) and `apps` 142 MiB. KiroCrew fills both on its own:
+it adopts the apps that used to be built in by cloning each one into
+`app-sources/<name>/` and installing it into `apps`
+(`kiro_crew/apps/builtin_adoption_fetch.py`). So a new account's first few
+restores are small and every later one carries ~400 MB of apps; compare
+timings only between sandboxes of similar `bytes=`. Whether `.git` can be
+left out of the checkpoint without breaking app updates has not been
+checked. A test fixture of 20,000 small files (`projects/default/bigtest`)
+once made up 22,000 of a sandbox's 35,000 files; check `files=` when a
+restore is slow.
+
+### Many users opening at once (V1)
+
+Measured 2026-11-27 with 25 load-test users pressing Sign in at the same
+moment, each reopening a ~470 MiB sandbox after Stop safely. Time is from
+the click to a usable dashboard.
+
+| Gateway start | Median | 90th percentile | Container start to gateway ready |
+|---|---|---|---|
+| Fork server on (#143, default) | 49.2 s | 54.7 s | 18.6 s |
+| Fork server off (`KIROCREW_FORKSERVER=0`) | 56.2 s | 63.9 s | 26.9 s |
+
+The fork server costs the restore about 2 s (14.2 s instead of 12.3 s,
+both processes compete for CPU) and saves about 10 s of gateway start
+(3.5 s instead of 13.7 s). The gateway waits for the fork server about 1 s.
+
+The median is set by the platform, not by the container. In every V1 round
+(five so far) the first 10 sessions are usable at 24–38 s (7–13 s in one
+round on fresh ~100 MiB homes) and the rest about 15–25 s later. In the
+round with full container logs, the first 10 microVMs logged 6–8 s after
+the click and the other 14 at 29–35 s. The
+control API had answered all 25 starts within 4.6 s and AgentCore reported
+no throttles, so the wait is microVM provisioning. This matches V1's warm
+pool of pre-initialized microVMs being used up by a burst (stated by the
+AgentCore assistant in #agentcore-internal-interest; the pool size is not
+documented). V2 restores from a snapshot and showed no such step: all 25
+were usable within 20–37 s. One user opening alone sees the first-batch
+time.
 
 ## Why this deployment stays on Runtime V1
 

@@ -124,8 +124,13 @@ follows from keeping them apart:
 
 [Open the SVG version](docs/startup-sequence.svg)
 
-Most of the start time is step 7: the bigger the workspace, the longer the
-restore.
+Measured on the Singapore dev deployment (Runtime V1, ~470 MiB workspace,
+2026-11-27), one user reopening is usable in about 20–30 s. Inside the
+microVM, the restore takes about 14 s and the gateway, forked from a
+pre-imported process, about 4 s more. When many users open at once, the
+platform's pool of ready microVMs runs out after about 10 and the rest
+wait 15–25 s longer. The breakdown and how to read it are in
+[docs/operations.md](docs/operations.md#where-a-cold-start-spends-its-time).
 
 ## Security and persistence model
 
@@ -251,8 +256,8 @@ of regular expressions matched against the full address. New accounts confirm
 their email address with a code sent to it, and the form can resend the code.
 Nobody can register or
 sign in against Cognito directly. After signing in, press **Start**. The first
-start of a new sandbox takes about a minute; later starts restore the
-checkpoint in seconds.
+start of a new sandbox takes about a minute; a later start restores the
+checkpoint and is usable in about 20–30 s.
 
 ## Operate the deployment
 

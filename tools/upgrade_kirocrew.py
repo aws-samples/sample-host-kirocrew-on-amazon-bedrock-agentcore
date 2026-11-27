@@ -247,7 +247,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"     with --accept-routes ({sys.argv[0]} {new.version} --accept-routes).\n"
         f"  2. Read {RELEASE_URL.format(v=new.version)} for config or engine changes\n"
         "     the supervisor pins (supervisor.py) and for new host-native features.\n"
-        "  3. make verify, build the image, deploy runtime + frontend + control_api together."
+        "  3. make verify and build the image, then refresh the fork server's module\n"
+        "     list from it (make image-forkserver-modules IMAGE_TAG=<image>) and rebuild.\n"
+        "  4. Deploy runtime + frontend + control_api together."
     )
     return 0
 

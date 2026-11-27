@@ -14,10 +14,10 @@ BUILDER ?=
 ECR_REPOSITORY_URI ?=
 IMAGE_RELEASE_TAG ?= 0.2.0-$(DEPLOYMENT_MODE)
 
-.PHONY: help setup lock-check frontend-assets frontend-assets-check generate generated-check format format-check lint typecheck unit contract terraform-validate verify image image-multiarch image-publish image-inspect image-smoke image-audit image-sbom image-vulnerability infra-plan infra-deploy e2e clean
+.PHONY: help setup lock-check frontend-assets frontend-assets-check generate generated-check format format-check lint typecheck unit contract terraform-validate verify image image-multiarch image-publish image-inspect image-smoke image-forkserver-modules image-audit image-sbom image-vulnerability infra-plan infra-deploy e2e clean
 
 help:
-	@printf '%s\n' 'setup frontend-assets generate format lint typecheck unit contract verify image image-multiarch image-publish image-inspect image-smoke image-audit image-sbom image-vulnerability infra-plan infra-deploy e2e clean'
+	@printf '%s\n' 'setup frontend-assets generate format lint typecheck unit contract verify image image-multiarch image-publish image-inspect image-smoke image-forkserver-modules image-audit image-sbom image-vulnerability infra-plan infra-deploy e2e clean'
 
 setup:
 	$(UV) sync --all-packages --all-groups --frozen
@@ -98,6 +98,9 @@ image-inspect:
 
 image-smoke:
 	IMAGE_TAG=$(IMAGE_TAG) ./tools/image.sh smoke
+
+image-forkserver-modules:
+	IMAGE_TAG=$(IMAGE_TAG) ./tools/image.sh forkserver-modules
 
 image-audit:
 	IMAGE_TAG=$(IMAGE_TAG) ./tools/image.sh audit

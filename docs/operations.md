@@ -356,6 +356,15 @@ moves to V1 on its next apply unless it sets `"V2"` explicitly.
   the new literal digest; the contract suite refuses an unreviewed one.
   Read the release notes for config keys the supervisor pins or new
   host-native features: those changes stay manual.
+  After building the image, refresh the fork server's module list from it
+  with `make image-forkserver-modules IMAGE_TAG=<image>` and rebuild. The
+  list is what the fork server imports before a user exists; a stale one
+  still works (modules that no longer exist are skipped and counted in the
+  `forkserver imported=… failed=…` line), but modules the new release added
+  are then imported after the fork, so the gateway start slows back toward
+  the 13–14 s it takes without the fork server. A capture from the 0.13.1
+  image matched the committed list on 4,183 of its 4,210 modules; the rest
+  differ from run to run.
   Deploy the new runtime image, `module.frontend` and `module.control_api`
   together: the control plane hands the browser
   `frontend_compatibility_version`, and a control plane still on the old
